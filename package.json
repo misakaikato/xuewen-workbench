@@ -116,9 +116,11 @@
       "server/**/*.js",
       "schema/**/*.json",
       "electron/**/*",
+      "assets/icons/**/*",
       "package.json",
       "!server/data{,/**/*}"
     ],
+    "icon": "assets/icons/icon.png",
     "asar": true,
     "mac": {
       "target": [

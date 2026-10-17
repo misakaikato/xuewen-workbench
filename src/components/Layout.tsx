@@ -68,6 +68,7 @@ export function Layout() {
     <div className="h-screen flex flex-col">
       {/* 顶栏用主题窗框色（B 主题下无分隔线，见 themes.css） */}
       <header className="h-12 shrink-0 border-b border-border wb-chrome flex items-center gap-2 px-3">
+        <img src="/logo-32.png" alt="学问 Workbench" className="w-6 h-6 rounded-[5px] shrink-0 select-none" draggable={false} />
         <button
           className="p-1.5 rounded hover:bg-accent md:hidden"
           onClick={() => setDrawer(true)}
