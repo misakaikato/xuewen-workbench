@@ -36,7 +36,8 @@ export default function Edit() {
   const [collections, setCollections] = useState<{ name: string }[]>([]);
 
   const dirty = saveState === 'dirty' || saveState === 'error';
-  const blocker = useBlocker(dirty);
+  // 文件被重命名/移动/删除后由目录树带 wbFollow 跳转，不拦截（草稿已迁移）
+  const blocker = useBlocker(({ nextLocation }) => dirty && !(nextLocation.state as { wbFollow?: boolean } | null)?.wbFollow);
 
   // 加载文件 + 草稿检测（草稿不自动进入编辑，由用户选择恢复）
   useEffect(() => {

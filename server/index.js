@@ -5,7 +5,8 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import express from 'express';
 import { getConfig, saveConfig, dsIdFor, getState, setState, backupDir } from './store.js';
-import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX } from './scanner.js';
+import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
+import { getTrashHandler } from './trash.js';
 import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
 
@@ -434,6 +435,243 @@ app.post('/api/file/create', async (req, res) => {
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message, ...(e.extra || {}) });
   }
+});
+
+// ---------- 重命名 / 移动 / 删除（旁注随行） ----------
+
+// 被操作条目的相对路径：非根、不含 ..、不在 .trash 内、不是旁注本身
+function validateEntryPath(raw) {
+  const rel = validateRelDir(raw);
+  if (!rel) throw badRequest('不能操作数据源根目录');
+  if (rel.split('/')[0] === TRASH_DIR) throw badRequest('不能操作回收站中的条目');
+  if (isSidecar(path.posix.basename(rel))) throw badRequest('元数据文件随文档一起操作，不能单独处理');
+  return rel;
+}
+
+function checkDsId(b, res) {
+  const dsId = b.dsId ?? b.dataSourceId;
+  if (dsId && dsId !== currentDsId) {
+    res.status(409).json({ error: '数据源已切换，请刷新后重试', stale: true });
+    return false;
+  }
+  return true;
+}
+
+// 读取条目：{ rel, abs, isDir, metaAbs|null }
+function loadEntry(raw) {
+  const rel = validateEntryPath(raw);
+  const abs = resolveWithin(rel);
+  let st;
+  try { st = fs.lstatSync(abs); } catch { throw Object.assign(new Error('条目不存在: ' + rel), { status: 404 }); }
+  const isDir = st.isDirectory();
+  const metaAbs = !isDir && pathTaken(abs + SIDECAR_SUFFIX) ? abs + SIDECAR_SUFFIX : null;
+  return { rel, abs, isDir, metaAbs };
+}
+
+// 依次执行重命名步骤；任一步失败则逆序回滚已完成的步骤
+function renameAll(steps) {
+  const done = [];
+  try {
+    for (const [from, to] of steps) {
+      fs.renameSync(from, to);
+      done.push([from, to]);
+    }
+  } catch (e) {
+    for (const [from, to] of done.reverse()) {
+      try { fs.renameSync(to, from); } catch (re) { console.error('回滚失败:', re.message); }
+    }
+    throw e;
+  }
+}
+
+const sameCaseInsensitive = (a, b) => a !== b && a.toLowerCase() === b.toLowerCase();
+
+// 将条目（及旁注）移动到 newRel；处理仅大小写变化的重命名
+function relocate(entry, newRel) {
+  if (newRel === entry.rel) throw badRequest('名称或位置未改变');
+  const newAbs = resolveWithin(newRel);
+  const caseOnly = sameCaseInsensitive(entry.rel, newRel);
+  const newMeta = newAbs + SIDECAR_SUFFIX;
+  if (!caseOnly && pathTaken(newAbs)) {
+    throw Object.assign(new Error('目标位置已存在同名' + (entry.isDir ? '条目' : '文档') + ': ' + newRel), { status: 409, extra: { exists: true } });
+  }
+  if (!entry.isDir && !caseOnly && pathTaken(newMeta)) {
+    throw Object.assign(new Error('目标位置已存在同名元数据文件: ' + newRel + SIDECAR_SUFFIX), { status: 409, extra: { exists: true } });
+  }
+  const steps = [];
+  const pushStep = (from, to) => {
+    if (sameCaseInsensitive(from, to)) {
+      const tmp = from + '.wb-case-' + process.pid;
+      steps.push([from, tmp], [tmp, to]);
+    } else steps.push([from, to]);
+  };
+  pushStep(entry.abs, newAbs);
+  if (entry.metaAbs) pushStep(entry.metaAbs, newMeta);
+  renameAll(steps);
+  return { newAbs, newMeta: entry.metaAbs ? newMeta : null, steps };
+}
+
+const stemOf = (name) => name.slice(0, name.length - path.extname(name).length);
+
+app.post('/api/file/rename', async (req, res) => {
+  if (!requireSource(res)) return;
+  const b = req.body || {};
+  if (!checkDsId(b, res)) return;
+  try {
+    const entry = loadEntry(b.path);
+    const oldName = path.posix.basename(entry.rel);
+    let newName = validateEntryName(b.newName);
+    if (!entry.isDir) {
+      const ext = path.extname(oldName);
+      if (ext && !newName.toLowerCase().endsWith(ext.toLowerCase())) newName = validateEntryName(newName + ext);
+    }
+    if (isSidecar(newName)) throw badRequest('名称不能以 .meta.json 结尾', { invalidName: true });
+    const dir = path.posix.dirname(entry.rel);
+    const newRel = dir === '.' ? newName : dir + '/' + newName;
+    const moved = relocate(entry, newRel);
+    let titleUpdated = false;
+    if (moved.newMeta) {
+      // 旧标题等于旧文件名主体时，标题随新名称更新；id 永不改变
+      try {
+        const raw = fs.readFileSync(moved.newMeta, 'utf8');
+        const meta = JSON.parse(raw);
+        if (meta && typeof meta === 'object' && meta.title === stemOf(oldName)) {
+          meta.title = stemOf(newName);
+          await writeTextAtomic(moved.newMeta, JSON.stringify(meta, null, 2) + '\n', false);
+          titleUpdated = true;
+        }
+      } catch (e) {
+        if (!(e instanceof SyntaxError)) {
+          renameAll([...moved.steps].reverse().map(([f, t]) => [t, f]));
+          throw e;
+        }
+        // 旁注不是合法 JSON：保持原样，不修改
+      }
+    }
+    await rescanAndIndex();
+    res.json({ ok: true, kind: entry.isDir ? 'folder' : 'file', oldPath: entry.rel, path: newRel, sidecar: !!moved.newMeta, titleUpdated });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, ...(e.extra || {}) });
+  }
+});
+
+app.post('/api/file/move', async (req, res) => {
+  if (!requireSource(res)) return;
+  const b = req.body || {};
+  if (!checkDsId(b, res)) return;
+  try {
+    const entry = loadEntry(b.path);
+    const targetDir = validateRelDir(b.targetDir);
+    if (targetDir.split('/')[0] === TRASH_DIR) throw badRequest('不能移动到回收站，请使用删除');
+    if (entry.isDir && (targetDir === entry.rel || targetDir.startsWith(entry.rel + '/'))) {
+      throw badRequest('不能把文件夹移动到它自身或其子文件夹中');
+    }
+    const dirAbs = resolveWithin(targetDir);
+    let st;
+    try { st = fs.statSync(dirAbs); } catch { return res.status(404).json({ error: '目标目录不存在: ' + (targetDir || '/') }); }
+    if (!st.isDirectory()) throw badRequest('目标不是目录');
+    const name = path.posix.basename(entry.rel);
+    const newRel = targetDir ? targetDir + '/' + name : name;
+    const moved = relocate(entry, newRel);
+    await rescanAndIndex();
+    res.json({ ok: true, kind: entry.isDir ? 'folder' : 'file', oldPath: entry.rel, path: newRel, sidecar: !!moved.newMeta });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, ...(e.extra || {}) });
+  }
+});
+
+function trashStamp(d = new Date()) {
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-${p(d.getMilliseconds(), 3)}`;
+}
+
+// 删除 = 移入回收站：先原子移入 .trash/<时间戳>__<名称>/（含旁注与来源说明），
+// 若宿主注册了系统回收站，再把该批次目录交给系统回收站；失败则保留在 .trash/。
+app.post('/api/file/delete', async (req, res) => {
+  if (!requireSource(res)) return;
+  const b = req.body || {};
+  if (!checkDsId(b, res)) return;
+  try {
+    const entry = loadEntry(b.path);
+    const name = path.posix.basename(entry.rel);
+    const trashRoot = path.join(scanner.baseDir, TRASH_DIR);
+    fs.mkdirSync(trashRoot, { recursive: true });
+    let batchName = trashStamp() + '__' + name;
+    for (let i = 2; pathTaken(path.join(trashRoot, batchName)); i++) batchName = trashStamp() + '-' + i + '__' + name;
+    const batchAbs = path.join(trashRoot, batchName);
+    fs.mkdirSync(batchAbs);
+    const steps = [[entry.abs, path.join(batchAbs, name)]];
+    if (entry.metaAbs) steps.push([entry.metaAbs, path.join(batchAbs, name + SIDECAR_SUFFIX)]);
+    try {
+      renameAll(steps);
+    } catch (e) {
+      try { fs.rmdirSync(batchAbs); } catch { /* ignore */ }
+      throw e;
+    }
+    try {
+      fs.writeFileSync(path.join(batchAbs, '.trashinfo.json'), JSON.stringify({
+        originalPath: entry.rel, kind: entry.isDir ? 'folder' : 'file', sidecar: !!entry.metaAbs, deletedAt: new Date().toISOString(),
+      }, null, 2) + '\n');
+    } catch { /* 说明文件失败不影响删除 */ }
+    let trashedTo = 'local';
+    const osTrash = getTrashHandler();
+    if (osTrash) {
+      try { await osTrash(batchAbs); trashedTo = 'os'; } catch (e) { console.error('系统回收站失败，保留在 .trash/:', e.message); }
+    }
+    await rescanAndIndex();
+    res.json({
+      ok: true, kind: entry.isDir ? 'folder' : 'file', path: entry.rel, sidecar: !!entry.metaAbs, trashedTo,
+      trashPath: trashedTo === 'local' ? TRASH_DIR + '/' + batchName : null,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, ...(e.extra || {}) });
+  }
+});
+
+// ---------- 元数据旁注问题报告（只报告，不自动修复） ----------
+
+const metaIssueCache = new WeakMap(); // snapshot -> issues
+
+function computeMetaIssues(snapshot) {
+  if (metaIssueCache.has(snapshot)) return metaIssueCache.get(snapshot);
+  const issues = [];
+  const sidecarSet = new Set(snapshot.sidecars || []);
+  const byId = new Map();
+  for (const sc of snapshot.sidecars || []) {
+    const target = sc.slice(0, sc.length - SIDECAR_SUFFIX.length);
+    let id = null;
+    try {
+      const meta = JSON.parse(fs.readFileSync(path.join(scanner.baseDir, sc), 'utf8'));
+      if (meta && typeof meta.id === 'string') id = meta.id;
+    } catch {
+      issues.push({ kind: 'invalid', sidecar: sc, target, message: '元数据文件不是合法 JSON' });
+    }
+    if (id) {
+      if (!byId.has(id)) byId.set(id, []);
+      byId.get(id).push(sc);
+    }
+    if (!pathTaken(path.join(scanner.baseDir, target))) {
+      // 同名文档在别处且自身没有旁注：很可能是在应用外被移动/重命名
+      const targetName = path.posix.basename(target);
+      const candidates = snapshot.files
+        .filter((f) => f.name === targetName && !sidecarSet.has(f.path + SIDECAR_SUFFIX))
+        .map((f) => f.path);
+      issues.push(candidates.length
+        ? { kind: 'moved', sidecar: sc, target, id, candidates, message: '文档疑似在应用外被移动，元数据仍在原处' }
+        : { kind: 'orphan', sidecar: sc, target, id, message: '元数据对应的文档不存在' });
+    }
+  }
+  for (const [id, list] of byId) {
+    if (list.length > 1) issues.push({ kind: 'duplicateId', id, sidecars: list, message: '多个元数据文件使用了相同 id' });
+  }
+  metaIssueCache.set(snapshot, issues);
+  return issues;
+}
+
+app.get('/api/meta/issues', (req, res) => {
+  if (!requireSource(res)) return;
+  const issues = computeMetaIssues(scanner.snapshot);
+  res.json({ dsId: currentDsId, scannedAt: scanner.snapshot.scannedAt, total: issues.length, issues });
 });
 
 // ---------- 检索与引用 ----------

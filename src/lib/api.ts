@@ -6,6 +6,18 @@ import type {
 
 export type DocType = '文章' | '讲稿' | '知乎';
 
+export interface MetaIssue {
+  kind: 'orphan' | 'moved' | 'duplicateId' | 'invalid';
+  message: string;
+  sidecar?: string;
+  sidecars?: string[];
+  target?: string;
+  id?: string | null;
+  candidates?: string[];
+}
+
+type EntryResult = { ok: boolean; kind: 'file' | 'folder'; oldPath?: string; path: string };
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const body = await res.json().catch(() => ({}));
@@ -41,6 +53,13 @@ export const api = {
     req<{ ok: boolean }>('/api/file/save-as', json('POST', { path, content, dsId })),
   createEntry: (body: { dsId: string | null; dir: string; kind: 'md' | 'folder'; name: string; title?: string; docType?: DocType }) =>
     req<{ ok: boolean; kind: 'md' | 'folder'; path: string }>('/api/file/create', json('POST', body)),
+  renameEntry: (body: { dsId: string | null; path: string; newName: string }) =>
+    req<EntryResult & { titleUpdated: boolean }>('/api/file/rename', json('POST', body)),
+  moveEntry: (body: { dsId: string | null; path: string; targetDir: string }) =>
+    req<EntryResult>('/api/file/move', json('POST', body)),
+  deleteEntry: (body: { dsId: string | null; path: string }) =>
+    req<EntryResult & { trashedTo: 'os' | 'local'; trashPath: string | null }>('/api/file/delete', json('POST', body)),
+  metaIssues: () => req<{ dsId: string; total: number; issues: MetaIssue[] }>('/api/meta/issues'),
   search: (q: string, opts: { types?: string[]; dir?: string; exclude?: string[] } = {}) => {
     const p = new URLSearchParams({ q });
     if (opts.types?.length) p.set('types', opts.types.join(','));

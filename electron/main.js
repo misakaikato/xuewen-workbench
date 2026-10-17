@@ -60,6 +60,10 @@ async function start() {
   }
   if (!DEV) process.env.WORKBENCH_STATIC_DIR = path.join(ROOT, 'dist');
 
+  // 删除操作交给系统回收站（失败时后端保留在数据源 .trash/ 中）
+  const { setTrashHandler } = await import(pathToFileURL(path.join(ROOT, 'server', 'trash.js')).href);
+  setTrashHandler((absPath) => shell.trashItem(absPath));
+
   // 进程内加载后端（随应用退出而结束）
   await import(pathToFileURL(path.join(ROOT, 'server', 'index.js')).href);
   const api = `http://${HOST}:${port}`;

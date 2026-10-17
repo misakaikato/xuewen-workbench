@@ -221,5 +221,122 @@ check('旧 dsId 新建被拒绝', r.status === 409 && r.body.stale === true, Str
 cleanup();
 await post('/api/rescan');
 
+console.log('== 12. 重命名 / 移动 / 删除 / 元数据问题 ==');
+const N = (p) => path.join(A, ...p.split('/'));
+const created12 = ['笔记/验收改名源.md', '笔记/验收改名后.md', '资料库/验收改名后.md', '笔记/验收标题保留.md', '笔记/验收标题保留2.md',
+  '笔记/验收占位.md', '笔记/验收冲突.md', '资料库/验收冲突.md', '验收文件夹', '验收文件夹2', '笔记/验收文件夹2',
+  '笔记/验收孤立.md', '笔记/验收外移.md', '资料库/验收外移.md'];
+const cleanup12 = () => {
+  for (const p of created12) { fs.rmSync(N(p), { recursive: true, force: true }); fs.rmSync(N(p) + '.meta.json', { force: true }); }
+  fs.rmSync(path.join(A, '.trash'), { recursive: true, force: true });
+};
+cleanup12();
+const readMeta = (rel) => { try { return JSON.parse(fs.readFileSync(N(rel) + '.meta.json', 'utf8')); } catch { return null; } };
+const op = (name, body) => post('/api/file/' + name, { dsId: dsA2, ...body });
+const treePaths = async () => {
+  const t = await j('/api/tree'); const files = [], dirs = [];
+  (function walk(n) { n.files.forEach(f => files.push(f.path)); n.dirs.forEach(d => { dirs.push(d.path); walk(d); }); })(t.body.tree);
+  return { files, dirs };
+};
+
+await create({ dir: '笔记', name: '验收改名源', docType: '知乎' });
+const id1 = readMeta('笔记/验收改名源.md')?.id;
+r = await op('rename', { path: '笔记/验收改名源.md', newName: '验收改名后' });
+check('重命名文档成功（自动保留 .md）', r.status === 200 && r.body.path === '笔记/验收改名后.md', JSON.stringify(r.body));
+check('旧文档与旧旁注已不存在', !fs.existsSync(N('笔记/验收改名源.md')) && !fs.existsSync(N('笔记/验收改名源.md') + '.meta.json'));
+let m1 = readMeta('笔记/验收改名后.md');
+check('旁注随重命名且 id 不变', !!m1 && m1.id === id1 && m1.type === '知乎');
+check('标题等于旧文件名主体时随之更新', m1?.title === '验收改名后' && r.body.titleUpdated === true, JSON.stringify(m1?.title));
+
+await create({ dir: '笔记', name: '验收标题保留', title: '自定义标题 子丑寅' });
+r = await op('rename', { path: '笔记/验收标题保留.md', newName: '验收标题保留2.md' });
+const m2 = readMeta('笔记/验收标题保留2.md');
+check('自定义标题在重命名后保持不变', r.status === 200 && m2?.title === '自定义标题 子丑寅' && r.body.titleUpdated === false, JSON.stringify(r.body));
+
+r = await op('rename', { path: '笔记/验收改名后.md', newName: '验收标题保留2' });
+check('重命名目标文档已存在返回 409', r.status === 409 && fs.existsSync(N('笔记/验收改名后.md')), String(r.status));
+fs.writeFileSync(N('笔记/验收占位.md') + '.meta.json', '{}');
+r = await op('rename', { path: '笔记/验收改名后.md', newName: '验收占位' });
+check('重命名目标旁注已存在返回 409（源不变）', r.status === 409 && fs.existsSync(N('笔记/验收改名后.md')) && readMeta('笔记/验收改名后.md')?.id === id1, String(r.status));
+fs.rmSync(N('笔记/验收占位.md') + '.meta.json', { force: true });
+
+r = await op('move', { path: '笔记/验收改名后.md', targetDir: '资料库' });
+check('移动文档成功', r.status === 200 && r.body.path === '资料库/验收改名后.md', JSON.stringify(r.body));
+check('旁注随移动且 id 不变', readMeta('资料库/验收改名后.md')?.id === id1 && !fs.existsSync(N('笔记/验收改名后.md') + '.meta.json'));
+let tp = await treePaths();
+check('目录树已更新到新位置', tp.files.includes('资料库/验收改名后.md') && !tp.files.includes('笔记/验收改名后.md'));
+r = await j('/api/search?q=' + encodeURIComponent('验收改名源'));
+check('移动后检索指向新路径', r.body.results?.some(x => x.file.path === '资料库/验收改名后.md') && !r.body.results?.some(x => x.file.path.startsWith('笔记/验收改名')), JSON.stringify(r.body.results?.map(x => x.file.path)));
+r = await op('move', { path: '资料库/验收改名后.md', targetDir: '资料库' });
+check('移动到原目录被拒绝', r.status === 400, String(r.status));
+await create({ dir: '笔记', name: '验收冲突' });
+await create({ dir: '资料库', name: '验收冲突' });
+r = await op('move', { path: '笔记/验收冲突.md', targetDir: '资料库' });
+check('移动目标已存在返回 409', r.status === 409 && fs.existsSync(N('笔记/验收冲突.md')), String(r.status));
+fs.rmSync(N('资料库/验收冲突.md'), { force: true });
+r = await op('move', { path: '笔记/验收冲突.md', targetDir: '资料库' });
+check('移动目标仅旁注存在也返回 409', r.status === 409 && fs.existsSync(N('笔记/验收冲突.md')), String(r.status));
+
+await create({ dir: '', kind: 'folder', name: '验收文件夹' });
+await create({ dir: '验收文件夹', name: '内部文档' });
+const idIn = readMeta('验收文件夹/内部文档.md')?.id;
+r = await op('rename', { path: '验收文件夹', newName: '验收文件夹2' });
+check('重命名文件夹（内容与旁注随行）', r.status === 200 && fs.existsSync(N('验收文件夹2/内部文档.md')) && readMeta('验收文件夹2/内部文档.md')?.id === idIn, JSON.stringify(r.body));
+r = await op('move', { path: '验收文件夹2', targetDir: '验收文件夹2' });
+check('文件夹移入自身被拒绝', r.status === 400, String(r.status));
+r = await op('move', { path: '验收文件夹2', targetDir: '笔记' });
+check('移动文件夹（内容与旁注随行）', r.status === 200 && readMeta('笔记/验收文件夹2/内部文档.md')?.id === idIn, JSON.stringify(r.body));
+tp = await treePaths();
+check('目录树含移动后的文件夹内容', tp.files.includes('笔记/验收文件夹2/内部文档.md') && !tp.dirs.includes('验收文件夹2'));
+
+for (const [name, body, want] of [
+  ['rename', { path: '../外部.md', newName: 'x' }, 400],
+  ['rename', { path: '/etc/hosts', newName: 'x' }, 400],
+  ['rename', { path: '资料库/验收改名后.md', newName: '../逃逸' }, 400],
+  ['rename', { path: '资料库/验收改名后.md', newName: 'CON' }, 400],
+  ['rename', { path: '资料库/验收改名后.md.meta.json', newName: 'x' }, 400],
+  ['move', { path: '资料库/验收改名后.md', targetDir: '../' }, 400],
+  ['move', { path: '资料库/验收改名后.md', targetDir: '/tmp' }, 400],
+  ['move', { path: '资料库/验收改名后.md', targetDir: '.trash' }, 400],
+  ['delete', { path: '..' }, 400],
+  ['delete', { path: '' }, 400],
+  ['delete', { path: '笔记/../../x' }, 400],
+  ['delete', { path: '笔记/不存在.md' }, 404],
+]) {
+  r = await op(name, body);
+  check(`拒绝 ${name} ${JSON.stringify(body)} → ${want}`, r.status === want, String(r.status));
+}
+r = await post('/api/file/rename', { dsId: 'stale000', path: '资料库/验收改名后.md', newName: 'y' });
+check('旧 dsId 重命名被拒绝', r.status === 409 && r.body.stale === true);
+
+r = await op('delete', { path: '资料库/验收改名后.md' });
+check('删除文档成功（移入 .trash）', r.status === 200 && r.body.trashedTo === 'local' && r.body.sidecar === true, JSON.stringify(r.body));
+const batch = r.body.trashPath ? path.join(A, ...r.body.trashPath.split('/')) : '';
+check('文档与旁注出现在 .trash 批次目录', !!batch && fs.existsSync(path.join(batch, '验收改名后.md')) && fs.existsSync(path.join(batch, '验收改名后.md.meta.json')));
+check('批次目录含来源说明', (() => { try { return JSON.parse(fs.readFileSync(path.join(batch, '.trashinfo.json'), 'utf8')).originalPath === '资料库/验收改名后.md'; } catch { return false; } })());
+check('原位置文档与旁注已不存在', !fs.existsSync(N('资料库/验收改名后.md')) && !fs.existsSync(N('资料库/验收改名后.md') + '.meta.json'));
+tp = await treePaths();
+check('删除后目录树不含该文档，也不含 .trash', !tp.files.includes('资料库/验收改名后.md') && !tp.files.some(p => p.startsWith('.trash')) && !tp.dirs.some(d => d.startsWith('.trash')));
+r = await j('/api/search?q=' + encodeURIComponent('验收改名源'));
+check('删除后检索无结果（回收站不被索引）', r.body.results?.length === 0, JSON.stringify(r.body.results?.map(x => x.file.path)));
+r = await op('delete', { path: '笔记/验收文件夹2' });
+check('删除文件夹移入 .trash（含内容）', r.status === 200 && fs.existsSync(path.join(A, ...r.body.trashPath.split('/'), '验收文件夹2', '内部文档.md.meta.json')) && !fs.existsSync(N('笔记/验收文件夹2')), JSON.stringify(r.body));
+
+fs.writeFileSync(N('笔记/验收孤立.md') + '.meta.json', JSON.stringify({ id: 'doc_orphan_acceptance' }));
+await create({ dir: '笔记', name: '验收外移' });
+const idOut = readMeta('笔记/验收外移.md')?.id;
+fs.renameSync(N('笔记/验收外移.md'), N('资料库/验收外移.md')); // 模拟在应用外移动（旁注留在原处）
+await post('/api/rescan');
+r = await j('/api/meta/issues');
+const iss = r.body.issues || [];
+check('报告孤立旁注', iss.some(i => i.kind === 'orphan' && i.sidecar === '笔记/验收孤立.md.meta.json' && i.id === 'doc_orphan_acceptance'), JSON.stringify(iss));
+check('报告疑似外部移动（同 id 旁注在原处）', iss.some(i => i.kind === 'moved' && i.sidecar === '笔记/验收外移.md.meta.json' && i.id === idOut && i.candidates.includes('资料库/验收外移.md')), JSON.stringify(iss));
+check('无旁注的普通文档不算问题', iss.every(i => JSON.stringify(i).includes('验收')), JSON.stringify(iss));
+check('问题报告不做任何修改', fs.existsSync(N('笔记/验收孤立.md') + '.meta.json') && fs.existsSync(N('笔记/验收外移.md') + '.meta.json'));
+cleanup12();
+await post('/api/rescan');
+r = await j('/api/meta/issues');
+check('清理后问题列表为空', r.body.total === 0, JSON.stringify(r.body.issues));
+
 console.log(`\n结果：${pass} 通过，${fail} 失败`);
 process.exit(fail ? 1 : 0);

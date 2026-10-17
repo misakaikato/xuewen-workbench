@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 export const SUPPORTED_EXTS = ['.md', '.json', '.doc', '.docx'];
 // 元数据旁注文件：<原文件名>.meta.json，不出现在目录树/检索中
 export const SIDECAR_SUFFIX = '.meta.json';
+export const TRASH_DIR = '.trash'; // 数据源根目录下的应用回收站（不扫描）
 export const isSidecar = (name) => String(name).toLowerCase().endsWith(SIDECAR_SUFFIX);
 
 function toRel(baseDir, abs) {
@@ -36,6 +37,7 @@ export function naturalCompare(a, b) {
 export function scanTree(baseDir) {
   const files = [];
   const dirs = []; // 全部子目录相对路径（含空目录）
+  const sidecars = []; // 元数据旁注文件相对路径
   const dirErrors = []; // { path, reason }
   const fileErrors = [];
   let dirCount = 0;
@@ -76,11 +78,13 @@ export function scanTree(baseDir) {
           isFile = st.isFile();
         }
         if (isDir) {
+          if (!relDir && ent.name === TRASH_DIR) continue;
           hasContent = true;
           walk(abs, rel);
         } else if (isFile) {
           const ext = path.extname(ent.name).toLowerCase();
-          if (!SUPPORTED_EXTS.includes(ext) || isSidecar(ent.name)) continue;
+          if (isSidecar(ent.name)) { sidecars.push(rel); continue; }
+          if (!SUPPORTED_EXTS.includes(ext)) continue;
           hasContent = true;
           try {
             const st = fs.statSync(abs);
@@ -107,7 +111,7 @@ export function scanTree(baseDir) {
   walk(baseDir, '');
   files.sort((a, b) => naturalCompare(a.path, b.path));
   dirs.sort(naturalCompare);
-  return { files, dirs, dirCount, dirErrors, fileErrors, emptyDirCount };
+  return { files, dirs, sidecars, dirCount, dirErrors, fileErrors, emptyDirCount };
 }
 
 export class Scanner extends EventEmitter {

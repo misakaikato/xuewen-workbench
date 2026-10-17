@@ -1,13 +1,30 @@
 // 目录树：动态来自扫描结果，可折叠，支持同名文件（以路径区分）
 import { useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { TreeNode } from '@/lib/types';
 import { ChevronRight, ChevronDown, Folder, FolderOpen, FilePlus, FolderPlus } from 'lucide-react';
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu';
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu';
+import { Pencil, FolderInput, Trash2 } from 'lucide-react';
+import { loadDraft, saveDraft, clearDraft } from '@/lib/drafts';
+import { EntryActionDialogs, type EntryAction } from './EntryActionDialogs';
+import { MetaIssuesBadge } from './MetaIssuesBadge';
 import { useApp } from '@/store/app';
 import { CreateEntryDialog, type CreateKind, type CreateTarget } from './CreateEntryDialog';
 
 type OnCreate = (dir: string, kind: CreateKind) => void;
+type OnAction = (a: EntryAction) => void;
+
+function ActionItems({ onAction, target }: { onAction: OnAction; target: Omit<EntryAction, 'type'> }) {
+  const fire = (type: EntryAction['type']) => setTimeout(() => onAction({ ...target, type }), 0);
+  return (
+    <>
+      <ContextMenuItem onSelect={() => fire('rename')}><Pencil />重命名</ContextMenuItem>
+      <ContextMenuItem onSelect={() => fire('move')}><FolderInput />移动到…</ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem variant="destructive" onSelect={() => fire('delete')}><Trash2 />删除</ContextMenuItem>
+    </>
+  );
+}
 import { extIcon } from './RefChip';
 
 function Node({
@@ -16,12 +33,14 @@ function Node({
   filter,
   currentPath,
   onCreate,
+  onAction,
 }: {
   node: TreeNode;
   depth: number;
   filter: string;
   currentPath?: string;
   onCreate: OnCreate;
+  onAction: OnAction;
 }) {
   const [open, setOpen] = useState(depth < 1);
   const navigate = useNavigate();
@@ -84,17 +103,20 @@ function Node({
         <ContextMenuContent>
           <ContextMenuItem onSelect={() => create('md')}><FilePlus />新建文档</ContextMenuItem>
           <ContextMenuItem onSelect={() => create('folder')}><FolderPlus />新建文件夹</ContextMenuItem>
+          <ContextMenuSeparator />
+          <ActionItems onAction={onAction} target={{ path: node.path, name: node.name, isDir: true }} />
         </ContextMenuContent>
         </ContextMenu>
       )}
       {(node.path === '' || open) && (
         <>
           {dirs.map((d) => (
-            <Node key={d.path} node={d} depth={depth + (node.path === '' ? 0 : 1)} filter={filter} currentPath={currentPath} onCreate={onCreate} />
+            <Node key={d.path} node={d} depth={depth + (node.path === '' ? 0 : 1)} filter={filter} currentPath={currentPath} onCreate={onCreate} onAction={onAction} />
           ))}
           {files.map((x) => (
+            <ContextMenu key={x.path}>
+            <ContextMenuTrigger asChild>
             <button
-              key={x.path}
               className={`w-full flex items-center gap-1.5 py-1 px-1.5 rounded text-sm text-left hover:bg-sidebar-accent ${
                 currentPath === x.path ? 'bg-sidebar-accent font-medium text-primary' : ''
               }`}
@@ -105,6 +127,11 @@ function Node({
               {extIcon(x.ext)}
               <span className="truncate">{x.name}</span>
             </button>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ActionItems onAction={onAction} target={{ path: x.path, name: x.name, isDir: false }} />
+            </ContextMenuContent>
+            </ContextMenu>
           ))}
         </>
       )}
@@ -116,7 +143,27 @@ export function FileTree({ tree, filter }: { tree: TreeNode; filter: string }) {
   const params = useParams();
   const currentPath = params['*'] ? decodeURIComponent(params['*']) : undefined;
   const navigate = useNavigate();
-  const { refreshTree } = useApp();
+  const { refreshTree, dsId } = useApp();
+  const location = useLocation();
+  const [action, setAction] = useState<EntryAction | null>(null);
+  const enc = (p: string) => p.split('/').map(encodeURIComponent).join('/');
+  // 当前打开的文档被重命名/移动时跟随到新路径（迁移草稿）；被删除时关闭
+  const onActionDone = async (a: EntryAction, newPath: string | null) => {
+    setAction(null);
+    await refreshTree().catch(() => {});
+    const m = location.pathname.match(/^\/(read|edit)\//);
+    const cur = currentPath;
+    if (!m || !cur) return;
+    const affected = cur === a.path || (a.isDir && cur.startsWith(a.path + '/'));
+    if (!affected) return;
+    if (newPath === null) { navigate('/', { replace: true, state: { wbFollow: true } }); return; }
+    const next = newPath + cur.slice(a.path.length);
+    if (dsId) {
+      const d = loadDraft(dsId, cur);
+      if (d) { saveDraft(dsId, next, d.content); clearDraft(dsId, cur); }
+    }
+    navigate('/' + m[1] + '/' + enc(next), { replace: true, state: { wbFollow: true } });
+  };
   const [target, setTarget] = useState<CreateTarget | null>(null);
   const onCreate: OnCreate = (dir, kind) => setTarget({ dir, kind });
   const onCreated = async (p: string, kind: CreateKind) => {
@@ -141,8 +188,10 @@ export function FileTree({ tree, filter }: { tree: TreeNode; filter: string }) {
         >
           <FolderPlus className="w-3.5 h-3.5" />新建文件夹
         </button>
+        <MetaIssuesBadge tree={tree} />
       </div>
-      <Node node={tree} depth={0} filter={filter} currentPath={currentPath} onCreate={onCreate} />
+      <Node node={tree} depth={0} filter={filter} currentPath={currentPath} onCreate={onCreate} onAction={setAction} />
+      <EntryActionDialogs action={action} tree={tree} onClose={() => setAction(null)} onDone={onActionDone} />
       <CreateEntryDialog target={target} onClose={() => setTarget(null)} onCreated={onCreated} />
       {tree.files.length === 0 && tree.dirs.length === 0 && (
         <div className="text-xs text-muted-foreground p-3">数据源中没有可支持的文件（.md / .json / .doc / .docx）</div>
