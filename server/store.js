@@ -4,7 +4,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
+// 可通过 WORKBENCH_DATA_DIR 覆盖（Electron 打包版指向 userData）
+const DATA_DIR = process.env.WORKBENCH_DATA_DIR
+  ? path.resolve(process.env.WORKBENCH_DATA_DIR)
+  : path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 
 fs.mkdirSync(DATA_DIR, { recursive: true });

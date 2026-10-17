@@ -9,6 +9,8 @@ import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
 
 const PORT = process.env.WORKBENCH_PORT || 7410;
+const HOST = process.env.WORKBENCH_HOST || undefined; // 未设置时保持原行为（监听所有地址）
+const STATIC_DIR = process.env.WORKBENCH_STATIC_DIR || null; // 设置后托管已构建的前端（Electron 用）
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
@@ -491,6 +493,16 @@ app.get('/api/word-capability', async (req, res) => {
   res.json(await wordCapability());
 });
 
+// ---------- 前端静态资源（仅在设置 WORKBENCH_STATIC_DIR 时启用） ----------
+
+if (STATIC_DIR && fs.existsSync(path.join(STATIC_DIR, 'index.html'))) {
+  app.use(express.static(STATIC_DIR));
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
+    res.sendFile(path.join(STATIC_DIR, 'index.html'));
+  });
+}
+
 // ---------- 启动 ----------
 
 async function boot() {
@@ -508,7 +520,7 @@ async function boot() {
       console.error('上次数据源不可访问:', e.message);
     }
   }
-  app.listen(PORT, () => console.log('语料工作台后端已启动: http://localhost:' + PORT));
+  app.listen(PORT, HOST, () => console.log('语料工作台后端已启动: http://localhost:' + PORT));
 }
 
 boot();

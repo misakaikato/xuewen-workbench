@@ -9,7 +9,11 @@
     "dev:server": "node server/index.js",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:dev": "electron . --dev",
+    "electron:start": "npm run build && electron .",
+    "electron:build:mac": "npm run build && electron-builder --mac dmg zip --arm64 --publish never",
+    "electron:build:win": "npm run build && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",
@@ -78,6 +82,8 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "autoprefixer": "^10.4.23",
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
@@ -90,5 +96,42 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4"
+  },
+  "main": "electron/main.js",
+  "productName": "Xuewen Workbench",
+  "description": "Corpus workbench (学问 Workbench)",
+  "author": "mayu",
+  "build": {
+    "appId": "local.mayu.corpus-workbench",
+    "productName": "Xuewen Workbench",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "server/**/*.js",
+      "electron/**/*",
+      "package.json",
+      "!server/data{,/**/*}"
+    ],
+    "asar": true,
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "hardenedRuntime": false
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }
