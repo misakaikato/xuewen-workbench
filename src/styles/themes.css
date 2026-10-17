@@ -1,0 +1,279 @@
+/* ===== 外观主题令牌（A 宣纸 / B 现代极简 / C 夜读）=====
+   原型：docs/prototypes/_src/build.py 的 THEMES 令牌表。
+   级联设计（顺序即优先级）：
+   - :root 为兜底默认；A/B 用 :where() 不追加特异性，
+     因此随后的 .dark（阅读偏好深色）可整体压过 A/B；
+   - C（夜读）恒用自身深色令牌：:root[data-theme="C"] 特异性更高，压过 .dark。 */
+
+@layer base {
+  :root {
+    --background: 42 30% 97%;
+    --foreground: 30 10% 15%;
+    --card: 42 30% 98.5%;
+    --card-foreground: 30 10% 15%;
+    --popover: 42 30% 98.5%;
+    --popover-foreground: 30 10% 15%;
+    --primary: 8 55% 40%;
+    --primary-foreground: 42 30% 97%;
+    --secondary: 40 14% 92%;
+    --secondary-foreground: 30 10% 20%;
+    --muted: 40 14% 92%;
+    --muted-foreground: 30 6% 42%;
+    --accent: 40 14% 90%;
+    --accent-foreground: 30 10% 18%;
+    --destructive: 0 70% 45%;
+    --destructive-foreground: 42 30% 97%;
+    --border: 38 12% 85%;
+    --input: 38 12% 82%;
+    --ring: 8 55% 40%;
+    --radius: 0.5rem;
+    --sidebar-background: 40 20% 94%;
+    --sidebar-foreground: 30 8% 28%;
+    --sidebar-primary: 8 55% 40%;
+    --sidebar-primary-foreground: 42 30% 97%;
+    --sidebar-accent: 40 16% 89%;
+    --sidebar-accent-foreground: 30 10% 20%;
+    --sidebar-border: 38 12% 84%;
+    --sidebar-ring: 8 55% 40%;
+
+    /* 应用字体令牌（兜底：沿用旧版界面栈） */
+    --font-ui: "Source Han Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --font-serif: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+    --font-mono: "JetBrains Mono", "Sarasa Mono SC", Consolas, "Courier New", monospace;
+    --font-brand: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+
+    /* 阅读偏好默认值：正文字体跟随主题衬线栈（用户显式选择仍以行内样式优先） */
+    --rd-font: var(--font-serif);
+    --rd-size: 17px;
+    --rd-line: 1.85;
+    --rd-para: 0.9em;
+    --rd-width: 720px;
+    --rd-code-size: 14px;
+    --rd-bg: transparent;
+    --rd-fg: inherit;
+  }
+
+  /* A 宣纸 · 书卷：暖纸底、朱砂强调、衬线界面（对应原型 A.html） */
+  :root:where([data-theme="A"]) {
+    --background: 42 55.6% 92.9%;        /* 纸 #f7f1e3 */
+    --foreground: 33 21.6% 10%;          /* 墨 #1f1a14 */
+    --card: 42 61.9% 95.9%;              /* #fbf7ee */
+    --card-foreground: 33 21.6% 10%;
+    --popover: 42 61.9% 95.9%;
+    --popover-foreground: 33 21.6% 10%;
+    --primary: 9 66.4% 42%;              /* 朱砂 #b23a24 */
+    --primary-foreground: 40 72.4% 94.3%; /* #fbf4e6 */
+    --secondary: 41 37.3% 86.9%;         /* 选区叠纸 #eae2d1 */
+    --secondary-foreground: 32 18.4% 20.2%; /* 次墨 #3d342a */
+    --muted: 41 41.3% 85.3%;             /* 窗框 #e9dfca */
+    --muted-foreground: 36 16.2% 44.9%;  /* #857660 */
+    --accent: 41 37.3% 86.9%;
+    --accent-foreground: 33 21.6% 10%;
+    --destructive: 0 70% 45%;
+    --destructive-foreground: 40 72.4% 94.3%;
+    --border: 40 36.4% 79%;              /* #ddd0b6 */
+    --input: 39 31.5% 71.4%;             /* #cdbd9f */
+    --ring: 9 66.4% 42%;
+    --radius: 6px;
+    --sidebar-background: 41 47.2% 89.6%; /* 侧栏 #f1e9d8 */
+    --sidebar-foreground: 32 18.4% 20.2%;
+    --sidebar-primary: 9 66.4% 42%;
+    --sidebar-primary-foreground: 40 72.4% 94.3%;
+    --sidebar-accent: 40 36.6% 83.9%;    /* 选区叠侧栏 #e5dbc7 */
+    --sidebar-accent-foreground: 33 21.6% 10%;
+    --sidebar-border: 40 36.4% 79%;
+    --sidebar-ring: 9 66.4% 42%;
+
+    /* 应用令牌（原始 CSS 值，不走 HSL 三元组） */
+    --wb-bg: #efe6d3;
+    --wb-chrome: #e9dfca;
+    --wb-faint: #a99a82;
+    --wb-text: #2a231b;
+    --wb-hl: rgba(214, 128, 70, 0.22);
+    --wb-link: #2a231b;
+    --wb-link-border: 1px dotted rgba(178, 58, 36, 0.65);
+    --wb-accsoft: rgba(178, 58, 36, 0.09);
+    --wb-shadow: 0 1px 0 rgba(90, 60, 20, 0.04);
+    --wb-pvshadow: 0 10px 30px rgba(90, 60, 20, 0.16);
+    --wb-radius-sm: 4px;
+    --font-ui: "Source Han Serif SC", "Noto Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", serif;
+    --font-serif: "Source Han Serif SC", "Noto Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --font-brand: "Source Han Serif SC", "Noto Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", serif;
+  }
+
+  /* B 现代极简：中性白、靛蓝强调、无衬线界面（对应原型 B.html） */
+  :root:where([data-theme="B"]) {
+    --background: 0 0% 100%;             /* 纸 #ffffff */
+    --foreground: 228 10.2% 9.6%;        /* #16171b */
+    --card: 0 0% 100%;
+    --card-foreground: 228 10.2% 9.6%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 228 10.2% 9.6%;
+    --primary: 243 75.4% 58.6%;          /* 靛蓝 #4f46e5 */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 15.2% 93.5%;        /* 选区 #ececf1 */
+    --secondary-foreground: 224 8.4% 25.7%; /* #3c3f47 */
+    --muted: 240 6.7% 97.1%;             /* #f7f7f8 */
+    --muted-foreground: 221 6.4% 51%;    /* #7a7f8a */
+    --accent: 240 15.2% 93.5%;
+    --accent-foreground: 228 10.2% 9.6%;
+    --destructive: 0 70% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 9.5% 91.8%;            /* #e8e8ec */
+    --input: 231 11.1% 87.6%;            /* #dcdde3 */
+    --ring: 243 75.4% 58.6%;
+    --radius: 8px;
+    --sidebar-background: 240 6.7% 97.1%;
+    --sidebar-foreground: 224 8.4% 25.7%;
+    --sidebar-primary: 243 75.4% 58.6%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 15.2% 93.5%;
+    --sidebar-accent-foreground: 228 10.2% 9.6%;
+    --sidebar-border: 240 9.5% 91.8%;
+    --sidebar-ring: 243 75.4% 58.6%;
+
+    --wb-bg: #f7f7f8;
+    --wb-chrome: #f7f7f8;
+    --wb-faint: #a3a7b0;
+    --wb-text: #202228;
+    --wb-hl: rgba(99, 102, 241, 0.16);
+    --wb-link: #262a52;
+    --wb-link-border: 1px solid #c9cbf5;
+    --wb-accsoft: #eef0ff;
+    --wb-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+    --wb-pvshadow: 0 12px 32px rgba(16, 24, 40, 0.12);
+    --wb-radius-sm: 6px;
+    --font-ui: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", sans-serif;
+    --font-serif: "Source Han Serif SC", "Noto Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --font-brand: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", sans-serif;
+  }
+
+  /* 深色阅读偏好（阅读与外观里的「深色」）：整体压过 A/B，但压不过 C */
+  .dark {
+    --background: 30 8% 11%;
+    --foreground: 40 15% 88%;
+    --card: 30 8% 14%;
+    --card-foreground: 40 15% 88%;
+    --popover: 30 8% 14%;
+    --popover-foreground: 40 15% 88%;
+    --primary: 10 60% 55%;
+    --primary-foreground: 30 8% 11%;
+    --secondary: 30 6% 20%;
+    --secondary-foreground: 40 15% 88%;
+    --muted: 30 6% 20%;
+    --muted-foreground: 35 8% 60%;
+    --accent: 30 6% 22%;
+    --accent-foreground: 40 15% 88%;
+    --destructive: 0 60% 50%;
+    --destructive-foreground: 40 15% 88%;
+    --border: 30 6% 24%;
+    --input: 30 6% 28%;
+    --ring: 10 60% 55%;
+    --sidebar-background: 30 8% 13%;
+    --sidebar-foreground: 35 10% 70%;
+    --sidebar-primary: 10 60% 55%;
+    --sidebar-primary-foreground: 30 8% 11%;
+    --sidebar-accent: 30 6% 20%;
+    --sidebar-accent-foreground: 40 15% 88%;
+    --sidebar-border: 30 6% 22%;
+    --sidebar-ring: 10 60% 55%;
+
+    /* 深色阅读下的应用令牌（窗框/链接等跟随变暗） */
+    --wb-bg: hsl(30 8% 11%);
+    --wb-chrome: hsl(30 8% 14%);
+    --wb-faint: hsl(35 8% 45%);
+    --wb-text: hsl(40 15% 88%);
+    --wb-hl: hsl(48 80% 35%);
+    --wb-link: hsl(10 60% 55%);
+    --wb-link-border: none;
+    --wb-accsoft: hsl(10 60% 55% / 0.12);
+    --wb-shadow: none;
+    --wb-pvshadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  }
+
+  /* C 夜读：深色底、鎏金强调、无衬线界面 + 衬线正文（对应原型 C.html） */
+  :root[data-theme="C"] {
+    --background: 228 8.5% 11.6%;        /* 纸 #1b1c20 */
+    --foreground: 41 43.9% 88.8%;        /* 墨 #efe7d6 */
+    --card: 230 8.3% 14.1%;              /* #212227 */
+    --card-foreground: 41 43.9% 88.8%;
+    --popover: 230 8.3% 14.1%;
+    --popover-foreground: 41 43.9% 88.8%;
+    --primary: 40 55.4% 60.4%;           /* 鎏金 #d2ad62 */
+    --primary-foreground: 38 18.2% 8.6%; /* #1a1712 */
+    --secondary: 240 2.4% 16.5%;         /* 选区叠纸 #29292b */
+    --secondary-foreground: 40 22% 75.9%; /* 次墨 #cfc6b4 */
+    --muted: 225 9.1% 8.6%;              /* 窗框 #141518 */
+    --muted-foreground: 41 8.8% 51%;     /* #8d8677 */
+    --accent: 240 2.4% 16.5%;
+    --accent-foreground: 41 43.9% 88.8%;
+    --destructive: 0 62% 58%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 231 7.7% 17.8%;            /* #2a2b31 */
+    --input: 233 7.4% 23.7%;             /* #383941 */
+    --ring: 40 55.4% 60.4%;
+    --radius: 8px;
+    --sidebar-background: 228 9.8% 10%;  /* 侧栏 #17181c */
+    --sidebar-foreground: 40 22% 75.9%;
+    --sidebar-primary: 40 55.4% 60.4%;
+    --sidebar-primary-foreground: 38 18.2% 8.6%;
+    --sidebar-accent: 240 2.6% 14.9%;    /* 选区叠侧栏 #252527 */
+    --sidebar-accent-foreground: 41 43.9% 88.8%;
+    --sidebar-border: 231 7.7% 17.8%;
+    --sidebar-ring: 40 55.4% 60.4%;
+
+    --wb-bg: #121316;
+    --wb-chrome: #141518;
+    --wb-faint: #6a655b;
+    --wb-text: #ddd4c1;
+    --wb-hl: rgba(210, 173, 98, 0.22);
+    --wb-link: #ead7ab;
+    --wb-link-border: 1px dotted rgba(210, 173, 98, 0.55);
+    --wb-accsoft: rgba(210, 173, 98, 0.11);
+    --wb-shadow: none;
+    --wb-pvshadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+    --wb-radius-sm: 5px;
+    --font-ui: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", sans-serif;
+    --font-serif: "Source Han Serif SC", "Noto Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --font-brand: "Source Han Serif SC", "Noto Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", serif;
+  }
+}
+
+/* ===== 主题细节（原型 extra 规则的最小移植）===== */
+/* 窗口底色（过度滚动区等）：跟随主题窗框色 */
+html { background-color: var(--wb-bg); }
+
+/* 顶栏等窗面：使用主题窗框色而非卡片色 */
+.wb-chrome { background-color: var(--wb-chrome); }
+
+/* A 宣纸：阅读区两侧纸纹暗影 + 朱砂点线链接 */
+[data-theme="A"] .wb-paper {
+  background-image: linear-gradient(90deg, rgba(150, 120, 70, 0.05), transparent 3%, transparent 97%, rgba(150, 120, 70, 0.05));
+}
+[data-theme="A"] .reader a,
+[data-theme="B"] .reader a {
+  color: var(--wb-link);
+  text-decoration: none;
+  border-bottom: var(--wb-link-border);
+}
+
+/* B 现代极简：顶栏不加分隔线 */
+[data-theme="B"] .wb-chrome { border-bottom-color: transparent; }
+
+/* 深色阅读偏好优先于 A/B 的链接描边 */
+.dark .reader a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  border-bottom: none;
+}
+
+/* C 夜读：暖白正文、米色大标题、鎏金高亮与点线链接（特异性压过 .dark 规则） */
+:root[data-theme="C"] .reader { color: var(--wb-text); }
+:root[data-theme="C"] .reader h1 { color: #f1e6cc; font-weight: 600; }
+:root[data-theme="C"] .reader a { color: var(--wb-link); text-decoration: none; border-bottom: var(--wb-link-border); }
+:root[data-theme="C"] .reader mark,
+:root[data-theme="C"] .hl { background: var(--wb-hl); color: #f3e7c9; }

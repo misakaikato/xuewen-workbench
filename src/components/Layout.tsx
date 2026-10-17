@@ -52,7 +52,8 @@ export function Layout() {
 
   return (
     <div className="h-screen flex flex-col">
-      <header className="h-12 shrink-0 border-b border-border bg-card flex items-center gap-2 px-3">
+      {/* 顶栏用主题窗框色（B 主题下无分隔线，见 themes.css） */}
+      <header className="h-12 shrink-0 border-b border-border wb-chrome flex items-center gap-2 px-3">
         <button
           className="p-1.5 rounded hover:bg-accent md:hidden"
           onClick={() => setDrawer(true)}

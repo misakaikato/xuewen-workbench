@@ -1,5 +1,7 @@
 // 阅读偏好：字体/字号/行距/段落间距/宽度/主题/代码字号。持久化到 localStorage，即时生效。
+// dark 类在此统一裁定：阅读偏好选深色，或外观主题为 C（夜读）时挂上，避免两处开关互相覆盖。
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { useTheme } from './theme';
 
 export interface ReadingPrefs {
   font: 'serif' | 'sans' | 'mono';
@@ -47,6 +49,7 @@ const Ctx = createContext<PrefsCtx>({ prefs: DEFAULT_PREFS, update: () => {}, re
 
 export function ReadingPrefsProvider({ children }: { children: ReactNode }) {
   const [prefs, setPrefs] = useState<ReadingPrefs>(load);
+  const { theme } = useTheme();
 
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify(prefs));
@@ -57,8 +60,8 @@ export function ReadingPrefsProvider({ children }: { children: ReactNode }) {
     r.style.setProperty('--rd-para', prefs.paraSpacing + 'em');
     r.style.setProperty('--rd-width', prefs.width + 'px');
     r.style.setProperty('--rd-code-size', prefs.codeFontSize + 'px');
-    r.classList.toggle('dark', prefs.theme === 'dark');
-  }, [prefs]);
+    r.classList.toggle('dark', prefs.theme === 'dark' || theme === 'C');
+  }, [prefs, theme]);
 
   const update = (patch: Partial<ReadingPrefs>) => setPrefs((p) => ({ ...p, ...patch }));
   const reset = () => setPrefs(DEFAULT_PREFS);

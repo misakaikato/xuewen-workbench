@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validateMeta } from '../server/meta.js';
 
@@ -459,6 +460,104 @@ cleanup13();
 await post('/api/rescan');
 r = await j('/api/meta/issues');
 check('清理后问题列表为空', r.body.total === 0, JSON.stringify(r.body.issues));
+
+console.log('== 14. 主题 ==');
+// (a) 变量与内联脚本检查：读主题 CSS 源文件与 index.html 源
+const themeCss = fs.readFileSync(path.join(ROOT, 'src', 'styles', 'themes.css'), 'utf8');
+const REQUIRED_VARS = ['--background', '--foreground', '--card', '--primary', '--primary-foreground', '--muted', '--muted-foreground',
+  '--accent', '--border', '--input', '--ring', '--radius', '--sidebar-background', '--sidebar-foreground', '--sidebar-accent',
+  '--sidebar-border', '--font-ui', '--font-serif', '--wb-chrome', '--wb-hl'];
+const blockVars = {};
+for (const key of ['A', 'B', 'C']) {
+  const sel = ':root:where\\(' + '\\[data-theme="' + key + '"\\]' + '\\)|:root' + '\\[data-theme="' + key + '"\\]';
+  const re = new RegExp('(' + sel + ')\\s*\\{([\\s\\S]*?)\\n\\s*\\}');
+  const m = themeCss.match(re);
+  check('主题 ' + key + ' 变量块存在', !!m);
+  if (m) {
+    const decls = m[2];
+    blockVars[key] = {};
+    for (const line of decls.split('\n')) {
+      const dm = line.match(/^\s*(--[a-z0-9-]+)\s*:\s*([^;]+);/);
+      if (dm) blockVars[key][dm[1]] = dm[2].trim();
+    }
+    const missing = REQUIRED_VARS.filter((v) => !(v in blockVars[key]));
+    check('主题 ' + key + ' 定义全部必需变量', missing.length === 0, '缺少: ' + missing.join(','));
+  }
+}
+check('三主题 --primary 互不相同', blockVars.A && blockVars.B && blockVars.C &&
+  new Set([blockVars.A['--primary'], blockVars.B['--primary'], blockVars.C['--primary']]).size === 3);
+check('三主题 --background 互不相同', blockVars.A && blockVars.B && blockVars.C &&
+  new Set([blockVars.A['--background'], blockVars.B['--background'], blockVars.C['--background']]).size === 3);
+const cBg = blockVars.C && (blockVars.C['--background'] || '').match(/([\d.]+)%\s*$/);
+check('C 的 --background 为深色（亮度 < 20%）', !!cBg && parseFloat(cBg[1]) < 20, String(cBg && cBg[1]));
+const indexHtmlSrc = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+check('index.html 内联脚本读取 wb:theme', indexHtmlSrc.includes("'wb:theme'") && indexHtmlSrc.includes('dataset.theme'));
+
+// (b) 独立服务进程：临时数据目录 + 静态目录（最小 index.html 夹具），验证持久化与注入
+const THEME_PORT = 7499;
+const TB = 'http://127.0.0.1:' + THEME_PORT;
+const themeDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-theme-data-'));
+const themeStaticDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-theme-static-'));
+fs.writeFileSync(path.join(themeStaticDir, 'index.html'),
+  '<!doctype html><html lang="zh-CN"><head><script>/*wb-theme*/</script></head><body><div id="root"></div></body></html>');
+let themeChild = null;
+const stopThemeChild = () => {
+  if (themeChild && !themeChild.killed) { try { themeChild.kill('SIGKILL'); } catch { /* ignore */ } }
+  themeChild = null;
+};
+const waitThemeApi = async () => {
+  const t0 = Date.now();
+  for (;;) {
+    try { const r = await fetch(TB + '/api/ui-settings'); if (r.ok) return; } catch { /* 未就绪 */ }
+    if (Date.now() - t0 > 10000) throw new Error('主题服务等待超时');
+    await new Promise((s) => setTimeout(s, 200));
+  }
+};
+const spawnThemeServer = async () => {
+  themeChild = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
+    env: { ...process.env, WORKBENCH_PORT: String(THEME_PORT), WORKBENCH_HOST: '127.0.0.1', WORKBENCH_DATA_DIR: themeDataDir, WORKBENCH_STATIC_DIR: themeStaticDir },
+    stdio: 'ignore',
+  });
+  await waitThemeApi();
+};
+const tJson = async (url, init) => {
+  const r = await fetch(TB + url, init);
+  return { status: r.status, body: await r.json().catch(() => ({})) };
+};
+const tPut = (url, body) => tJson(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const tHtml = async (url) => (await fetch(TB + url)).text();
+try {
+  await spawnThemeServer();
+  let tr = await tJson('/api/ui-settings');
+  check('默认主题为 A', tr.body.theme === 'A', JSON.stringify(tr.body));
+  let th = await tHtml('/');
+  check('GET / 注入 data-theme="A"', th.includes('data-theme="A"') && th.includes('__WB_THEME__="A"'));
+  tr = await tPut('/api/ui-settings', { theme: 'C' });
+  check('PUT theme=C 成功', tr.status === 200 && tr.body.ok === true && tr.body.theme === 'C', JSON.stringify(tr.body));
+  tr = await tPut('/api/ui-settings', { theme: 'Z' });
+  check('PUT theme=Z 返回 400', tr.status === 400, String(tr.status));
+  // 重启同一数据目录：持久化与注入均应回到 C
+  stopThemeChild();
+  await new Promise((s) => setTimeout(s, 300));
+  await spawnThemeServer();
+  tr = await tJson('/api/ui-settings');
+  check('重启后主题仍为 C', tr.body.theme === 'C', JSON.stringify(tr.body));
+  th = await tHtml('/');
+  check('重启后 GET / 注入 data-theme="C" 且挂 dark 类', th.includes('data-theme="C"') && th.includes('class="dark"'));
+  th = await tHtml('/some/spa/route');
+  check('SPA 路由回退同样注入 C + dark', th.includes('data-theme="C"') && th.includes('class="dark"'));
+  th = await tHtml('/read/a/b.md');
+  const baseCount = th.split('<base href="/">').length - 1;
+  check('深链 HTML 注入 <base href="/">（恰一次）', baseCount === 1, '次数: ' + baseCount);
+  const asset404 = await fetch(TB + '/some/deep/assets/x.js');
+  check('缺失静态资源（.js）返回 404 而非 SPA HTML', asset404.status === 404, String(asset404.status));
+  const saved = JSON.parse(fs.readFileSync(path.join(themeDataDir, 'ui-settings.json'), 'utf8'));
+  check('持久化文件 ui-settings.json 含 theme C', saved.theme === 'C', JSON.stringify(saved));
+} finally {
+  stopThemeChild();
+  fs.rmSync(themeDataDir, { recursive: true, force: true });
+  fs.rmSync(themeStaticDir, { recursive: true, force: true });
+}
 
 console.log(`\n结果：${pass} 通过，${fail} 失败`);
 process.exit(fail ? 1 : 0);

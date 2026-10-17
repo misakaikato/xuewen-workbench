@@ -6,15 +6,29 @@ import { useReadingPrefs, DEFAULT_PREFS } from '@/lib/prefs';
 import type { Collection, MetadataMapping, TreeNode } from '@/lib/types';
 import { Plus, Trash2, Eye } from 'lucide-react';
 import MetaImport from '@/components/MetaImport';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Label } from '@/components/ui/label';
+import { useTheme, type Theme } from '@/lib/theme';
 
 function collectDirs(node: TreeNode, out: string[]) {
   if (node.path) out.push(node.path);
   node.dirs.forEach((d) => collectDirs(d, out));
 }
 
+// 主题卡片元数据：颜色/字体取自原型令牌，仅用于预览色板
+const SERIF_STACK = '"Source Han Serif SC","Noto Serif SC","Noto Serif CJK SC","Songti SC","STSong","SimSun",serif';
+const SANS_STACK = '-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC","Noto Sans CJK SC",sans-serif';
+
+const THEME_CARDS: { id: Theme; name: string; desc: string; side: string; paper: string; line: string; acc: string; ink: string; faint: string; ui: string }[] = [
+  { id: 'A', name: '宣纸 · 书卷', desc: '暖纸色界面，朱砂强调，衬线 UI', side: '#f1e9d8', paper: '#f7f1e3', line: '#ddd0b6', acc: '#b23a24', ink: '#1f1a14', faint: '#a99a82', ui: SERIF_STACK },
+  { id: 'B', name: '现代极简', desc: '中性留白，靛蓝强调，无衬线 UI', side: '#f7f7f8', paper: '#ffffff', line: '#e8e8ec', acc: '#4f46e5', ink: '#16171b', faint: '#a3a7b0', ui: SANS_STACK },
+  { id: 'C', name: '夜读', desc: '深色夜幕，鎏金强调，衬线正文', side: '#17181c', paper: '#1b1c20', line: '#2a2b31', acc: '#d2ad62', ink: '#efe7d6', faint: '#6a655b', ui: SANS_STACK },
+];
+
 export default function Settings() {
   const { prefs, update, reset } = useReadingPrefs();
   const { tree, dsId } = useApp();
+  const { theme, setTheme } = useTheme();
   const [collections, setCollections] = useState<Collection[]>([]);
   const [mappings, setMappings] = useState<MetadataMapping[]>([]);
   const [msg, setMsg] = useState('');
@@ -50,6 +64,51 @@ export default function Settings() {
     <div className="max-w-3xl mx-auto py-6 px-4 space-y-8">
       <h1 className="text-lg font-bold">设置</h1>
       {msg && <div className="text-xs text-green-700 dark:text-green-400">{msg}</div>}
+
+      {/* 外观主题 */}
+      <section className="bg-card border border-border rounded-lg p-4">
+        <h2 className="font-medium text-sm mb-1">外观主题</h2>
+        <p className="text-xs text-muted-foreground mb-3">界面整体配色与字体，保存在本机并随应用重启保留。</p>
+        <RadioGroup
+          value={theme}
+          onValueChange={(v) => setTheme(v as Theme)}
+          aria-label="外观主题"
+          className="grid sm:grid-cols-3 gap-3"
+        >
+          {THEME_CARDS.map((t) => {
+            const on = theme === t.id;
+            return (
+              <Label
+                key={t.id}
+                className={`block rounded-lg border p-2 cursor-pointer transition-colors focus-within:ring-1 focus-within:ring-ring ${
+                  on ? 'border-primary ring-1 ring-primary' : 'border-border hover:bg-accent'
+                }`}
+              >
+                <RadioGroupItem value={t.id} className="sr-only" />
+                {/* 预览色板：迷你侧栏 + 纸面 + 强调色 + 字样 */}
+                <div className="rounded-md overflow-hidden border" style={{ borderColor: t.line }}>
+                  <div className="flex h-[74px]" style={{ background: t.paper }}>
+                    <div className="w-7 shrink-0" style={{ background: t.side, borderRight: `1px solid ${t.line}` }} />
+                    <div className="flex-1 min-w-0 px-2 py-1.5">
+                      <div className="text-[9px] leading-none" style={{ color: t.faint }}>论语 · 卷第六</div>
+                      <div className="mt-1 text-[15px] leading-tight truncate" style={{ color: t.ink, fontFamily: SERIF_STACK }}>颜渊第十二</div>
+                      <div className="mt-1.5 flex items-center gap-1.5">
+                        <span className="h-1.5 w-8 rounded-full" style={{ background: t.acc }} />
+                        <span className="text-[9px]" style={{ color: t.faint, fontFamily: t.ui }}>Aa 文</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-sm font-medium" style={{ fontFamily: t.ui }}>{t.name}</span>
+                  {on && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">当前</span>}
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">{t.desc}</div>
+              </Label>
+            );
+          })}
+        </RadioGroup>
+      </section>
 
       {/* 阅读与外观 */}
       <section className="bg-card border border-border rounded-lg p-4">

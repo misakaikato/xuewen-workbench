@@ -1,9 +1,21 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>批量文档语料工作台</title>
+    <script>
+      /* 主题防闪烁（阻塞执行）：优先服务端注入的 __WB_THEME__（打包模式随 HTML 注入），
+         其次 localStorage（开发 / 端口变化时兜底），默认 A；夜读 C 同时挂 dark 类供 tailwind 使用。 */
+      /*wb-theme*/
+      (function () {
+        var t = null;
+        try { t = window.__WB_THEME__ || localStorage.getItem('wb:theme'); } catch (e) { /* 隐私模式等 */ }
+        if (t !== 'B' && t !== 'C') t = 'A';
+        document.documentElement.dataset.theme = t;
+        if (t === 'C') document.documentElement.classList.add('dark');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

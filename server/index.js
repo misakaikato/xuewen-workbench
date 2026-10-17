@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import express from 'express';
-import { getConfig, saveConfig, dsIdFor, getState, setState, backupDir } from './store.js';
+import { getConfig, saveConfig, dsIdFor, getState, setState, backupDir, getUiSettings, saveUiSettings } from './store.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
 import { planImport, applyImport, contentHash } from './meta.js';
 import { getTrashHandler } from './trash.js';
@@ -153,6 +153,21 @@ app.post('/api/rescan', async (req, res) => {
   if (!scanner.baseDir) return res.status(409).json({ error: '尚未配置数据源' });
   await scanner.rescan();
   res.json({ ok: true, status: scanner.status() });
+});
+
+// ---------- 界面设置（外观主题；不依赖数据源，未配置时也可用） ----------
+
+app.get('/api/ui-settings', (req, res) => {
+  res.json(getUiSettings());
+});
+
+app.put('/api/ui-settings', (req, res) => {
+  const { theme } = req.body || {};
+  if (!['A', 'B', 'C'].includes(theme)) {
+    return res.status(400).json({ error: 'theme 必须是 A、B 或 C' });
+  }
+  saveUiSettings({ theme });
+  res.json({ ok: true, theme });
 });
 
 app.get('/api/status', (req, res) => {
@@ -895,11 +910,50 @@ app.get('/api/word-capability', async (req, res) => {
 
 // ---------- 前端静态资源（仅在设置 WORKBENCH_STATIC_DIR 时启用） ----------
 
-if (STATIC_DIR && fs.existsSync(path.join(STATIC_DIR, 'index.html'))) {
-  app.use(express.static(STATIC_DIR));
+// index.html 不交由 express.static 直接下发：注入持久化主题（data-theme / __WB_THEME__），
+// 让首帧就用对配色；按 mtime 缓存源文件。
+const INDEX_FILE = STATIC_DIR ? path.join(STATIC_DIR, 'index.html') : null;
+let indexCache = { mtimeMs: -1, html: '' };
+
+function themedIndexHtml() {
+  const st = fs.statSync(INDEX_FILE);
+  if (indexCache.mtimeMs !== st.mtimeMs) {
+    indexCache = { mtimeMs: st.mtimeMs, html: fs.readFileSync(INDEX_FILE, 'utf8') };
+  }
+  const { theme } = getUiSettings();
+  let html = indexCache.html;
+  // <html> 开标签：注入 data-theme；C（夜读）追加 dark 类，供 tailwind dark: 变体使用
+  html = html.replace(/<html([^>]*)>/, (_m, attrs) => {
+    let a = /\sdata-theme=/.test(attrs) ? attrs : attrs + ` data-theme="${theme}"`;
+    if (theme === 'C') {
+      a = /(^|\s)class="[^"]*"/.test(a) ? a.replace(/class="([^"]*)"/, 'class="$1 dark"') : a + ' class="dark"';
+    }
+    return '<html' + a + '>';
+  });
+  // SPA 深链（如 /read/笔记/x.md）下，vite base './' 使 './assets/...' 被解析到路由前缀而落空。
+  // 注入 <base href="/"> 兜底（仅当没有 <base> 时），让资源始终从根解析。
+  if (!/<base\s/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => m + '\n    <base href="/">');
+  // 服务端注入值优先于 localStorage；/*wb-theme*/ 是内联防闪烁脚本里的占位标记
+  const boot = `window.__WB_THEME__=${JSON.stringify(theme)};`;
+  if (html.includes('/*wb-theme*/')) html = html.replace('/*wb-theme*/', boot + '/*wb-theme*/');
+  else html = html.replace('<script', `<script>${boot}</script><script`);
+  return html;
+}
+
+if (STATIC_DIR && fs.existsSync(INDEX_FILE)) {
+  app.use(express.static(STATIC_DIR, { index: false })); // 资源照常下发，但 index.html 走注入
+  // 看似静态资源的路径（末段带静态扩展名）不做 SPA 回退：缺失时直接 404，避免把 HTML 当脚本/样式加载
+  const STATIC_EXT = /\.(?:js|mjs|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf)$/i;
+  const serveIndex = (req, res) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(themedIndexHtml());
+  };
+  app.get('/', serveIndex);
   app.use((req, res, next) => {
     if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
-    res.sendFile(path.join(STATIC_DIR, 'index.html'));
+    const lastSeg = req.path.split('/').pop() || '';
+    if (STATIC_EXT.test(path.posix.extname(lastSeg))) return res.status(404).end();
+    serveIndex(req, res); // SPA 路由回退
   });
 }
 

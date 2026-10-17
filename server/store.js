@@ -9,6 +9,8 @@ const DATA_DIR = process.env.WORKBENCH_DATA_DIR
   ? path.resolve(process.env.WORKBENCH_DATA_DIR)
   : path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+const UI_SETTINGS_FILE = path.join(DATA_DIR, 'ui-settings.json'); // 外观主题等界面设置（跨数据源、跨端口）
+const UI_THEMES = ['A', 'B', 'C'];
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -49,6 +51,19 @@ export function saveConfig(baseDir) {
   const cfg = { baseDir, savedAt: new Date().toISOString() };
   writeJsonAtomic(CONFIG_FILE, cfg);
   return { ...cfg, dsId: dsIdFor(baseDir) };
+}
+
+// 界面设置：{ theme: 'A'|'B'|'C' }，缺省 A；文件损坏时回退默认值
+export function getUiSettings() {
+  const s = readJson(UI_SETTINGS_FILE, null);
+  if (!s || typeof s !== 'object' || !UI_THEMES.includes(s.theme)) return { theme: 'A' };
+  return { theme: s.theme };
+}
+
+export function saveUiSettings(patch) {
+  const next = { ...getUiSettings(), ...patch };
+  writeJsonAtomic(UI_SETTINGS_FILE, next);
+  return next;
 }
 
 function dsDir(dsId) {

@@ -11,6 +11,7 @@ const DEV = process.argv.includes('--dev') || process.env.WORKBENCH_ELECTRON_DEV
 const HOST = '127.0.0.1';
 let win = null;
 let vite = null;
+let winBg = '#f7f1e3'; // 窗口底色：启动时按持久化主题的纸色设置，避免白闪
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -66,6 +67,11 @@ async function start() {
 
   // 进程内加载后端（随应用退出而结束）
   await import(pathToFileURL(path.join(ROOT, 'server', 'index.js')).href);
+
+  // 窗口底色随持久化主题（必须在建窗前读取；A 宣纸 / B 纯白 / C 夜读纸色）
+  const { getUiSettings } = await import(pathToFileURL(path.join(ROOT, 'server', 'store.js')).href);
+  winBg = { A: '#f7f1e3', B: '#ffffff', C: '#1b1c20' }[getUiSettings().theme] || winBg;
+
   const api = `http://${HOST}:${port}`;
   // 启动时若恢复数据源会先完成扫描再监听，给足时间
   await waitFor(api + '/api/config', 180000);
@@ -86,7 +92,7 @@ async function start() {
 function createWindow(url) {
   win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 960, minHeight: 600,
-    title: '学问 Workbench', show: false,
+    title: '学问 Workbench', show: false, backgroundColor: winBg,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.once('ready-to-show', () => win.show());

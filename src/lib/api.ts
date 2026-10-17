@@ -3,6 +3,7 @@ import type {
   ConfigResponse, FilePayload, ScanStatus, TreeNode, StatsResponse,
   SearchResult, RefResolution, Collection, MetadataMapping, TopicEntry, ConceptEntry, FileEntry,
 } from './types';
+import type { Theme } from './theme';
 
 export type DocType = '文章' | '讲稿' | '知乎';
 
@@ -65,6 +66,9 @@ const json = (method: string, body?: unknown): RequestInit => ({
 });
 
 export const api = {
+  getUiSettings: () => req<{ theme: Theme }>('/api/ui-settings'),
+  saveUiSettings: (theme: Theme) =>
+    req<{ ok: boolean; theme: Theme }>('/api/ui-settings', json('PUT', { theme })),
   getConfig: () => req<ConfigResponse>('/api/config'),
   testDir: (baseDir: string) =>
     req<{ ok: boolean; error?: string; readable?: boolean; writable?: boolean }>(

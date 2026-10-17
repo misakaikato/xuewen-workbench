@@ -4,6 +4,12 @@ module.exports = {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
+      fontFamily: {
+        ui: ["var(--font-ui)"],
+        serif: ["var(--font-serif)"],
+        mono: ["var(--font-mono)"],
+        brand: ["var(--font-brand)"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

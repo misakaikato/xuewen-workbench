@@ -205,7 +205,8 @@ export default function Read() {
 
   return (
     <div className="h-full flex min-h-0">
-      <div className="flex-1 min-w-0 overflow-auto" ref={scrollRef}>
+      {/* 阅读纸面：A 主题下带纸纹侧影（见 themes.css .wb-paper） */}
+      <div className="flex-1 min-w-0 overflow-auto wb-paper" ref={scrollRef}>
         <div className="max-w-5xl mx-auto px-4 py-5">
           {/* 面包屑与操作行 */}
           <div className="flex items-center gap-2 flex-wrap mb-4">
