@@ -1,8 +1,11 @@
-// 编辑页：仅由用户主动进入。MD 源码/预览/分栏；JSON 校验与格式化；
-// 显式保存写回原文件（原子写+备份+冲突检测）；草稿自动本地保存、打开时提示恢复。
+// 编辑页：仅由用户主动进入。MD 实时预览（默认）/源码/预览/分栏；JSON 校验与格式化；
+// 显式保存写回原文件（原子写+备份+冲突检测，字节精确：除用户改动外不变）；
+// 草稿自动本地保存、打开时提示恢复；重命名/移动时缓冲区跟随新路径不丢失。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams, useBlocker } from 'react-router-dom';
-import CodeMirror from '@uiw/react-codemirror';
+import { useNavigate, useParams, useBlocker, useLocation } from 'react-router-dom';
+import { EditorState } from '@codemirror/state';
+import type { Extension } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import { markdown } from '@codemirror/lang-markdown';
 import { json } from '@codemirror/lang-json';
 import { api } from '@/lib/api';
@@ -11,9 +14,49 @@ import { useReadingPrefs } from '@/lib/prefs';
 import { saveDraft, loadDraft, clearDraft } from '@/lib/drafts';
 import type { FilePayload } from '@/lib/types';
 import { MarkdownReader } from '@/components/MarkdownReader';
-import { Save, Undo2, AlertTriangle, X, CheckCircle2, Columns2, Eye, Code2 } from 'lucide-react';
+import { registerOpenDoc } from '@/lib/openEditor';
+import { runEntryAction, type EntryAction } from '@/lib/entryOps';
+import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
+import { editorBaseExtensions, editorBaseThemeSpec } from '@/components/editor/setup';
+import { livePreview } from '@/components/editor/livePreview';
+import { detectLineSeparator } from '@/components/editor/lineSeparator';
+import { Save, Undo2, AlertTriangle, X, CheckCircle2, Columns2, Eye, Code2, Wand2 } from 'lucide-react';
 
 type SaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
+type Mode = 'live' | 'source' | 'preview' | 'split';
+
+// e2e 测试钩子（仅 localStorage wb:e2e=1 时安装）
+declare global {
+  interface Window {
+    __wb?: {
+      editor: () => EditorView | null;
+      save: () => Promise<void>;
+      entryAction: (a: EntryAction) => Promise<{ newPath: string | null }>;
+      path: () => string;
+      isDirty: () => boolean;
+    };
+  }
+}
+
+// 相对路径解析（与 MarkdownReader 同口径）
+function joinRel(baseDir: string, rel: string): string {
+  const parts = (baseDir ? baseDir.split('/') : []).filter(Boolean);
+  for (const seg of rel.split('/')) {
+    if (seg === '.' || seg === '') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  return parts.join('/');
+}
+
+const encPath = (p: string) => p.split('/').map(encodeURIComponent).join('/');
+
+const plainTheme = EditorView.theme({ ...editorBaseThemeSpec });
+const jsonTheme = (codeFontSize: number) =>
+  EditorView.theme({
+    ...editorBaseThemeSpec,
+    '.cm-scroller': { fontFamily: 'var(--font-mono)', fontSize: codeFontSize + 'px', lineHeight: '1.65' },
+  });
 
 export default function Edit() {
   const params = useParams();
@@ -21,40 +64,103 @@ export default function Edit() {
   const { dsId } = useApp();
   const { prefs } = useReadingPrefs();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [file, setFile] = useState<FilePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [content, setContent] = useState('');
+  const [content, setContent] = useState(''); // 精确文本（含 CRLF 等，与磁盘字节一致）
   const [saveState, setSaveState] = useState<SaveState>('clean');
   const [saveMsg, setSaveMsg] = useState('');
-  const [mode, setMode] = useState<'source' | 'preview' | 'split'>('source');
+  const [mode, setMode] = useState<Mode>('live'); // .md 默认实时预览；JSON 恒为源码
+  const [lineSep, setLineSep] = useState<'\r\n' | '\n'>('\n');
+  const [loadSeq, setLoadSeq] = useState(0); // 全新加载时 +1 → 重建编辑器实例
   const [draftPrompt, setDraftPrompt] = useState<{ content: string; savedAt: number } | null>(null);
   const [conflict, setConflict] = useState<{ current: string; currentMtimeMs: number } | null>(null);
   const [jsonError, setJsonError] = useState<string | null>(null);
   const baseMtimeRef = useRef(0);
+  const baseTextRef = useRef(''); // 最近一次载入/保存时的精确文本
+  const viewRef = useRef<EditorView | null>(null);
+  const dirtyRef = useRef(false);
+  const everLoadedRef = useRef(false);
+  const prevRelPathRef = useRef<string | null>(null);
+  const pathRef = useRef(relPath);
+  pathRef.current = relPath;
   const [refNames, setRefNames] = useState<{ name: string; base: string; path: string; ext: string; dir: string }[]>([]);
   const [collections, setCollections] = useState<{ name: string }[]>([]);
 
+  const isJson = file?.type === 'json';
+  const effMode: 'source' | 'preview' | 'split' | 'live' = isJson ? 'source' : mode;
+  const isLive = effMode === 'live';
   const dirty = saveState === 'dirty' || saveState === 'error';
-  // 文件被重命名/移动/删除后由目录树带 wbFollow 跳转，不拦截（草稿已迁移）
+  dirtyRef.current = dirty;
+
+  // 文件被重命名/移动/删除后由目录树带 wbFollow 跳转，不拦截（缓冲区与草稿已随行）
   const blocker = useBlocker(({ nextLocation }) => dirty && !(nextLocation.state as { wbFollow?: boolean } | null)?.wbFollow);
 
-  // 加载文件 + 草稿检测（草稿不自动进入编辑，由用户选择恢复）
+  // 缓冲区当前精确文本（保存与脏检测都以此为准，避免 React 状态滞后）
+  const buffer = useCallback(
+    () => (viewRef.current ? viewRef.current.state.sliceDoc(0) : content),
+    [content]
+  );
+
+  const onDocChanged = useCallback(
+    (exact: string) => {
+      setContent(exact);
+      setSaveState(exact === baseTextRef.current ? 'clean' : 'dirty');
+      if (isJson) validateJson(exact);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isJson]
+  );
+
+  const validateJson = useCallback(
+    (text: string): boolean => {
+      if (!isJson) return true;
+      try {
+        JSON.parse(text);
+        setJsonError(null);
+        return true;
+      } catch (e) {
+        setJsonError((e as Error).message);
+        return false;
+      }
+    },
+    [isJson]
+  );
+
+  // 加载文件 + 草稿检测（草稿不自动进入编辑，由用户选择恢复）。
+  // wbFollow 到达的新路径 = 本文档被重命名/移动：只重绑路径与 mtime 基准，
+  // 绝不替换缓冲区（操作前已 flush，操作期间的输入也必须保留）。
   useEffect(() => {
     if (!dsId || !relPath) return;
     let dead = false;
+    const from = prevRelPathRef.current;
+    prevRelPathRef.current = relPath;
+    const rebind =
+      everLoadedRef.current && from !== null && from !== relPath &&
+      (location.state as { wbFollow?: boolean } | null)?.wbFollow === true;
     api.file(relPath)
       .then((f) => {
         if (dead) return;
         if (f.readonly) {
-          navigate('/read/' + relPath.split('/').map(encodeURIComponent).join('/'), { replace: true });
+          navigate('/read/' + encPath(relPath), { replace: true });
           return;
         }
+        everLoadedRef.current = true;
         setFile(f);
         baseMtimeRef.current = f.mtimeMs;
+        if (rebind) {
+          baseTextRef.current = viewRef.current ? viewRef.current.state.sliceDoc(0) : f.content || '';
+          return;
+        }
         const draft = loadDraft(dsId, relPath);
         if (draft && draft.content !== f.content) setDraftPrompt(draft);
-        setContent(f.content || '');
+        const text = f.content || '';
+        setContent(text);
+        baseTextRef.current = text;
+        setLineSep(detectLineSeparator(text));
+        setSaveState('clean');
+        setLoadSeq((s) => s + 1);
         api.refNames().then((n) => {
           if (!dead && n.dsId === dsId) {
             setRefNames(n.names);
@@ -85,27 +191,25 @@ export default function Edit() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [dirty]);
 
-  const isJson = file?.type === 'json';
-
-  const validateJson = useCallback(
-    (text: string): boolean => {
-      if (!isJson) return true;
-      try {
-        JSON.parse(text);
-        setJsonError(null);
-        return true;
-      } catch (e) {
-        setJsonError((e as Error).message);
-        return false;
-      }
+  // 实际写盘（抛错由调用方处理）；成功后更新基准文本与 mtime
+  const performSave = useCallback(
+    async (text: string, overrideMtime?: number) => {
+      if (!file || !dsId) throw new Error('文档尚未加载');
+      const r = await api.saveFile(relPath, text, overrideMtime ?? baseMtimeRef.current, dsId);
+      baseMtimeRef.current = r.mtimeMs;
+      baseTextRef.current = text;
+      clearDraft(dsId, relPath);
+      return r;
     },
-    [isJson]
+    [file, dsId, relPath]
   );
 
   const doSave = useCallback(
-    async (andReturn: boolean, overrideMtime?: number) => {
+    async (andReturn: boolean, overrideMtime?: number, force = false) => {
       if (!file || !dsId) return;
-      if (!validateJson(content)) {
+      const text = buffer();
+      if (!force && text === baseTextRef.current && !dirty) return;
+      if (isJson && !validateJson(text)) {
         setSaveState('error');
         setSaveMsg('JSON 语法错误，修正后才能保存');
         return;
@@ -113,14 +217,12 @@ export default function Edit() {
       setSaveState('saving');
       setSaveMsg('');
       try {
-        const r = await api.saveFile(relPath, content, overrideMtime ?? baseMtimeRef.current, dsId);
-        baseMtimeRef.current = r.mtimeMs;
-        clearDraft(dsId, relPath);
+        await performSave(text, overrideMtime);
         setConflict(null);
         setSaveState('saved');
         setSaveMsg('已保存到 ' + relPath);
         if (andReturn) {
-          navigate('/read/' + relPath.split('/').map(encodeURIComponent).join('/'));
+          navigate('/read/' + encPath(relPath));
         }
       } catch (e) {
         const err = e as Error & { conflict?: boolean; current?: string; currentMtimeMs?: number; missing?: boolean };
@@ -133,7 +235,7 @@ export default function Edit() {
         }
       }
     },
-    [file, dsId, content, relPath, navigate, validateJson]
+    [file, dsId, buffer, dirty, isJson, relPath, navigate, performSave, validateJson]
   );
 
   // Ctrl+S 保存
@@ -149,8 +251,95 @@ export default function Edit() {
     return () => window.removeEventListener('keydown', onKey);
   }, [doSave]);
 
+  // 程序化替换整个缓冲区（恢复草稿 / 重载磁盘版本 / JSON 格式化）
+  const replaceBuffer = useCallback((text: string) => {
+    const v = viewRef.current;
+    if (v) v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text } });
+    else setContent(text);
+  }, []);
+
+  // 登记为“打开中的文档”：目录树重命名/移动前会先 flush
+  const flushRef = useRef(() => Promise.resolve());
+  flushRef.current = async () => {
+    if (!file || !dsId) return;
+    const text = buffer();
+    if (text === baseTextRef.current) return; // 无修改：空操作
+    await performSave(text);
+    setSaveState('saved');
+    setSaveMsg('已自动保存：' + relPath);
+  };
+  useEffect(() => {
+    if (!dsId || !relPath || !file || file.readonly) return;
+    return registerOpenDoc({
+      path: relPath,
+      isDirty: () => {
+        const v = viewRef.current;
+        return v ? v.state.sliceDoc(0) !== baseTextRef.current : dirtyRef.current;
+      },
+      flush: () => flushRef.current(),
+    });
+  }, [dsId, relPath, file]);
+
+  // e2e 测试钩子
+  const forceSaveRef = useRef(() => Promise.resolve());
+  forceSaveRef.current = () => doSave(false, undefined, true);
+  useEffect(() => {
+    if (localStorage.getItem('wb:e2e') !== '1') return;
+    window.__wb = {
+      editor: () => viewRef.current,
+      save: () => forceSaveRef.current(),
+      entryAction: (a: EntryAction) => runEntryAction(a),
+      path: () => pathRef.current,
+      isDirty: () => {
+        const v = viewRef.current;
+        return v ? v.state.sliceDoc(0) !== baseTextRef.current : dirtyRef.current;
+      },
+    };
+    return () => {
+      if (window.__wb) delete window.__wb;
+    };
+  }, []);
+
+  // 链接打开（实时预览 Cmd/Ctrl+点击）：内部相对路径应用内导航，http(s) 外开
+  const docDirRef = useRef('');
+  docDirRef.current = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : '';
+  const navRef = useRef(navigate);
+  navRef.current = navigate;
+  const openLink = useCallback((href: string) => {
+    if (/^https?:\/\//i.test(href)) {
+      window.open(href, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    const [filePart, anchor] = href.split('#');
+    if (!filePart) return;
+    let target: string;
+    try {
+      target = joinRel(docDirRef.current, decodeURIComponent(filePart));
+    } catch {
+      return;
+    }
+    const nav = '/read/' + encPath(target);
+    navRef.current(anchor ? nav + '#' + encodeURIComponent(anchor) : nav);
+  }, []);
+
+  // 编辑器扩展：显式行分隔符保证字节精确；实时预览/源码按模式切换（重配置不重建）
+  const extensions = useMemo<Extension[]>(() => {
+    const list: Extension[] = [
+      EditorState.lineSeparator.of(lineSep),
+      ...editorBaseExtensions({ lineNumbers: !isLive, foldGutter: !isLive }),
+    ];
+    if (isJson) {
+      list.push(json(), jsonTheme(prefs.codeFontSize));
+    } else if (isLive) {
+      list.push(...livePreview({ docPath: relPath, openLink }));
+    } else {
+      list.push(markdown(), plainTheme);
+    }
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isJson, isLive, lineSep, relPath, prefs.codeFontSize]);
+
   // 路由离开拦截：使用页面内对话框（window.confirm 在部分嵌入浏览器中不可靠）
-  // blocker.state === 'blocked' 时渲染确认层
   const [leaveAction, setLeaveAction] = useState<'save' | null>(null);
   useEffect(() => {
     if (leaveAction === 'save' && blocker.state === 'blocked') {
@@ -173,21 +362,15 @@ export default function Edit() {
   }
   if (!file) return <div className="py-20 text-center text-sm text-muted-foreground">加载中…</div>;
 
-  const extensions = [isJson ? json() : markdown()];
-
   const editorEl = (
-    <CodeMirror
-      value={content}
-      height="100%"
-      theme={prefs.theme}
+    <CodeMirrorEditor
+      key={loadSeq}
+      initialDoc={content}
       extensions={extensions}
-      onChange={(v) => {
-        setContent(v);
-        setSaveState('dirty');
-        if (isJson) validateJson(v);
+      onCreate={(v) => {
+        viewRef.current = v;
       }}
-      basicSetup={{ lineNumbers: true, foldGutter: true, autocompletion: true }}
-      style={{ height: '100%', fontSize: prefs.codeFontSize }}
+      onDocChanged={onDocChanged}
     />
   );
 
@@ -217,10 +400,10 @@ export default function Edit() {
         <div className="flex-1" />
         {!isJson && (
           <div className="inline-flex rounded border border-border overflow-hidden text-xs">
-            {([['source', Code2, '源码'], ['preview', Eye, '预览'], ['split', Columns2, '分栏']] as const).map(([m, Icon, label]) => (
+            {([['live', Wand2, '实时预览'], ['source', Code2, '源码'], ['preview', Eye, '预览'], ['split', Columns2, '分栏']] as const).map(([m, Icon, label]) => (
               <button
                 key={m}
-                className={`px-2.5 py-1 flex items-center gap-1 ${mode === m ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
+                className={`px-2.5 py-1 flex items-center gap-1 ${effMode === m ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
                 onClick={() => setMode(m)}
               >
                 <Icon className="w-3.5 h-3.5" /> {label}
@@ -233,7 +416,8 @@ export default function Edit() {
             className="text-xs px-2.5 py-1 rounded border border-border hover:bg-accent"
             onClick={() => {
               try {
-                setContent(JSON.stringify(JSON.parse(content), null, 2));
+                const t = JSON.stringify(JSON.parse(buffer()), null, 2).split('\n').join(lineSep);
+                replaceBuffer(t);
                 setSaveState('dirty');
                 setJsonError(null);
               } catch (e) {
@@ -261,7 +445,7 @@ export default function Edit() {
         </button>
         <button
           className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent flex items-center gap-1"
-          onClick={() => navigate('/read/' + relPath.split('/').map(encodeURIComponent).join('/'))}
+          onClick={() => navigate('/read/' + encPath(relPath))}
         >
           <Undo2 className="w-3.5 h-3.5" /> 返回阅读
         </button>
@@ -285,11 +469,11 @@ export default function Edit() {
 
       {/* 编辑区 */}
       <div className="flex-1 min-h-0 flex">
-        {(mode === 'source' || mode === 'split' || isJson) && (
-          <div className={`min-w-0 ${mode === 'split' ? 'w-1/2 border-r border-border' : 'flex-1'}`}>{editorEl}</div>
+        {effMode !== 'preview' && (
+          <div className={`min-w-0 ${effMode === 'split' ? 'w-1/2 border-r border-border' : 'flex-1'}`}>{editorEl}</div>
         )}
-        {(mode === 'preview' || mode === 'split') && !isJson && (
-          <div className={`min-w-0 overflow-auto p-6 ${mode === 'split' ? 'w-1/2' : 'flex-1'}`}>
+        {(effMode === 'preview' || effMode === 'split') && (
+          <div className={`min-w-0 overflow-auto p-6 ${effMode === 'split' ? 'w-1/2' : 'flex-1'}`}>
             <MarkdownReader content={content} docPath={relPath} refNames={refNames} collections={collections} />
           </div>
         )}
@@ -316,7 +500,7 @@ export default function Edit() {
               <button
                 className="px-3 py-1.5 rounded bg-primary text-primary-foreground text-sm"
                 onClick={() => {
-                  setContent(draftPrompt.content);
+                  replaceBuffer(draftPrompt.content);
                   setSaveState('dirty');
                   setDraftPrompt(null);
                 }}
@@ -347,8 +531,9 @@ export default function Edit() {
               <button
                 className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent"
                 onClick={() => {
-                  setContent(conflict.current);
+                  replaceBuffer(conflict.current);
                   baseMtimeRef.current = conflict.currentMtimeMs;
+                  baseTextRef.current = conflict.current;
                   clearDraft(dsId!, relPath);
                   setConflict(null);
                   setSaveState('clean');

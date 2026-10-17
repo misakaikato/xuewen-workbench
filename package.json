@@ -13,7 +13,8 @@
     "electron:dev": "electron . --dev",
     "electron:start": "npm run build && electron .",
     "electron:build:mac": "npm run build && electron-builder --mac dmg zip --arm64 --publish never",
-    "electron:build:win": "npm run build && electron-builder --win nsis --x64 --publish never"
+    "electron:build:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "test:e2e": "npm run build && electron scripts/e2e-editor.mjs"
   },
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",

@@ -1,11 +1,10 @@
 // 目录树：动态来自扫描结果，可折叠，支持同名文件（以路径区分）
 import { useMemo, useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import type { TreeNode } from '@/lib/types';
 import { ChevronRight, ChevronDown, Folder, FolderOpen, FilePlus, FolderPlus } from 'lucide-react';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { Pencil, FolderInput, Trash2 } from 'lucide-react';
-import { loadDraft, saveDraft, clearDraft } from '@/lib/drafts';
 import { EntryActionDialogs, type EntryAction } from './EntryActionDialogs';
 import { MetaIssuesBadge } from './MetaIssuesBadge';
 import { useApp } from '@/store/app';
@@ -143,26 +142,11 @@ export function FileTree({ tree, filter }: { tree: TreeNode; filter: string }) {
   const params = useParams();
   const currentPath = params['*'] ? decodeURIComponent(params['*']) : undefined;
   const navigate = useNavigate();
-  const { refreshTree, dsId } = useApp();
-  const location = useLocation();
+  const { refreshTree } = useApp();
   const [action, setAction] = useState<EntryAction | null>(null);
-  const enc = (p: string) => p.split('/').map(encodeURIComponent).join('/');
-  // 当前打开的文档被重命名/移动时跟随到新路径（迁移草稿）；被删除时关闭
-  const onActionDone = async (a: EntryAction, newPath: string | null) => {
+  // 刷新树、迁移草稿、跟随导航均已由 runEntryAction（lib/entryOps）统一完成，这里只关闭对话框
+  const onActionDone = () => {
     setAction(null);
-    await refreshTree().catch(() => {});
-    const m = location.pathname.match(/^\/(read|edit)\//);
-    const cur = currentPath;
-    if (!m || !cur) return;
-    const affected = cur === a.path || (a.isDir && cur.startsWith(a.path + '/'));
-    if (!affected) return;
-    if (newPath === null) { navigate('/', { replace: true, state: { wbFollow: true } }); return; }
-    const next = newPath + cur.slice(a.path.length);
-    if (dsId) {
-      const d = loadDraft(dsId, cur);
-      if (d) { saveDraft(dsId, next, d.content); clearDraft(dsId, cur); }
-    }
-    navigate('/' + m[1] + '/' + enc(next), { replace: true, state: { wbFollow: true } });
   };
   const [target, setTarget] = useState<CreateTarget | null>(null);
   const onCreate: OnCreate = (dir, kind) => setTarget({ dir, kind });

@@ -88,6 +88,37 @@ async function writeTextAtomic(abs, content, bom) {
   fs.renameSync(tmp, abs);
 }
 
+// 保存后同步旁注 content_hash：仅当旁注存在且为 JSON 对象时更新哈希字段，
+// 其余键与顺序保持不变；从不新建旁注；非法旁注不动。失败不影响保存结果。
+function syncSidecarHash(abs, wroteBuf) {
+  const metaAbs = abs + SIDECAR_SUFFIX;
+  let raw;
+  try {
+    raw = fs.readFileSync(metaAbs, 'utf8');
+  } catch {
+    return; // 无旁注
+  }
+  const hash = contentHash(wroteBuf);
+  try {
+    const meta = JSON.parse(raw);
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return; // 非对象：不动
+    if (meta.content_hash === hash) return;
+    const field = /\"content_hash\"\s*:\s*\"[^\"]*\"/.exec(raw);
+    let text;
+    if (field) {
+      // 原地替换哈希值，保持其余字节不变
+      text = raw.slice(0, field.index) + '"content_hash": ' + JSON.stringify(hash) + raw.slice(field.index + field[0].length);
+    } else {
+      meta.content_hash = hash;
+      text = JSON.stringify(meta, null, 2) + '\n';
+    }
+    writeTextAtomic(metaAbs, text, false);
+  } catch (e) {
+    if (e instanceof SyntaxError) return; // 非法 JSON：保持原样
+    console.error('旁注 content_hash 更新失败:', e.message);
+  }
+}
+
 // ---------- 数据源配置 ----------
 
 app.get('/api/config', (req, res) => {
@@ -314,7 +345,10 @@ app.put('/api/file', async (req, res) => {
       fs.mkdirSync(bdir, { recursive: true });
       fs.copyFileSync(abs, path.join(bdir, path.basename(rel) + '.' + stamp + '.bak'));
       const { bom } = readTextPreserve(abs);
-      await writeTextAtomic(abs, String(content ?? ''), bom);
+      const text = String(content ?? '');
+      await writeTextAtomic(abs, text, bom);
+      // 与实际写入字节（含 BOM）一致地更新旁注 content_hash
+      syncSidecarHash(abs, Buffer.from((bom ? '﻿' : '') + text, 'utf8'));
     } else {
       if (f) return res.status(409).json({ error: '文件状态不一致，请重新扫描' });
       return res.status(404).json({ error: '文件已被外部删除，未重新创建。可将内容另存为新文件。', missing: true });
@@ -531,6 +565,65 @@ function relocate(entry, newRel) {
 
 const stemOf = (name) => name.slice(0, name.length - path.extname(name).length);
 
+// 重命名/移动时让编辑备份随行：backupDir/<旧目录>/<旧名>.*.bak → <新目录>/<新名>.*.bak；
+// 文件夹则整目录搬迁（逐文件合并，目标已存在则跳过）。失败只记日志，不影响条目操作。
+function moveBackups(dsId, oldRel, newRel, isDir) {
+  const bdir = backupDir(dsId);
+  // 只删空目录，绝不误删遗留备份
+  const pruneEmpty = (d) => {
+    let cur = path.resolve(d);
+    const stop = path.resolve(bdir);
+    while (cur.startsWith(stop + path.sep)) {
+      try {
+        fs.rmdirSync(cur);
+      } catch {
+        return;
+      }
+      cur = path.dirname(cur);
+    }
+  };
+  if (isDir) {
+    const fromDir = path.join(bdir, ...oldRel.split('/'));
+    if (!fs.existsSync(fromDir)) return;
+    const toDir = path.join(bdir, ...newRel.split('/'));
+    fs.mkdirSync(toDir, { recursive: true });
+    const walk = (src, dst) => {
+      for (const ent of fs.readdirSync(src, { withFileTypes: true })) {
+        const s = path.join(src, ent.name);
+        const d = path.join(dst, ent.name);
+        if (ent.isDirectory()) {
+          fs.mkdirSync(d, { recursive: true });
+          walk(s, d);
+          pruneEmpty(s);
+        } else if (!fs.existsSync(d)) {
+          fs.renameSync(s, d);
+        }
+      }
+    };
+    walk(fromDir, toDir);
+    pruneEmpty(fromDir);
+    return;
+  }
+  const oldDirRel = path.posix.dirname(oldRel) === '.' ? '' : path.posix.dirname(oldRel);
+  const newDirRel = path.posix.dirname(newRel) === '.' ? '' : path.posix.dirname(newRel);
+  const oldBdir = path.join(bdir, ...oldDirRel.split('/').filter(Boolean));
+  if (!fs.existsSync(oldBdir)) return;
+  const oldBase = path.posix.basename(oldRel);
+  const newBase = path.posix.basename(newRel);
+  let movedAny = false;
+  for (const f of fs.readdirSync(oldBdir)) {
+    if (!f.startsWith(oldBase + '.') || !f.endsWith('.bak')) continue;
+    const suffix = f.slice(oldBase.length); // .<时间戳>.bak
+    const targetDir = path.join(bdir, ...newDirRel.split('/').filter(Boolean));
+    const target = path.join(targetDir, newBase + suffix);
+    if (fs.existsSync(target)) continue; // 冲突：跳过
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.renameSync(path.join(oldBdir, f), target);
+    movedAny = true;
+  }
+  if (movedAny) pruneEmpty(oldBdir);
+}
+
 app.post('/api/file/rename', async (req, res) => {
   if (!requireSource(res)) return;
   const b = req.body || {};
@@ -566,6 +659,11 @@ app.post('/api/file/rename', async (req, res) => {
         // 旁注不是合法 JSON：保持原样，不修改
       }
     }
+    try {
+      moveBackups(currentDsId, entry.rel, newRel, entry.isDir);
+    } catch (be) {
+      console.error('备份随迁失败:', be.message);
+    }
     await rescanAndIndex();
     res.json({ ok: true, kind: entry.isDir ? 'folder' : 'file', oldPath: entry.rel, path: newRel, sidecar: !!moved.newMeta, titleUpdated });
   } catch (e) {
@@ -591,6 +689,11 @@ app.post('/api/file/move', async (req, res) => {
     const name = path.posix.basename(entry.rel);
     const newRel = targetDir ? targetDir + '/' + name : name;
     const moved = relocate(entry, newRel);
+    try {
+      moveBackups(currentDsId, entry.rel, newRel, entry.isDir);
+    } catch (be) {
+      console.error('备份随迁失败:', be.message);
+    }
     await rescanAndIndex();
     res.json({ ok: true, kind: entry.isDir ? 'folder' : 'file', oldPath: entry.rel, path: newRel, sidecar: !!moved.newMeta });
   } catch (e) {

@@ -1,13 +1,14 @@
 // 整体布局：顶栏（概览/数据源/全局搜索/重扫/设置）+ 可折叠侧栏（目录树）+ 内容区
 // 小屏幕侧栏变为抽屉；Escape 关闭抽屉。
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/store/app';
 import { FileTree } from './FileTree';
+import { setEntryContext } from '@/lib/entryOps';
 import { LayoutDashboard, RefreshCw, Settings, Database, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 
 export function Layout() {
-  const { config, tree, rescan } = useApp();
+  const { config, tree, rescan, dsId, refreshTree } = useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [treeFilter, setTreeFilter] = useState('');
@@ -25,6 +26,19 @@ export function Layout() {
   }, []);
 
   useEffect(() => setDrawer(false), [location.pathname]);
+
+  // 登记条目操作（重命名/移动/删除）的应用上下文：刷新树与跟随导航
+  const locRef = useRef(location);
+  locRef.current = location;
+  useEffect(() => {
+    setEntryContext({
+      dsId,
+      refreshTree,
+      navigate,
+      getLocation: () => locRef.current,
+    });
+    return () => setEntryContext(null);
+  }, [dsId, refreshTree, navigate]);
 
   const st = config?.status;
 

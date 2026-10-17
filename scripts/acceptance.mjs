@@ -559,5 +559,131 @@ try {
   fs.rmSync(themeStaticDir, { recursive: true, force: true });
 }
 
+console.log('== 15. 编辑器字节一致 ==');
+// 指向临时副本，避免碰仓库内 test-data；结束后切回 A 并删除临时目录
+const tmp15 = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-fmt-'));
+const tmpRoot15 = path.join(tmp15, 'test-data');
+fs.cpSync(path.join(ROOT, 'test-data'), tmpRoot15, { recursive: true });
+const T15 = (ds, ...p) => path.join(tmpRoot15, ds, ...p);
+const sha256b = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+const listMd = (dir) => {
+  const out = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.name.startsWith('.')) continue;
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (e.name.endsWith('.md')) out.push(f);
+    }
+  };
+  walk(dir);
+  return out.sort();
+};
+const tempDsIds = [];
+const sourcesDir15 = path.join(ROOT, 'server', 'data', 'sources');
+try {
+  // (a) ds-fmt：GET→PUT 全量往返，字节一致（含 BOM / CRLF / 混行尾 / 无末尾换行）
+  r = await post('/api/config', { baseDir: T15('ds-fmt') });
+  tempDsIds.push(r.body.dsId);
+  check('切换到临时 ds-fmt（8 个 md）', r.body.ok && r.body.status.counts.md === 8, JSON.stringify(r.body.status?.counts));
+  const dsFmt = r.body.dsId;
+  let rtOk = 0;
+  let rtTotal = 0;
+  for (const abs of listMd(T15('ds-fmt'))) {
+    const rel = path.relative(T15('ds-fmt'), abs).split(path.sep).join('/');
+    rtTotal++;
+    const before = fs.readFileSync(abs);
+    const g = await j('/api/file?path=' + encodeURIComponent(rel));
+    const p = await put('/api/file', { path: rel, content: g.body.content, baseMtimeMs: g.body.mtimeMs, dsId: dsFmt });
+    const after = fs.readFileSync(abs);
+    if (p.body.ok === true && sha256b(before) === sha256b(after)) rtOk++;
+    else check('ds-fmt 往返一致: ' + rel, false, JSON.stringify(p.body).slice(0, 120));
+  }
+  check('ds-fmt 全部 .md 打开→不改→保存 字节一致', rtOk === rtTotal && rtTotal === 8, `${rtOk}/${rtTotal}`);
+
+  // (b) ds-a / ds-b 全量 + ds-perf 抽样 20
+  for (const [ds, limit] of [['ds-a', Infinity], ['ds-b', Infinity], ['ds-perf', 20]]) {
+    const cr = await post('/api/config', { baseDir: T15(ds) });
+    tempDsIds.push(cr.body.dsId);
+    const dsIdX = cr.body.dsId;
+    const files = listMd(T15(ds)).slice(0, limit === Infinity ? undefined : limit);
+    let ok = 0;
+    for (const abs of files) {
+      const rel = path.relative(T15(ds), abs).split(path.sep).join('/');
+      const before = fs.readFileSync(abs);
+      const g = await j('/api/file?path=' + encodeURIComponent(rel));
+      const p = await put('/api/file', { path: rel, content: g.body.content, baseMtimeMs: g.body.mtimeMs, dsId: dsIdX });
+      const after = fs.readFileSync(abs);
+      if (p.body.ok === true && sha256b(before) === sha256b(after)) ok++;
+    }
+    check(`${ds} 抽样往返字节一致（${files.length} 个）`, ok === files.length, `${ok}/${files.length}`);
+  }
+
+  // (c) 单字符编辑：仅改中段，前后缀不变，长度 +1
+  r = await post('/api/config', { baseDir: T15('ds-fmt') });
+  tempDsIds.push(r.body.dsId);
+  const dsFmt2 = r.body.dsId;
+  for (const name of ['crlf.md', 'mixed-eol.md']) {
+    const abs = T15('ds-fmt', name);
+    const beforeBuf = fs.readFileSync(abs);
+    const g = await j('/api/file?path=' + encodeURIComponent(name));
+    const s = g.body.content;
+    const mid = Math.floor(s.length / 2);
+    const edited = s.slice(0, mid) + '字' + s.slice(mid);
+    const p = await put('/api/file', { path: name, content: edited, baseMtimeMs: g.body.mtimeMs, dsId: dsFmt2 });
+    const afterStr = fs.readFileSync(abs, 'utf8');
+    check(`单字符插入仅改中段: ${name}`, p.body.ok === true && afterStr === edited && afterStr.startsWith(s.slice(0, mid)) && afterStr.endsWith(s.slice(mid)) && afterStr.length === s.length + 1, JSON.stringify(p.body).slice(0, 80));
+    const p2 = await put('/api/file', { path: name, content: s, baseMtimeMs: p.body.mtimeMs, dsId: dsFmt2 });
+    check(`编辑后可还原: ${name}`, p2.body.ok === true && fs.readFileSync(abs).equals(beforeBuf));
+  }
+
+  // (d) 旁注 content_hash：有则更新（仅哈希字段、保持键序与缩进），无则不创建，非法不动
+  fs.writeFileSync(T15('ds-fmt', 'bom.md.meta.json'), JSON.stringify({ id: 'doc_fmt_bom', title: 'BOM 样例', aliases: ['bom'], content_hash: 'sha256:old' }, null, 2) + '\n');
+  {
+    const abs = T15('ds-fmt', 'bom.md');
+    const g = await j('/api/file?path=' + encodeURIComponent('bom.md'));
+    const edited = g.body.content + '\n追加一行。\n';
+    const p = await put('/api/file', { path: 'bom.md', content: edited, baseMtimeMs: g.body.mtimeMs, dsId: dsFmt2 });
+    const wroteBuf = fs.readFileSync(abs);
+    const sidecarRaw = fs.readFileSync(T15('ds-fmt', 'bom.md.meta.json'), 'utf8');
+    const meta = JSON.parse(sidecarRaw);
+    check('保存后旁注 content_hash 更新为实际字节哈希（含 BOM）', p.body.ok === true && meta.content_hash === 'sha256:' + sha256b(wroteBuf), JSON.stringify(meta));
+    check('旁注其余键与顺序保持', Object.keys(meta).join(',') === 'id,title,aliases,content_hash' && meta.id === 'doc_fmt_bom' && meta.title === 'BOM 样例');
+    check('旁注保持原缩进格式', /^{\n  "id"/.test(sidecarRaw));
+    const g2 = await j('/api/file?path=' + encodeURIComponent('crlf.md'));
+    const p2 = await put('/api/file', { path: 'crlf.md', content: g2.body.content, baseMtimeMs: g2.body.mtimeMs, dsId: dsFmt2 });
+    check('无旁注文件保存后不创建旁注', p2.body.ok && !fs.existsSync(T15('ds-fmt', 'crlf.md.meta.json')));
+    fs.writeFileSync(T15('ds-fmt', 'tabs.md.meta.json'), '{ 不是 JSON');
+    const g3 = await j('/api/file?path=' + encodeURIComponent('tabs.md'));
+    const p3 = await put('/api/file', { path: 'tabs.md', content: g3.body.content + '\n补一行\n', baseMtimeMs: g3.body.mtimeMs, dsId: dsFmt2 });
+    check('非法旁注保持原样且不影响保存', p3.body.ok === true && fs.readFileSync(T15('ds-fmt', 'tabs.md.meta.json'), 'utf8') === '{ 不是 JSON');
+  }
+
+  // (e) 编辑备份随重命名 / 移动迁移
+  r = await post('/api/config', { baseDir: T15('ds-a') });
+  tempDsIds.push(r.body.dsId);
+  const dsA15 = r.body.dsId;
+  const bdir15 = path.join(sourcesDir15, dsA15, 'backups');
+  fs.rmSync(bdir15, { recursive: true, force: true });
+  const t1 = '笔记/第1章 入门.md';
+  const g1 = await j('/api/file?path=' + encodeURIComponent(t1));
+  const s1 = await put('/api/file', { path: t1, content: g1.body.content + '\n备份触发行。\n', baseMtimeMs: g1.body.mtimeMs, dsId: dsA15 });
+  check('保存生成备份', s1.body.ok === true && fs.readdirSync(path.join(bdir15, '笔记')).some((f) => f.startsWith('第1章 入门.md.') && f.endsWith('.bak')));
+  r = await post('/api/file/rename', { dsId: dsA15, path: t1, newName: '第1章 改名' });
+  check('重命名成功', r.body.ok === true && r.body.path === '笔记/第1章 改名.md', JSON.stringify(r.body));
+  const baksOld = fs.readdirSync(path.join(bdir15, '笔记')).filter((f) => f.startsWith('第1章 入门.md.'));
+  const baksNew = fs.readdirSync(path.join(bdir15, '笔记')).filter((f) => f.startsWith('第1章 改名.md.') && f.endsWith('.bak'));
+  check('备份随重命名迁移（旧名不再有）', baksOld.length === 0 && baksNew.length >= 1, `${baksOld.length}/${baksNew.length}`);
+  const stampSuffix = baksNew[0].slice('第1章 改名.md'.length);
+  r = await post('/api/file/move', { dsId: dsA15, path: '笔记/第1章 改名.md', targetDir: '资料库' });
+  check('移动成功', r.body.ok === true && r.body.path === '资料库/第1章 改名.md', JSON.stringify(r.body));
+  check('备份随移动迁移到新目录', fs.readdirSync(path.join(bdir15, '资料库')).includes('第1章 改名.md' + stampSuffix) && !fs.existsSync(path.join(bdir15, '笔记', '第1章 改名.md' + stampSuffix)));
+  check('旧备份目录随空清理', !fs.existsSync(path.join(bdir15, '笔记')));
+} finally {
+  for (const id of tempDsIds) fs.rmSync(path.join(sourcesDir15, id), { recursive: true, force: true });
+  await post('/api/config', { baseDir: A });
+  fs.rmSync(tmp15, { recursive: true, force: true });
+}
+
 console.log(`\n结果：${pass} 通过，${fail} 失败`);
 process.exit(fail ? 1 : 0);

@@ -10,16 +10,10 @@ import {
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Folder } from 'lucide-react';
-import { api } from '@/lib/api';
+import { runEntryAction, type EntryAction } from '@/lib/entryOps';
 import type { TreeNode } from '@/lib/types';
-import { useApp } from '@/store/app';
 
-export interface EntryAction {
-  type: 'rename' | 'move' | 'delete';
-  path: string;
-  name: string;
-  isDir: boolean;
-}
+export type { EntryAction };
 
 // 结果：newPath 为 null 表示已删除
 export type EntryDone = (action: EntryAction, newPath: string | null) => void;
@@ -37,7 +31,6 @@ function flattenDirs(node: TreeNode, out: string[] = []): string[] {
 export function EntryActionDialogs({
   action, tree, onClose, onDone,
 }: { action: EntryAction | null; tree: TreeNode; onClose: () => void; onDone: EntryDone }) {
-  const { dsId } = useApp();
   const [value, setValue] = useState('');
   const [filter, setFilter] = useState('');
   const [targetDir, setTargetDir] = useState<string | null>(null);
@@ -62,12 +55,14 @@ export function EntryActionDialogs({
 
   const allDirs = useMemo(() => ['', ...flattenDirs(tree)], [tree]);
 
-  async function run(fn: () => Promise<{ path?: string | null }>, isDelete = false) {
+  // 统一走 runEntryAction：重命名/移动前先 flush 打开中的编辑器，成功后刷新树、
+  // 迁移草稿并跟随导航到新路径（wbFollow，编辑页不重置缓冲区）
+  async function run(fn: () => Promise<{ newPath: string | null }>, isDelete = false) {
     if (!action) return;
     setBusy(true); setError(null);
     try {
       const r = await fn();
-      onDone(action, isDelete ? null : r.path ?? null);
+      onDone(action, isDelete ? null : r.newPath ?? null);
     } catch (ex) {
       setError((ex as Error).message);
     } finally {
@@ -95,7 +90,7 @@ export function EntryActionDialogs({
             <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
             <AlertDialogAction
               disabled={busy}
-              onClick={(e) => { e.preventDefault(); run(() => api.deleteEntry({ dsId, path: action.path }), true); }}
+              onClick={(e) => { e.preventDefault(); run(() => runEntryAction({ ...action }), true); }}
             >
               {busy ? '删除中…' : '移到回收站'}
             </AlertDialogAction>
@@ -114,7 +109,7 @@ export function EntryActionDialogs({
             onSubmit={(e) => {
               e.preventDefault();
               if (!value.trim()) { setError('名称不能为空'); return; }
-              run(() => api.renameEntry({ dsId, path: action.path, newName: value.trim() }));
+              run(() => runEntryAction({ ...action, newName: value.trim() }));
             }}
           >
             <DialogHeader>
@@ -171,7 +166,7 @@ export function EntryActionDialogs({
           <Button type="button" variant="outline" onClick={onClose} disabled={busy}>取消</Button>
           <Button
             disabled={busy || targetDir === null}
-            onClick={() => targetDir !== null && run(() => api.moveEntry({ dsId, path: action.path, targetDir }))}
+            onClick={() => targetDir !== null && run(() => runEntryAction({ ...action, targetDir }))}
           >
             {busy ? '移动中…' : '移动到此处'}
           </Button>

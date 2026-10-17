@@ -27,6 +27,25 @@ export function clearDraft(dsId: string, path: string) {
   } catch { /* ignore */ }
 }
 
+// 重命名 / 移动后迁移草稿键：旧路径（或旧文件夹前缀下）的草稿搬到新路径
+export function migrateDrafts(dsId: string, fromPrefix: string, toPrefix: string) {
+  try {
+    const prefix = `wb:draft:${dsId}:`;
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(prefix)) keys.push(k);
+    }
+    for (const k of keys) {
+      const p = k.slice(prefix.length);
+      if (p !== fromPrefix && !p.startsWith(fromPrefix + '/')) continue;
+      const raw = localStorage.getItem(k);
+      if (raw) localStorage.setItem(prefix + toPrefix + p.slice(fromPrefix.length), raw);
+      localStorage.removeItem(k);
+    }
+  } catch { /* 容量满等异常不影响条目操作 */ }
+}
+
 // 阅读位置：按数据源 + 路径记录滚动位置
 const posKey = (dsId: string, path: string) => `wb:readpos:${dsId}:${path}`;
 
