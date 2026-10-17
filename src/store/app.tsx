@@ -1,21 +1,26 @@
-// 应用级上下文：数据源配置、扫描状态、目录树。数据源切换后统一重取，丢弃旧数据源响应。
+// 应用级上下文：资料库配置、扫描状态、目录树。支持多资料库并行，
+// 当前库由 activeId 决定；所有请求经 api 作用域携带 ds，切库后统一重取并丢弃旧库响应。
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { api } from '@/lib/api';
-import type { ConfigResponse, TreeNode } from '@/lib/types';
+import { api, setApiScope } from '@/lib/api';
+import type { ConfigResponse, LibraryInfo, TreeNode } from '@/lib/types';
 
 interface AppState {
   config: ConfigResponse | null;
+  libraries: LibraryInfo[];
   tree: TreeNode | null;
   loading: boolean;
   dsId: string | null;
   refreshConfig: () => Promise<void>;
   refreshTree: () => Promise<void>;
   rescan: () => Promise<void>;
+  activateLib: (id: string) => Promise<void>;
+  removeLib: (id: string) => Promise<void>;
 }
 
 const Ctx = createContext<AppState>({
-  config: null, tree: null, loading: true, dsId: null,
+  config: null, libraries: [], tree: null, loading: true, dsId: null,
   refreshConfig: async () => {}, refreshTree: async () => {}, rescan: async () => {},
+  activateLib: async () => {}, removeLib: async () => {},
 });
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -23,20 +28,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [loading, setLoading] = useState(true);
   const genRef = useRef(0);
+  const dsRef = useRef<string | null>(null);
 
   const refreshConfig = useCallback(async () => {
     const cfg = await api.getConfig();
     const prevGen = genRef.current;
+    const prevDs = dsRef.current;
     genRef.current = cfg.generation;
+    dsRef.current = cfg.dsId;
+    setApiScope(cfg.dsId);
     setConfig(cfg);
     setLoading(false);
-    if (cfg.configured && cfg.generation !== prevGen) {
-      // 数据源或代际变化：重取目录树
+    const dsChanged = cfg.configured && cfg.dsId !== prevDs;
+    const genChanged = cfg.configured && cfg.generation !== prevGen;
+    if (dsChanged || genChanged) {
+      // 资料库或代际变化：重取目录树
       const t = await api.tree();
-      if (genRef.current === cfg.generation) setTree(t.tree);
+      if (genRef.current === cfg.generation && dsRef.current === cfg.dsId) setTree(t.tree);
     } else if (cfg.configured && !tree) {
       const t = await api.tree().catch(() => null);
-      if (t) setTree(t.tree);
+      if (t && genRef.current === cfg.generation && dsRef.current === cfg.dsId) setTree(t.tree);
     } else if (!cfg.configured) {
       setTree(null);
     }
@@ -45,37 +56,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const refreshTree = useCallback(async () => {
     if (!config?.configured) return;
     const gen = genRef.current;
+    const ds = dsRef.current;
     const t = await api.tree();
-    if (gen === genRef.current && t.dsId === config.dsId) setTree(t.tree);
+    if (gen === genRef.current && ds === dsRef.current && t.dsId === config.dsId) setTree(t.tree);
   }, [config]);
 
   const rescan = useCallback(async () => {
     await api.rescan();
     const gen = genRef.current;
+    const ds = dsRef.current;
     const [cfg, t] = await Promise.all([api.getConfig(), api.tree().catch(() => null)]);
-    if (gen === genRef.current) {
+    if (gen === genRef.current && ds === dsRef.current) {
       setConfig(cfg);
       if (t) setTree(t.tree);
     }
   }, []);
 
+  const activateLib = useCallback(async (id: string) => {
+    await api.activateLibrary(id);
+    await refreshConfig();
+  }, [refreshConfig]);
+
+  const removeLib = useCallback(async (id: string) => {
+    await api.removeLibrary(id);
+    await refreshConfig();
+  }, [refreshConfig]);
+
   useEffect(() => {
     refreshConfig().catch(() => setLoading(false));
-    // 轮询扫描状态（文件监听触发服务端重扫后同步前端）
+    // 轮询扫描状态（文件监听触发服务端重扫后同步前端；多库时看各库 scannedAt）
     const timer = setInterval(async () => {
       try {
         const st = await api.status();
-        if (st.scannedAt && config?.status.scannedAt && st.scannedAt !== config.status.scannedAt) {
+        const active = config?.dsId ? st.libs?.[config.dsId] : null;
+        if (active?.scannedAt && config?.status.scannedAt && active.scannedAt !== config.status.scannedAt) {
           await refreshConfig();
         }
       } catch { /* 后端未就绪时忽略 */ }
     }, 5000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config?.status.scannedAt]);
+  }, [config?.dsId, config?.status.scannedAt]);
 
   return (
-    <Ctx.Provider value={{ config, tree, loading, dsId: config?.dsId ?? null, refreshConfig, refreshTree, rescan }}>
+    <Ctx.Provider value={{
+      config, libraries: config?.libraries ?? [], tree, loading, dsId: config?.dsId ?? null,
+      refreshConfig, refreshTree, rescan, activateLib, removeLib,
+    }}>
       {children}
     </Ctx.Provider>
   );

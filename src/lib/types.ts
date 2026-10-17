@@ -34,6 +34,17 @@ export interface ConfigResponse {
   dsId: string | null;
   generation: number;
   status: ScanStatus;
+  /** 已打开的全部资料库（多库并行） */
+  libraries?: LibraryInfo[];
+  activeId?: string | null;
+}
+
+/** 已打开的资料库（服务端 Lib 清单项） */
+export interface LibraryInfo {
+  id: string;
+  name: string;
+  baseDir: string;
+  status: ScanStatus;
 }
 
 export interface FilePayload {

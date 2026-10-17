@@ -10,6 +10,7 @@ import { Decoration, EditorView, ViewPlugin, WidgetType } from '@codemirror/view
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import { editorBaseThemeSpec } from './setup';
+import { getApiScope } from '@/lib/api';
 
 export interface LivePreviewOptions {
   /** 当前文档相对路径（解析相对链接 / 图片用） */
@@ -47,7 +48,10 @@ function decodeSrc(u: string): string {
 function resolveAsset(docPath: string, src: string): string {
   if (/^https?:\/\//i.test(src) || src.startsWith('data:')) return src;
   const dir = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
-  return '/api/file/raw?path=' + encodeURIComponent(joinRel(dir, decodeSrc(src)));
+  let url = '/api/file/raw?path=' + encodeURIComponent(joinRel(dir, decodeSrc(src)));
+  const ds = getApiScope(); // 编辑器实时预览的图片也要落在当前资料库
+  if (ds) url += '&ds=' + encodeURIComponent(ds);
+  return url;
 }
 
 // ---------- 活动块（显示源码的部分） ----------

@@ -185,7 +185,7 @@ export default function Settings() {
           <button className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent" onClick={reset}>
             恢复默认（{DEFAULT_PREFS.fontSize}px / {DEFAULT_PREFS.lineHeight} 行距 / 浅色）
           </button>
-          <span className="text-xs text-muted-foreground">仅影响界面呈现，不修改源文件，不清除数据源与草稿。</span>
+          <span className="text-xs text-muted-foreground">仅影响界面呈现，不修改源文件，不清除资料库与草稿。</span>
         </div>
       </section>
 

@@ -84,7 +84,7 @@ export function CreateEntryDialog({
           <form onSubmit={submit} className="space-y-4">
             <DialogHeader>
               <DialogTitle>{isDoc ? '新建文档' : '新建文件夹'}</DialogTitle>
-              <DialogDescription>位置：{target.dir || '数据源根目录'}</DialogDescription>
+              <DialogDescription>位置：{target.dir || '资料库根目录'}</DialogDescription>
             </DialogHeader>
             <div className="space-y-1.5">
               <Label htmlFor="ce-title">{isDoc ? '标题' : '文件夹名称'}</Label>

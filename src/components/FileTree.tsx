@@ -161,14 +161,14 @@ export function FileTree({ tree, filter }: { tree: TreeNode; filter: string }) {
         <button
           className="flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent"
           onClick={() => onCreate('', 'md')}
-          title="在数据源根目录新建文档"
+          title="在资料库根目录新建文档"
         >
           <FilePlus className="w-3.5 h-3.5" />新建文档
         </button>
         <button
           className="flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent"
           onClick={() => onCreate('', 'folder')}
-          title="在数据源根目录新建文件夹"
+          title="在资料库根目录新建文件夹"
         >
           <FolderPlus className="w-3.5 h-3.5" />新建文件夹
         </button>
@@ -178,7 +178,7 @@ export function FileTree({ tree, filter }: { tree: TreeNode; filter: string }) {
       <EntryActionDialogs action={action} tree={tree} onClose={() => setAction(null)} onDone={onActionDone} />
       <CreateEntryDialog target={target} onClose={() => setTarget(null)} onCreated={onCreated} />
       {tree.files.length === 0 && tree.dirs.length === 0 && (
-        <div className="text-xs text-muted-foreground p-3">数据源中没有可支持的文件（.md / .json / .doc / .docx）</div>
+        <div className="text-xs text-muted-foreground p-3">资料库中没有可支持的文件（.md / .json / .doc / .docx）</div>
       )}
     </div>
   );
