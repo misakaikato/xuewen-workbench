@@ -55,7 +55,8 @@ function buildDecorations(links: DocLink[], active: Set<number>, doc: { lineAt(p
   return Decoration.set(parts, true);
 }
 
-const alField = StateField.define<AlState>({
+// 供 corpusRefs 等扩展查询词条装饰区间，避免同一文本双重标记
+export const alField = StateField.define<AlState>({
   create() {
     return { links: [], seq: 0, deco: Decoration.none };
   },

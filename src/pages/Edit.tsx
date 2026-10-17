@@ -21,6 +21,8 @@ import { editorBaseExtensions, editorBaseThemeSpec } from '@/components/editor/s
 import { livePreview } from '@/components/editor/livePreview';
 import { mdLang } from '@/components/editor/mdLanguage';
 import { linksExtensionFor, pushDocLinks } from '@/components/editor/autoLinks';
+import { corpusRefsExtension, pushCorpusNames } from '@/components/editor/corpusRefs';
+import { CorpusRefPopover, type CorpusRefRequest } from '@/components/CorpusRefPopover';
 import { detectLineSeparator } from '@/components/editor/lineSeparator';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
 import { Save, Undo2, AlertTriangle, X, CheckCircle2, Columns2, Eye, Code2, Wand2, Link2 } from 'lucide-react';
@@ -91,6 +93,7 @@ export default function Edit() {
   const [refNames, setRefNames] = useState<{ name: string; base: string; path: string; ext: string; dir: string }[]>([]);
   const [collections, setCollections] = useState<{ name: string }[]>([]);
   const [docLinks, setDocLinks] = useState<DocLink[]>([]);
+  const [crReq, setCrReq] = useState<CorpusRefRequest | null>(null);
   const [showBacklinks, setShowBacklinks] = useState(false);
 
   const isJson = file?.type === 'json';
@@ -231,6 +234,10 @@ export default function Edit() {
     return () => pullLinksAbortRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dsId, relPath, loadSeq]);
+  // 语料引用名称清单注入编辑器（挂载与 refNames 变化时）
+  useEffect(() => {
+    pushCorpusNames(viewRef.current, refNames, collections);
+  }, [refNames, collections, loadSeq]);
   useEffect(() => {
     const h = () => pullLinks(0);
     window.addEventListener('wb-links-updated', h);
@@ -393,7 +400,14 @@ export default function Edit() {
         onOpen: (t) => openLinkTargetRef.current(t),
       }));
       if (isLive) {
-        list.push(...livePreview({ docPath: relPath, openLink }));
+        list.push(
+          ...livePreview({ docPath: relPath, openLink }),
+          ...corpusRefsExtension({
+            names: [],
+            collections: [],
+            onOpen: (url, at) => setCrReq({ url, ...at }),
+          })
+        );
       } else {
         list.push(...mdLang(), plainTheme);
       }
@@ -560,6 +574,9 @@ export default function Edit() {
           </aside>
         )}
       </div>
+
+      {/* 语料引用解析弹层 */}
+      <CorpusRefPopover req={crReq} onClose={() => setCrReq(null)} />
 
       {/* 草稿恢复提示 */}
       {draftPrompt && (
