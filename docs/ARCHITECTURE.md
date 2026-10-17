@@ -356,7 +356,8 @@ flowchart TB
 | `electron:build:win` | Windows NSIS 安装包 | 已配置未构建；定为在主人 Windows 电脑本地执行 `npm run electron:build:win` |
 
 ### 9.2 打包现状
-- macOS 产物：`release/Xuewen Workbench-0.1.0-arm64-mac.zip`（约 148 MB），.app 可启动；应用体积 402 MB（加壳时测得）。
+- macOS 产物：`release/Xuewen Workbench-0.1.0-arm64-mac.zip`（约 148 MB）与 `.dmg`（2026-10-18 起含应用图标），.app 可启动；应用体积 402 MB（加壳时测得）。
+- **DMG 构建环境坑（2026-10-18 定位）**：dmgbuild 最后一步是非强制卸载，若本机 CoreSimulatorService（Xcode 模拟器服务，常有 root 实例）卡在 "Simulators are still shutting down" 状态，它会通过 DiskArbitration 否决**一切**非强制卸载（连 `hdiutil convert` 也被牵连），任何工具都造不出 DMG；pkill 该服务后自动重生并复发，只有清理相关进程/重启才能解除。诊断与后备：`node scripts/make-dmg.mjs`（自检 hdiutil 健康并给出修复命令；健康时提供无 Finder AppleScript 的纯净 DMG 路径）。
 - 瘦身【已定未做】：把仅前端用的依赖移到 devDependencies（前端已被 Vite 打成静态文件）。
 - Windows 构建【已定】：在主人的 Windows 电脑上本地构建，不用云端 CI。
 - 向量模型不进安装包（见 5.2）。
