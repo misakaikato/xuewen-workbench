@@ -6,6 +6,7 @@ import path from 'node:path';
 import express from 'express';
 import { getConfig, saveConfig, dsIdFor, getState, setState, backupDir } from './store.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
+import { planImport, applyImport, contentHash } from './meta.js';
 import { getTrashHandler } from './trash.js';
 import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
@@ -412,17 +413,19 @@ app.post('/api/file/create', async (req, res) => {
       return res.status(409).json({ error: pathTaken(abs) ? '同名文档已存在' : '同名元数据文件已存在（' + name + SIDECAR_SUFFIX + '）', exists: true, path: rel });
     }
     const now = new Date();
+    const body = '# ' + title + '\n';
     const meta = {
       id: 'doc_' + crypto.randomUUID(),
       title,
       type: docType,
       date: localDate(now),
-      source_url: null,
+      source_url: '',
       aliases: [],
       tags: [],
+      content_hash: contentHash(Buffer.from(body, 'utf8')), // 与实际写入字节一致
       created_at: now.toISOString(),
     };
-    await writeTextAtomic(abs, '# ' + title + '\n', false);
+    await writeTextAtomic(abs, body, false);
     try {
       await writeTextAtomic(metaAbs, JSON.stringify(meta, null, 2) + '\n', false);
     } catch (e) {
@@ -672,6 +675,38 @@ app.get('/api/meta/issues', (req, res) => {
   if (!requireSource(res)) return;
   const issues = computeMetaIssues(scanner.snapshot);
   res.json({ dsId: currentDsId, scannedAt: scanner.snapshot.scannedAt, total: issues.length, issues });
+});
+
+// ---------- AI 元数据导入（JSONL → 旁注） ----------
+
+// 导入行 path 校验：拒绝反斜杠/绝对路径/../盘符，且必须与规范化相对路径完全一致，再限制在数据源内
+function resolveDocPath(raw) {
+  const s = String(raw);
+  if (s.includes('\\')) throw badRequest('path 越界');
+  const rel = validateRelDir(s);
+  if (rel !== s) throw badRequest('path 越界'); // . 段、空段、被规范化们一律拒绝
+  return resolveWithin(rel);
+}
+
+// body: { dsId, jsonl: string, mode: 'preview'|'apply', overwrite?: boolean }
+// 逐行解析校验并给出计划；apply 时重新计算同一计划后写入（只写旁注，绝不改文档），完成后重扫重建索引
+app.post('/api/meta/import', async (req, res) => {
+  if (!requireSource(res)) return;
+  const b = req.body || {};
+  if (!checkDsId(b, res)) return;
+  const mode = b.mode ?? 'preview';
+  if (!['preview', 'apply'].includes(mode)) return res.status(400).json({ error: 'mode 必须是 preview 或 apply' });
+  if (typeof b.jsonl !== 'string') return res.status(400).json({ error: 'jsonl 必须是字符串' });
+  const nonEmpty = b.jsonl.split(/\r?\n/).filter((l) => l.trim()).length;
+  if (nonEmpty > 20000) return res.status(400).json({ error: '非空行数超过上限 20000' });
+  try {
+    const args = { baseDir: scanner.baseDir, text: b.jsonl, overwrite: b.overwrite === true, resolveDocPath };
+    const { summary, items, errors } = mode === 'apply' ? applyImport(args) : planImport(args);
+    if (mode === 'apply') await rescanAndIndex();
+    res.json({ dsId: currentDsId, mode, overwrite: b.overwrite === true, summary, items, errors });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: '导入失败: ' + e.message });
+  }
 });
 
 // ---------- 检索与引用 ----------

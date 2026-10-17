@@ -46,6 +46,8 @@
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@uiw/react-codemirror": "^4.25.12",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "chokidar": "^5.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -110,6 +112,7 @@
     "files": [
       "dist/**/*",
       "server/**/*.js",
+      "schema/**/*.json",
       "electron/**/*",
       "package.json",
       "!server/data{,/**/*}"

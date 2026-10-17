@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corpus-workbench.local/schema/meta-import.schema.json",
+  "title": "元数据导入行",
+  "description": "AI 产出的 JSONL 导入文件中的一行：以文档相对路径定位，仅提供需要写入的字段。id / created_at / content_hash 由应用生成，不允许出现在导入行中。",
+  "type": "object",
+  "properties": {
+    "path": {
+      "description": "文档在数据源内的相对路径（含扩展名）",
+      "type": "string",
+      "minLength": 1
+    },
+    "title": { "$ref": "meta.schema.json#/properties/title" },
+    "type": { "$ref": "meta.schema.json#/properties/type" },
+    "date": { "$ref": "meta.schema.json#/properties/date" },
+    "source_url": { "$ref": "meta.schema.json#/properties/source_url" },
+    "aliases": { "$ref": "meta.schema.json#/properties/aliases" },
+    "tags": { "$ref": "meta.schema.json#/properties/tags" },
+    "confidence": {
+      "description": "各字段的置信度（0 到 1），仅用于人工复核，不写入旁注",
+      "type": "object",
+      "propertyNames": {
+        "enum": ["title", "type", "date", "source_url", "aliases", "tags"]
+      },
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
+    },
+    "notes": {
+      "description": "备注，仅用于人工复核，不写入旁注",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": ["path"]
+}

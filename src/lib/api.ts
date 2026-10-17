@@ -16,6 +16,35 @@ export interface MetaIssue {
   candidates?: string[];
 }
 
+export interface MetaImportItem {
+  line: number;
+  path: string;
+  action: 'create' | 'update' | 'skip';
+  fields?: Record<string, unknown>; // 新建：拟定字段；更新：仅变化字段 {field:{from,to}}
+  reason?: string;
+  confidence?: Record<string, number>;
+  notes?: string;
+}
+
+export interface MetaImportSummary {
+  lines: number;
+  valid: number;
+  errors: number;
+  create: number;
+  update: number;
+  skip: number;
+  written?: number; // 仅 apply
+}
+
+export interface MetaImportResponse {
+  dsId: string | null;
+  mode: 'preview' | 'apply';
+  overwrite: boolean;
+  summary: MetaImportSummary;
+  items: MetaImportItem[];
+  errors: { line: number; path?: string; error: string }[];
+}
+
 type EntryResult = { ok: boolean; kind: 'file' | 'folder'; oldPath?: string; path: string };
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
@@ -60,6 +89,8 @@ export const api = {
   deleteEntry: (body: { dsId: string | null; path: string }) =>
     req<EntryResult & { trashedTo: 'os' | 'local'; trashPath: string | null }>('/api/file/delete', json('POST', body)),
   metaIssues: () => req<{ dsId: string; total: number; issues: MetaIssue[] }>('/api/meta/issues'),
+  importMeta: (body: { dsId: string | null; jsonl: string; mode: 'preview' | 'apply'; overwrite?: boolean }) =>
+    req<MetaImportResponse>('/api/meta/import', json('POST', body)),
   search: (q: string, opts: { types?: string[]; dir?: string; exclude?: string[] } = {}) => {
     const p = new URLSearchParams({ q });
     if (opts.types?.length) p.set('types', opts.types.join(','));

@@ -5,6 +5,7 @@ import { useApp } from '@/store/app';
 import { useReadingPrefs, DEFAULT_PREFS } from '@/lib/prefs';
 import type { Collection, MetadataMapping, TreeNode } from '@/lib/types';
 import { Plus, Trash2, Eye } from 'lucide-react';
+import MetaImport from '@/components/MetaImport';
 
 function collectDirs(node: TreeNode, out: string[]) {
   if (node.path) out.push(node.path);
@@ -265,6 +266,9 @@ export default function Settings() {
           <Plus className="w-3.5 h-3.5" /> 新增元数据来源
         </button>
       </section>
+
+      {/* 导入元数据 */}
+      <MetaImport />
     </div>
   );
 }

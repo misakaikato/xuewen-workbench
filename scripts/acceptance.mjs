@@ -2,7 +2,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { validateMeta } from '../server/meta.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const A = path.join(ROOT, 'test-data', 'ds-a');
@@ -164,8 +166,10 @@ let meta = null;
 try { meta = JSON.parse(fs.readFileSync(metaAbs, 'utf8')); } catch { /* invalid */ }
 check('旁注为合法 JSON（2 空格缩进）', !!meta && fs.readFileSync(metaAbs, 'utf8').startsWith('{\n  "id"'));
 check('旁注含 id/title/type/date 等字段', !!meta && /^doc_[0-9a-f-]{36}$/.test(meta.id) && meta.title === '验收新建讲稿 庚辛壬癸' &&
-  meta.type === '讲稿' && /^\d{4}-\d{2}-\d{2}$/.test(meta.date) && meta.source_url === null &&
+  meta.type === '讲稿' && /^\d{4}-\d{2}-\d{2}$/.test(meta.date) && meta.source_url === '' &&
   Array.isArray(meta.aliases) && meta.aliases.length === 0 && Array.isArray(meta.tags) && !isNaN(Date.parse(meta.created_at)), JSON.stringify(meta));
+const mv11 = validateMeta(meta);
+check('新建旁注通过 meta.schema.json 校验', mv11.ok, JSON.stringify(mv11.errors));
 r = await j('/api/tree');
 const paths2 = []; const dirs2 = [];
 (function walk(n) { n.files.forEach(f => paths2.push(f.path)); n.dirs.forEach(d => { dirs2.push(d.path); walk(d); }); })(r.body.tree);
@@ -334,6 +338,124 @@ check('报告疑似外部移动（同 id 旁注在原处）', iss.some(i => i.ki
 check('无旁注的普通文档不算问题', iss.every(i => JSON.stringify(i).includes('验收')), JSON.stringify(iss));
 check('问题报告不做任何修改', fs.existsSync(N('笔记/验收孤立.md') + '.meta.json') && fs.existsSync(N('笔记/验收外移.md') + '.meta.json'));
 cleanup12();
+await post('/api/rescan');
+r = await j('/api/meta/issues');
+check('清理后问题列表为空', r.body.total === 0, JSON.stringify(r.body.issues));
+
+console.log('== 13. 元数据导入 ==');
+r = await post('/api/config', { baseDir: A });
+const ds13 = r.body.dsId;
+const N13 = (p) => path.join(A, ...p.split('/'));
+const sidecars13 = ['笔记/第1章 入门.md', '笔记/第2章 进阶.md', '资料库/同名文件.md', 'word/报告 2024.docx'].map((p) => p + '.meta.json');
+const cleanup13 = () => sidecars13.forEach((p) => fs.rmSync(N13(p), { force: true }));
+cleanup13();
+const sha256 = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+const readM13 = (rel) => JSON.parse(fs.readFileSync(N13(rel) + '.meta.json', 'utf8'));
+const imp = (body) => post('/api/meta/import', { dsId: ds13, ...body });
+const jsonlA = [
+  JSON.stringify({ path: '笔记/第1章 入门.md', title: '入门讲稿（AI 拟）', type: '讲稿', date: '2024-05', source_url: 'https://example.com/a', tags: ['x'], confidence: { title: 0.9 }, notes: '依据正文首段' }),
+  JSON.stringify({ path: 'word/报告 2024.docx' }),
+].join('\n');
+const docBefore13 = Object.fromEntries(['笔记/第1章 入门.md', 'word/报告 2024.docx'].map((p) => [p, sha256(N13(p))]));
+
+// (a) 预览：不写盘
+r = await imp({ jsonl: jsonlA, mode: 'preview' });
+check('预览 create=2 且无错误', r.status === 200 && r.body.mode === 'preview' && r.body.overwrite === false &&
+  r.body.summary.lines === 2 && r.body.summary.valid === 2 && r.body.summary.create === 2 && r.body.summary.errors === 0, JSON.stringify(r.body.summary));
+check('预览不写任何旁注', sidecars13.every((p) => !fs.existsSync(N13(p))));
+const itDocx = r.body.items.find((i) => i.path === 'word/报告 2024.docx');
+check('docx 标题默认为文件名主体', itDocx?.action === 'create' && itDocx?.fields?.title === '报告 2024' && itDocx?.fields?.type === '' && itDocx?.fields?.date === '', JSON.stringify(itDocx));
+const it1 = r.body.items.find((i) => i.path === '笔记/第1章 入门.md');
+check('items 含置信度/备注且不含 id/created_at/content_hash', it1?.confidence?.title === 0.9 && it1?.notes === '依据正文首段' &&
+  it1?.fields && !('id' in it1.fields) && !('created_at' in it1.fields) && !('content_hash' in it1.fields), JSON.stringify(it1));
+
+// (b) 应用：写入旁注，文档字节不变
+r = await imp({ jsonl: jsonlA, mode: 'apply' });
+check('apply 写入 2 个旁注', r.status === 200 && r.body.summary.written === 2 && r.body.summary.create === 2 && r.body.summary.errors === 0, JSON.stringify(r.body.summary));
+check('旁注文件已存在', fs.existsSync(N13('笔记/第1章 入门.md.meta.json')) && fs.existsSync(N13('word/报告 2024.docx.meta.json')));
+const m13 = readM13('笔记/第1章 入门.md');
+const vm13 = validateMeta(m13);
+check('旁注通过 meta.schema.json 校验', vm13.ok, JSON.stringify(vm13.errors));
+check('id/created_at 形如预期', /^doc_[0-9a-f-]{36}$/.test(m13.id) && !isNaN(Date.parse(m13.created_at)));
+check('content_hash 与文档字节一致', m13.content_hash === 'sha256:' + sha256(N13('笔记/第1章 入门.md')));
+check('confidence/notes/path 不写入旁注', !('confidence' in m13) && !('notes' in m13) && !('path' in m13));
+check('字段值正确写入', m13.title === '入门讲稿（AI 拟）' && m13.type === '讲稿' && m13.date === '2024-05' && m13.source_url === 'https://example.com/a' && JSON.stringify(m13.tags) === '["x"]' && Array.isArray(m13.aliases));
+const mDocx13 = readM13('word/报告 2024.docx');
+check('docx 旁注默认字段且哈希一致', validateMeta(mDocx13).ok && mDocx13.title === '报告 2024' && mDocx13.type === '' && mDocx13.date === '' && mDocx13.source_url === '' && mDocx13.content_hash === 'sha256:' + sha256(N13('word/报告 2024.docx')), JSON.stringify(mDocx13));
+check('文档字节保持不变', ['笔记/第1章 入门.md', 'word/报告 2024.docx'].every((p) => sha256(N13(p)) === docBefore13[p]));
+
+// (c) 幂等
+r = await imp({ jsonl: jsonlA, mode: 'apply' });
+check('重复 apply 幂等（written 0 / skip 2）', r.body.summary.written === 0 && r.body.summary.skip === 2 && r.body.summary.create === 0, JSON.stringify(r.body.summary));
+check('跳过原因正确', r.body.items.every((i) => i.action === 'skip' && i.reason === '已有元数据，未覆盖'));
+
+// (d) 逐行错误：坏 JSON / 非法字段值 / 多余字段 / 缺 path
+const jsonlD = [
+  JSON.stringify({ path: '笔记/第2章 进阶.md', title: '进阶（AI 拟）' }),
+  '{"path": "笔记/第2章 进阶.md", "title": ',
+  JSON.stringify({ path: '笔记/第2章 进阶.md', type: '小说' }),
+  JSON.stringify({ path: '笔记/第2章 进阶.md', date: '2024-13' }),
+  JSON.stringify({ path: '笔记/第2章 进阶.md', source_url: 'not a url' }),
+  JSON.stringify({ path: '笔记/第2章 进阶.md', id: 'doc_x' }),
+  JSON.stringify({ path: '笔记/第2章 进阶.md', aliases: ['a', 'a'] }),
+  JSON.stringify({ path: '笔记/第2章 进阶.md', confidence: { title: 2 } }),
+  JSON.stringify({ title: '缺路径' }),
+].join('\n');
+r = await imp({ jsonl: jsonlD, mode: 'preview' });
+check('坏行逐条报告且行号正确', r.body.summary.errors === 8 && r.body.summary.create === 1 &&
+  JSON.stringify(r.body.errors.map((e) => e.line)) === '[2,3,4,5,6,7,8,9]', JSON.stringify(r.body.errors.map((e) => e.line)));
+check('错误信息指向具体字段', r.body.errors.some((e) => e.line === 3 && e.error.includes('/type')) && r.body.errors.some((e) => e.line === 4 && e.error.includes('/date')) &&
+  r.body.errors.some((e) => e.line === 6 && e.error.includes('id')) && r.body.errors.some((e) => e.line === 9 && e.error.includes('path')), JSON.stringify(r.body.errors));
+check('同批有效行仍被处理', r.body.items.length === 1 && r.body.items[0].path === '笔记/第2章 进阶.md' && r.body.items[0].action === 'create');
+
+// (e) 路径类错误：未知 / 越界 / 反斜杠 / 旁注本身 / 重复
+const jsonlE = [
+  JSON.stringify({ path: '笔记/不存在.md' }),
+  JSON.stringify({ path: '../ds-b/笔记/第1章 入门.md' }),
+  JSON.stringify({ path: '/etc/hosts' }),
+  JSON.stringify({ path: '笔记\\第2章 进阶.md' }),
+  JSON.stringify({ path: '笔记/第1章 入门.md.meta.json' }),
+  JSON.stringify({ path: '资料库/同名文件.md' }),
+  JSON.stringify({ path: '资料库/同名文件.md' }),
+].join('\n');
+r = await imp({ jsonl: jsonlE, mode: 'preview' });
+check('未知路径报错', r.body.errors.some((e) => e.line === 1 && e.error.includes('不存在')), JSON.stringify(r.body.errors));
+check('越界/绝对/反斜杠路径一律拒绝', [2, 3, 4].every((n) => r.body.errors.some((e) => e.line === n && e.error.includes('path 越界'))), JSON.stringify(r.body.errors));
+check('旁注路径本身报错', r.body.errors.some((e) => e.line === 5 && e.error.includes('元数据')));
+check('重复 path 第二次报错且首次有效', r.body.errors.some((e) => e.line === 7 && e.error.includes('重复')) && r.body.summary.create === 1, JSON.stringify(r.body.summary));
+
+// (f) 覆盖合并：id/created_at 不变，只合并提供字段
+const jsonlF1 = JSON.stringify({ path: '笔记/第1章 入门.md', title: '不会被写入' });
+r = await imp({ jsonl: jsonlF1, mode: 'apply', overwrite: false });
+check('已有旁注且不覆盖 → 跳过', r.body.summary.written === 0 && r.body.summary.skip === 1 && readM13('笔记/第1章 入门.md').title === '入门讲稿（AI 拟）', JSON.stringify(r.body.summary));
+const before13 = readM13('笔记/第1章 入门.md');
+const jsonlF2 = JSON.stringify({ path: '笔记/第1章 入门.md', tags: ['y', 'z'] });
+r = await imp({ jsonl: jsonlF2, mode: 'preview', overwrite: true });
+check('覆盖模式预览 update 仅变化字段', r.body.summary.update === 1 && JSON.stringify(Object.keys(r.body.items[0].fields || {})) === '["tags"]' &&
+  JSON.stringify(r.body.items[0].fields?.tags?.to) === '["y","z"]', JSON.stringify(r.body.items[0]));
+r = await imp({ jsonl: jsonlF2, mode: 'apply', overwrite: true });
+check('覆盖更新写入 1 个', r.body.summary.written === 1 && r.body.summary.update === 1, JSON.stringify(r.body.summary));
+const after13 = readM13('笔记/第1章 入门.md');
+check('id/created_at/其余字段保持不变', after13.id === before13.id && after13.created_at === before13.created_at && after13.title === before13.title &&
+  after13.type === '讲稿' && after13.date === '2024-05' && after13.source_url === before13.source_url, JSON.stringify(after13));
+check('tags 已合并为 y,z', JSON.stringify(after13.tags) === '["y","z"]');
+r = await imp({ jsonl: jsonlF2, mode: 'apply', overwrite: true });
+check('重复覆盖导入 → 无变化跳过', r.body.summary.written === 0 && r.body.summary.skip === 1 && r.body.items[0]?.reason === '无变化', JSON.stringify(r.body.summary));
+
+// (g) 参数校验
+r = await post('/api/meta/import', { dsId: 'stale000', jsonl: jsonlA, mode: 'preview' });
+check('旧 dsId 导入被拒绝', r.status === 409 && r.body.stale === true, String(r.status));
+r = await imp({ jsonl: jsonlA, mode: 'bogus' });
+check('非法 mode 返回 400', r.status === 400, String(r.status));
+r = await imp({ jsonl: 123, mode: 'preview' });
+check('jsonl 非字符串返回 400', r.status === 400, String(r.status));
+
+// (h) 收尾：树隐藏旁注，清理后无问题
+r = await j('/api/tree'); // 此时旁注仍在磁盘（最近一次 apply 已重扫）
+const paths13 = [];
+(function walk(n) { n.files.forEach((f) => paths13.push(f.path)); n.dirs.forEach(walk); })(r.body.tree);
+check('导入后目录树仍隐藏 .meta.json', paths13.includes('笔记/第1章 入门.md') && !paths13.some((p) => p.endsWith('.meta.json')));
+cleanup13();
 await post('/api/rescan');
 r = await j('/api/meta/issues');
 check('清理后问题列表为空', r.body.total === 0, JSON.stringify(r.body.issues));

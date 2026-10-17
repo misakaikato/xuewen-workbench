@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corpus-workbench.local/schema/meta.schema.json",
+  "title": "文档元数据旁注",
+  "description": "文档旁注文件 <文件名>.meta.json 的结构。旁注只描述文档，不修改文档本身。",
+  "type": "object",
+  "properties": {
+    "id": {
+      "description": "文档唯一标识，创建后永不改变",
+      "type": "string",
+      "pattern": "^doc_[0-9a-f-]{36}$"
+    },
+    "title": {
+      "description": "文档标题（去首尾空白后不能为空）",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "type": {
+      "description": "文档类型：文章 / 讲稿 / 知乎，空字符串表示未分类",
+      "enum": ["文章", "讲稿", "知乎", ""]
+    },
+    "date": {
+      "description": "写作日期：空字符串、年、年-月 或 年-月-日",
+      "type": "string",
+      "pattern": "^(|\\d{4}|\\d{4}-(0[1-9]|1[0-2])|\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01]))$"
+    },
+    "source_url": {
+      "description": "来源链接，空字符串表示无",
+      "anyOf": [
+        { "const": "" },
+        { "type": "string", "format": "uri" }
+      ]
+    },
+    "aliases": {
+      "description": "别名列表，不允许重复",
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "tags": {
+      "description": "标签列表，不允许重复",
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "created_at": {
+      "description": "旁注创建时间（ISO 8601）",
+      "type": "string",
+      "format": "date-time"
+    },
+    "content_hash": {
+      "description": "文档原始字节的 SHA-256 哈希（sha256: 前缀 + 十六进制）",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": ["id", "title"]
+}
