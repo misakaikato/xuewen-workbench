@@ -8,6 +8,9 @@ import { Plus, Trash2, Eye, ShieldBan } from 'lucide-react';
 import MetaImport from '@/components/MetaImport';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
+import {
+  Select as UISelect, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 import { useTheme, type Theme } from '@/lib/theme';
 
 function collectDirs(node: TreeNode, out: string[]) {
@@ -124,26 +127,28 @@ export default function Settings() {
         <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
           <label className="flex items-center gap-2">
             <span className="w-24 text-muted-foreground">正文字体</span>
-            <select
-              value={prefs.font}
-              onChange={(e) => update({ font: e.target.value as typeof prefs.font })}
-              className="flex-1 px-2 py-1.5 rounded border border-input bg-background text-sm"
-            >
-              <option value="serif">衬线（宋体系）</option>
-              <option value="sans">无衬线（黑体系）</option>
-              <option value="mono">等宽</option>
-            </select>
+            <UISelect value={prefs.font} onValueChange={(v) => update({ font: v as typeof prefs.font })}>
+              <SelectTrigger className="flex-1 h-8 w-auto text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="serif">衬线（宋体系）</SelectItem>
+                <SelectItem value="sans">无衬线（黑体系）</SelectItem>
+                <SelectItem value="mono">等宽</SelectItem>
+              </SelectContent>
+            </UISelect>
           </label>
           <label className="flex items-center gap-2">
             <span className="w-24 text-muted-foreground">主题</span>
-            <select
-              value={prefs.theme}
-              onChange={(e) => update({ theme: e.target.value as typeof prefs.theme })}
-              className="flex-1 px-2 py-1.5 rounded border border-input bg-background text-sm"
-            >
-              <option value="light">浅色</option>
-              <option value="dark">深色</option>
-            </select>
+            <UISelect value={prefs.theme} onValueChange={(v) => update({ theme: v as typeof prefs.theme })}>
+              <SelectTrigger className="flex-1 h-8 w-auto text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="light">浅色</SelectItem>
+                <SelectItem value="dark">深色</SelectItem>
+              </SelectContent>
+            </UISelect>
           </label>
           <label className="flex items-center gap-2">
             <span className="w-24 text-muted-foreground">字号 (px)</span>

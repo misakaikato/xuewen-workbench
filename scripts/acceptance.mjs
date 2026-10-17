@@ -494,6 +494,29 @@ check('C 的 --background 为深色（亮度 < 20%）', !!cBg && parseFloat(cBg[
 const indexHtmlSrc = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
 check('index.html 内联脚本读取 wb:theme', indexHtmlSrc.includes("'wb:theme'") && indexHtmlSrc.includes('dataset.theme'));
 
+// (a2) 原生控件主题化：滚动条/选区/accent 走主题令牌；设置页不再用原生 select
+const indexCssSrc = fs.readFileSync(path.join(ROOT, 'src', 'index.css'), 'utf8');
+check('全局滚动条样式存在（Chromium）', indexCssSrc.includes('::-webkit-scrollbar') && indexCssSrc.includes('::-webkit-scrollbar-thumb'));
+check('全局滚动条样式存在（Firefox）', indexCssSrc.includes('scrollbar-width') && indexCssSrc.includes('scrollbar-color'));
+check('滚动条拇指引用主题令牌', /::-webkit-scrollbar-thumb\s*\{[^}]*var\(--muted-foreground\)/s.test(indexCssSrc));
+check('选区颜色引用主题令牌', /::selection\s*\{[^}]*var\(--primary\)/s.test(indexCssSrc));
+check('原生表单控件 accent 引用主题令牌', /input\[type="range"\]\s*\{[^}]*accent-color:\s*hsl\(var\(--primary\)\)/s.test(indexCssSrc));
+const settingsSrc = fs.readFileSync(path.join(ROOT, 'src', 'pages', 'Settings.tsx'), 'utf8');
+check('设置页无原生 select', !settingsSrc.includes('<select'));
+
+// (a3) Logo 资产与集成
+check('图标源文件存在（1024）', fs.existsSync(path.join(ROOT, 'assets', 'icons', 'icon.png')));
+for (const s of [512, 192, 64, 32]) {
+  check('public/logo-' + s + '.png 存在', fs.existsSync(path.join(ROOT, 'public', 'logo-' + s + '.png')));
+}
+check('index.html 引用 favicon', /rel="icon"[^>]*logo-32\.png/.test(indexHtmlSrc));
+const electronMainSrc = fs.readFileSync(path.join(ROOT, 'electron', 'main.js'), 'utf8');
+check('Electron 窗口设置 icon', /icon:\s*path\.join\(ROOT,\s*'assets',\s*'icons',\s*'icon\.png'\)/.test(electronMainSrc));
+const pkgSrc = fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8');
+check('electron-builder 配置 icon', /"icon"\s*:\s*"assets\/icons\/icon\.png"/.test(pkgSrc));
+const layoutSrc = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Layout.tsx'), 'utf8');
+check('顶栏渲染 logo 图片', /<img[^>]*logo-32\.png/.test(layoutSrc));
+
 // (b) 独立服务进程：临时数据目录 + 静态目录（最小 index.html 夹具），验证持久化与注入
 const THEME_PORT = 7499;
 const TB = 'http://127.0.0.1:' + THEME_PORT;
