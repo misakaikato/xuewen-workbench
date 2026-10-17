@@ -1,0 +1,186 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== 设计规则（tokens）=====
+   纸白背景、暖灰结构色、墨色正文、朱砂单一强调色。
+   正文行宽受限、行距充足；统计数字用等宽数字（tabular-nums）。
+   阅读偏好通过 CSS 变量注入：--rd-font/--rd-size/--rd-line/--rd-para/--rd-width/--rd-code-size。
+*/
+
+@layer base {
+  :root {
+    --background: 42 30% 97%;
+    --foreground: 30 10% 15%;
+    --card: 42 30% 98.5%;
+    --card-foreground: 30 10% 15%;
+    --popover: 42 30% 98.5%;
+    --popover-foreground: 30 10% 15%;
+    --primary: 8 55% 40%;
+    --primary-foreground: 42 30% 97%;
+    --secondary: 40 14% 92%;
+    --secondary-foreground: 30 10% 20%;
+    --muted: 40 14% 92%;
+    --muted-foreground: 30 6% 42%;
+    --accent: 40 14% 90%;
+    --accent-foreground: 30 10% 18%;
+    --destructive: 0 70% 45%;
+    --destructive-foreground: 42 30% 97%;
+    --border: 38 12% 85%;
+    --input: 38 12% 82%;
+    --ring: 8 55% 40%;
+    --radius: 0.5rem;
+    --sidebar-background: 40 20% 94%;
+    --sidebar-foreground: 30 8% 28%;
+    --sidebar-primary: 8 55% 40%;
+    --sidebar-primary-foreground: 42 30% 97%;
+    --sidebar-accent: 40 16% 89%;
+    --sidebar-accent-foreground: 30 10% 20%;
+    --sidebar-border: 38 12% 84%;
+    --sidebar-ring: 8 55% 40%;
+
+    /* 阅读偏好默认值 */
+    --rd-font: "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+    --rd-size: 17px;
+    --rd-line: 1.85;
+    --rd-para: 0.9em;
+    --rd-width: 720px;
+    --rd-code-size: 14px;
+    --rd-bg: transparent;
+    --rd-fg: inherit;
+  }
+
+  .dark {
+    --background: 30 8% 11%;
+    --foreground: 40 15% 88%;
+    --card: 30 8% 14%;
+    --card-foreground: 40 15% 88%;
+    --popover: 30 8% 14%;
+    --popover-foreground: 40 15% 88%;
+    --primary: 10 60% 55%;
+    --primary-foreground: 30 8% 11%;
+    --secondary: 30 6% 20%;
+    --secondary-foreground: 40 15% 88%;
+    --muted: 30 6% 20%;
+    --muted-foreground: 35 8% 60%;
+    --accent: 30 6% 22%;
+    --accent-foreground: 40 15% 88%;
+    --destructive: 0 60% 50%;
+    --destructive-foreground: 40 15% 88%;
+    --border: 30 6% 24%;
+    --input: 30 6% 28%;
+    --ring: 10 60% 55%;
+    --sidebar-background: 30 8% 13%;
+    --sidebar-foreground: 35 10% 70%;
+    --sidebar-primary: 10 60% 55%;
+    --sidebar-primary-foreground: 30 8% 11%;
+    --sidebar-accent: 30 6% 20%;
+    --sidebar-accent-foreground: 40 15% 88%;
+    --sidebar-border: 30 6% 22%;
+    --sidebar-ring: 10 60% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Source Han Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  code, pre, kbd, samp, .mono {
+    font-family: "JetBrains Mono", "Sarasa Mono SC", Consolas, "Courier New", monospace;
+  }
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+}
+
+/* ===== 阅读区：由阅读偏好变量驱动 ===== */
+.reader {
+  font-family: var(--rd-font);
+  font-size: var(--rd-size);
+  line-height: var(--rd-line);
+  max-width: min(var(--rd-width), 100%);
+  margin: 0 auto;
+  color: var(--rd-fg);
+  overflow-wrap: break-word;
+}
+.reader h1 { font-size: 1.7em; font-weight: 700; margin: 1.2em 0 0.6em; line-height: 1.35; }
+.reader h2 { font-size: 1.4em; font-weight: 700; margin: 1.1em 0 0.55em; line-height: 1.4; border-bottom: 1px solid hsl(var(--border)); padding-bottom: 0.25em; }
+.reader h3 { font-size: 1.2em; font-weight: 600; margin: 1em 0 0.5em; }
+.reader h4 { font-size: 1.08em; font-weight: 600; margin: 0.9em 0 0.45em; }
+.reader h5, .reader h6 { font-size: 1em; font-weight: 600; margin: 0.8em 0 0.4em; }
+.reader p { margin: var(--rd-para) 0; }
+.reader ul, .reader ol { margin: var(--rd-para) 0; padding-left: 1.6em; }
+.reader ul { list-style: disc; }
+.reader ol { list-style: decimal; }
+.reader li { margin: 0.25em 0; }
+.reader li > ul, .reader li > ol { margin: 0.2em 0; }
+.reader blockquote {
+  border-left: 3px solid hsl(var(--primary) / 0.5);
+  padding: 0.2em 1em;
+  margin: var(--rd-para) 0;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted) / 0.5);
+  border-radius: 0 6px 6px 0;
+}
+.reader a { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 3px; }
+.reader hr { border: none; border-top: 1px solid hsl(var(--border)); margin: 1.6em 0; }
+.reader img { max-width: 100%; border-radius: 6px; }
+.reader table { border-collapse: collapse; margin: var(--rd-para) 0; font-size: 0.92em; min-width: 40%; }
+.reader th, .reader td { border: 1px solid hsl(var(--border)); padding: 0.4em 0.8em; text-align: left; }
+.reader th { background: hsl(var(--muted)); font-weight: 600; }
+.reader .table-scroll { overflow-x: auto; max-width: 100%; }
+.reader code:not(pre code) {
+  background: hsl(var(--muted));
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+  font-size: 0.88em;
+}
+.reader pre {
+  background: hsl(30 8% 16%);
+  color: hsl(40 20% 90%);
+  padding: 0.9em 1.1em;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: var(--rd-code-size);
+  line-height: 1.6;
+  margin: var(--rd-para) 0;
+}
+.reader pre code { background: transparent; padding: 0; }
+.reader input[type="checkbox"] { margin-right: 0.45em; accent-color: hsl(var(--primary)); }
+.reader mark, .hl { background: hsl(48 95% 70%); color: #3a2e00; border-radius: 2px; padding: 0 1px; }
+.dark .reader mark, .dark .hl { background: hsl(48 80% 35%); color: hsl(48 60% 92%); }
+
+/* 自动解析的语料引用链接 */
+.corpus-ref {
+  color: hsl(var(--primary));
+  border-bottom: 1px dashed hsl(var(--primary) / 0.6);
+  cursor: pointer;
+  text-decoration: none;
+}
+.corpus-ref:hover { background: hsl(var(--primary) / 0.08); border-radius: 3px; }
+.corpus-ref-inline-code {
+  border-bottom: none;
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  text-underline-offset: 3px;
+}
+
+/* JSON 结构视图 */
+.json-view { font-family: "JetBrains Mono", Consolas, monospace; font-size: var(--rd-code-size); line-height: 1.65; }
+.json-key { color: hsl(var(--primary)); }
+.json-str { color: hsl(140 40% 32%); }
+.dark .json-str { color: hsl(140 45% 60%); }
+.json-num { color: hsl(210 60% 40%); }
+.dark .json-num { color: hsl(210 70% 65%); }
+.json-bool { color: hsl(280 50% 45%); }
+.dark .json-bool { color: hsl(280 60% 70%); }
+
+/* Word 原版式预览容器缩放 */
+.word-original { transform-origin: top left; }
+
+.stat-num { font-variant-numeric: tabular-nums; }

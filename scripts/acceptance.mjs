@@ -1,0 +1,146 @@
+// 后端验收脚本：逐项调用 API 并断言，输出通过/失败明细
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const A = path.join(ROOT, 'test-data', 'ds-a');
+const B = path.join(ROOT, 'test-data', 'ds-b');
+const PERF = path.join(ROOT, 'test-data', 'ds-perf');
+const BASE = 'http://localhost:7410';
+
+let pass = 0, fail = 0;
+function check(name, cond, detail = '') {
+  if (cond) { pass++; console.log('  ✓', name); }
+  else { fail++; console.log('  ✗', name, detail); }
+}
+async function j(url, init) {
+  const r = await fetch(BASE + url, init);
+  return { status: r.status, body: await r.json().catch(() => ({})) };
+}
+const post = (url, body) => j(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const put = (url, body) => j(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+console.log('== 1. 配置数据源 A ==');
+let r = await post('/api/config/test', { baseDir: A });
+check('测试连接成功且可写', r.body.ok && r.body.writable, JSON.stringify(r.body));
+r = await post('/api/config', { baseDir: A });
+check('保存并加载 A', r.body.ok && r.body.dsId, JSON.stringify(r.body));
+const dsA = r.body.dsId;
+check('扫描计数正确（11 文件）', r.body.status.counts.files === 11, JSON.stringify(r.body.status.counts));
+check('类型分布正确（5md/3json?）', r.body.status.counts.doc === 1 && r.body.status.counts.docx === 1, JSON.stringify(r.body.status.counts));
+
+console.log('== 2. 目录树与自然排序 ==');
+r = await j('/api/tree');
+const allPaths = [];
+(function walk(n) { n.files.forEach(f => allPaths.push(f.path)); n.dirs.forEach(walk); })(r.body.tree);
+check('树含多级目录文件', allPaths.includes('笔记/子目录/第10章 总结.md'));
+check('树含同名文件两处', allPaths.filter(p => p.endsWith('同名文件.md')).length === 2);
+const noteFiles = allPaths.filter(p => p.startsWith('笔记/') && !p.includes('子目录'));
+check('自然排序 1 < 2', noteFiles.indexOf('笔记/第1章 入门.md') < noteFiles.indexOf('笔记/第2章 进阶.md'), noteFiles.join(','));
+
+console.log('== 3. 文件读取 ==');
+r = await j('/api/file?path=' + encodeURIComponent('笔记/第1章 入门.md'));
+check('MD 读取含正文', r.body.type === 'markdown' && r.body.content.includes('第1章 入门'));
+r = await j('/api/file?path=' + encodeURIComponent('资料库/broken.json'));
+check('无效 JSON 仍可读原文', r.body.type === 'json' && r.body.content.includes('无效'));
+r = await j('/api/file?path=' + encodeURIComponent('word/报告 2024.docx'));
+check('DOCX 解析出正文', r.body.type === 'word' && r.body.text.includes('月落乌啼霜满天'), r.body.warning || '');
+check('DOCX 保留表格', (r.body.html || '').includes('<table'), '');
+r = await j('/api/file?path=' + encodeURIComponent('word/旧文档.doc'));
+check('二进制 DOC 提取正文', r.body.type === 'word' && (r.body.text || '').includes('江枫渔火对愁眠'), JSON.stringify(r.body).slice(0, 200));
+check('DOC 提示 LibreOffice 缺失诊断', !!r.body.warning, '');
+
+console.log('== 4. 引用解析 ==');
+r = await j('/api/refs/resolve?name=' + encodeURIComponent('概念总表.json'));
+check('完整文件名唯一命中', r.body.status === 'unique' && r.body.targets[0].path === '资料库/概念总表.json');
+r = await j('/api/refs/resolve?name=' + encodeURIComponent('同名文件.md'));
+check('同名文件返回候选', r.body.status === 'candidates' && r.body.targets.length === 2);
+await put('/api/collections', { collections: [{ name: '集合甲', dirs: ['笔记'] }, { name: '集合乙', dirs: ['资料库'] }] });
+r = await j('/api/refs/resolve?name=' + encodeURIComponent('同名文件') + '&collection=' + encodeURIComponent('集合甲'));
+check('集合甲|同名文件 → 笔记目录', r.body.status === 'unique' && r.body.targets[0].path === '笔记/同名文件.md', JSON.stringify(r.body));
+r = await j('/api/refs/resolve?name=' + encodeURIComponent('同名文件.md') + '&collection=' + encodeURIComponent('集合乙'));
+check('集合乙|同名文件.md → 资料库目录', r.body.status === 'unique' && r.body.targets[0].path === '资料库/同名文件.md');
+r = await j('/api/refs/resolve?name=' + encodeURIComponent('不存在的文件.md'));
+check('缺失目标报告原因', r.body.status === 'missing' && !!r.body.reason);
+r = await j('/api/refs/resolve?name=' + encodeURIComponent('第2章 进阶.md') + '&collection=' + encodeURIComponent('集合乙'));
+check('集合内缺失→不静默跨集合', r.body.status === 'missing' && r.body.suggestions?.length >= 1, JSON.stringify(r.body));
+r = await j('/api/backlinks?path=' + encodeURIComponent('资料库/概念总表.json'));
+check('反链找到 第1章', r.body.backlinks.some(f => f.path === '笔记/第1章 入门.md'));
+
+console.log('== 5. 全局检索 ==');
+r = await j('/api/search?q=' + encodeURIComponent('雪拥蓝关'));
+check('MD 正文中文命中', r.body.results.some(x => x.file.path === '笔记/第2章 进阶.md'));
+r = await j('/api/search?q=' + encodeURIComponent('星垂平野阔'));
+check('JSON 值命中', r.body.results.some(x => x.file.path === '资料库/数据 表格.json'));
+r = await j('/api/search?q=' + encodeURIComponent('月落乌啼'));
+check('DOCX 正文命中', r.body.results.some(x => x.file.path === 'word/报告 2024.docx'));
+r = await j('/api/search?q=' + encodeURIComponent('江枫渔火'));
+check('DOC 正文命中', r.body.results.some(x => x.file.path === 'word/旧文档.doc'));
+r = await j('/api/search?q=' + encodeURIComponent('雪拥蓝关') + '&types=.json');
+check('类型筛选缩小结果', r.body.results.length === 0);
+r = await j('/api/search?q=' + encodeURIComponent('"夜半钟声到客船"'));
+check('短语检索（B 未接入时无结果）', r.body.results.length === 0);
+
+console.log('== 6. 保存与冲突 ==');
+const target = '笔记/第2章 进阶.md';
+r = await j('/api/file?path=' + encodeURIComponent(target));
+const before = r.body;
+const newContent = before.content + '\n新增词：孤舟蓑笠翁。\n';
+r = await put('/api/file', { path: target, content: newContent, baseMtimeMs: before.mtimeMs, dsId: dsA });
+check('保存 MD 成功', r.body.ok === true, JSON.stringify(r.body));
+const disk = fs.readFileSync(path.join(A, target), 'utf8');
+check('磁盘确认写回', disk.includes('孤舟蓑笠翁'));
+r = await j('/api/search?q=' + encodeURIComponent('孤舟蓑笠翁'));
+check('保存后搜索命中新词', r.body.results.some(x => x.file.path === target));
+// 外部修改 → 冲突
+fs.appendFileSync(path.join(A, target), '\n外部修改行。\n');
+await new Promise(s => setTimeout(s, 50));
+r = await put('/api/file', { path: target, content: newContent + '\n我的覆盖。\n', baseMtimeMs: before.mtimeMs, dsId: dsA });
+check('外部修改触发 409 冲突', r.status === 409 && r.body.conflict === true, JSON.stringify(r.body).slice(0, 120));
+check('冲突响应含磁盘当前内容', (r.body.current || '').includes('外部修改行'));
+// 用最新 mtime 覆盖保存
+r = await put('/api/file', { path: target, content: newContent + '\n我的覆盖。\n', baseMtimeMs: r.body.currentMtimeMs, dsId: dsA });
+check('冲突后显式覆盖成功', r.body.ok === true);
+// 无效 JSON 不允许写入由前端校验；后端原子写检查备份存在
+const bakDir = path.join(ROOT, 'server', 'data', 'sources', dsA, 'backups', '笔记');
+check('备份文件已生成', fs.existsSync(bakDir) && fs.readdirSync(bakDir).some(f => f.includes('第2章')), '');
+
+console.log('== 7. 数据源切换隔离 ==');
+r = await post('/api/config', { baseDir: B });
+const dsB = r.body.dsId;
+check('切换到 B，dsId 不同', r.body.ok && dsB !== dsA);
+r = await j('/api/search?q=' + encodeURIComponent('夜半钟声到客船'));
+check('B 中命中 B 的文件', r.body.results.some(x => x.file.path === '笔记/第1章 入门.md'));
+r = await j('/api/file?path=' + encodeURIComponent('笔记/第1章 入门.md'));
+check('B 的同路径文件内容不同', r.body.content.includes('数据源 B'));
+r = await j('/api/search?q=' + encodeURIComponent('雪拥蓝关'));
+check('A 的内容在 B 中不可见', r.body.results.length === 0);
+r = await put('/api/file', { path: '笔记/第1章 入门.md', content: 'x', baseMtimeMs: 0, dsId: dsA });
+check('旧 dsId 写入被拒绝', r.status === 409 && r.body.stale === true);
+
+console.log('== 8. 元数据主题/概念（回到 A） ==');
+await post('/api/config', { baseDir: A });
+await put('/api/metadata', { mappings: [{ file: '索引/index.json', itemPath: 'items', fields: { file: 'doc', topics: '主题', concepts: '概念' } }] });
+r = await j('/api/topics');
+check('主题聚合正确', r.body.topics.some(t => t.topic === '基础' && t.count === 1) && r.body.topics.length >= 2, JSON.stringify(r.body.topics));
+check('概念聚合含频次', r.body.concepts.some(c => c.concept === '方法' && c.count === 2), JSON.stringify(r.body.concepts));
+
+console.log('== 9. 性能（千文件语料） ==');
+const t0 = Date.now();
+r = await post('/api/config', { baseDir: PERF });
+const scanMs = Date.now() - t0;
+const perfCount = r.body.status.counts.files;
+check('扫描到 ~1000 文件', perfCount === 1000, String(perfCount));
+const t1 = Date.now();
+r = await j('/api/search?q=' + encodeURIComponent('蜡炬成灰'));
+const searchMs = Date.now() - t1;
+check('千文件搜索命中唯一文档', r.body.results.length === 1 && r.body.results[0].file.path.includes('文档0500'));
+console.log(`  ℹ 文件数=${perfCount}，扫描+索引耗时=${scanMs}ms，单次搜索耗时=${searchMs}ms，环境=${process.platform} node ${process.version}`);
+
+console.log('== 10. 路径安全 ==');
+r = await j('/api/file?path=' + encodeURIComponent('../../etc/passwd'));
+check('越界路径被拒绝', r.status === 403 || r.status === 404 || r.status === 500, String(r.status));
+
+console.log(`\n结果：${pass} 通过，${fail} 失败`);
+process.exit(fail ? 1 : 0);

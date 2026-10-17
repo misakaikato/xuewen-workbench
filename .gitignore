@@ -1,0 +1,35 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+dist-ssr/
+build/
+release/
+out/
+*.tsbuildinfo
+
+# app runtime data (confidential, per-machine)
+server/data/
+.xuewen/
+**/.xuewen/
+
+# temp / atomic-write leftovers, caches, local indexes
+*.wb-tmp-*
+.wb-write-test-*
+.cache/
+.vite/
+*.local
+.env
+.env.*
+
+# logs
+logs/
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
