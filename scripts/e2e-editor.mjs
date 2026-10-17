@@ -432,9 +432,10 @@ async function main() {
   await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.includes('反向链接'))`, '反向链接按钮');
   await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('反向链接')); b.click(); return true; })()`);
   await waitFor(`document.body.textContent.includes('提到本篇的文档')`, '面板标题');
-  check('反向链接面板列出来源文档', await waitFor(`document.body.textContent.includes('论语讲稿')`, '来源文档', 6000) === true);
-  check('面板片段高亮命中词', await exec(`!!document.querySelector('.wb-bl-mark')`));
-  await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.title === '论语讲稿.md'); if (b) { b.click(); return true; } return false; })()`);
+  check('反向链接面板列出来源文档',
+    await waitFor(`!!document.querySelector('[data-wb-backlinks] button[title="论语讲稿.md"]')`, '面板条目', 8000) === true);
+  check('面板片段高亮命中词', await exec(`!!document.querySelector('[data-wb-backlinks] .wb-bl-mark')`));
+  await exec(`(() => { const b = [...document.querySelectorAll('[data-wb-backlinks] button')].find((x) => x.title === '论语讲稿.md'); if (b) { b.click(); return true; } return false; })()`);
   await waitFor(`decodeURIComponent(window.location.pathname).includes('论语讲稿.md')`, '打开来源');
   check('点击来源打开该文档并携带高亮词', (await exec('window.location.search')).includes('h='));
 

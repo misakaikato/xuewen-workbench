@@ -410,12 +410,14 @@ export default function Read() {
             </button>
           )}
           {showBacklinks && (
+            <div data-wb-backlinks>
             <BacklinksPanel
               path={relPath}
               dsId={dsId}
               onOpen={(src, term) => navigate('/read/' + src.split('/').map(encodeURIComponent).join('/') + '?h=' + encodeURIComponent(term))}
               onClose={() => setShowBacklinks(false)}
             />
+            </div>
           )}
         </aside>
       )}
