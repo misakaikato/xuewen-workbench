@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import express from 'express';
-import { getConfig, saveConfig, dsIdFor, getState, setState, backupDir, getUiSettings, saveUiSettings } from './store.js';
+import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings } from './store.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
 import { planImport, applyImport, contentHash } from './meta.js';
 import { getTrashHandler } from './trash.js';
@@ -18,46 +18,108 @@ const STATIC_DIR = process.env.WORKBENCH_STATIC_DIR || null; // 设置后托管�
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
-const scanner = new Scanner();
-const indexer = new Indexer();
-const linkIndex = new LinkIndex();
+// ---------- 资料库运行时（多库并行：各自 scanner/indexer/链接索引） ----------
 
-let currentDsId = null;
-
-let indexing = Promise.resolve(); // 最近一次索引构建，供需要“立即可检索”的写操作等待
-
-scanner.on('scan-done', (snapshot) => {
-  indexing = (async () => {
-    if (currentDsId && scanner.baseDir) {
-      try {
-        await indexer.build(snapshot);
-        await linkIndex.rebuild(snapshot, indexer); // 自动内链索引随文本索引之后增量更新
-      } catch (e) {
-        console.error('索引构建失败:', e.message);
-      }
-    }
-  })();
-});
-
-// 重扫并等待索引完成（若监听触发的扫描正在进行，先等它结束，避免拿到旧快照）
-async function rescanAndIndex() {
-  while (scanner.scanning) await new Promise((r) => setTimeout(r, 50));
-  await scanner.rescan();
-  await indexing;
-}
-
-function requireSource(res) {
-  if (!scanner.baseDir || !scanner.snapshot) {
-    res.status(409).json({ error: '尚未配置数据源或扫描未完成' });
-    return false;
+class Lib {
+  constructor(meta) {
+    this.id = meta.id;
+    this.name = meta.name;
+    this.baseDir = meta.baseDir;
+    this.scanner = new Scanner();
+    this.indexer = new Indexer();
+    this.linkIndex = new LinkIndex();
+    this.indexing = Promise.resolve(); // 最近一次索引构建，供需要“立即可检索”的写操作等待
+    this.scanner.on('scan-done', (snapshot) => {
+      this.indexing = (async () => {
+        try {
+          await this.indexer.build(snapshot);
+          await this.linkIndex.rebuild(snapshot, this.indexer); // 自动内链索引随文本索引之后增量更新
+        } catch (e) {
+          console.error(`[${this.name}] 索引构建失败:`, e.message);
+        }
+      })();
+    });
   }
-  return true;
+
+  // 绑定目录并完成首次扫描 + 开监听（目录不可达时地出异常，由调用方处理）
+  async start() {
+    this.scanner.setBaseDir(this.baseDir);
+    this.indexer.reset(this.id, this.baseDir);
+    this.linkIndex.reset(this.id, this.baseDir);
+    await this.scanner.rescan();
+    this.scanner.startWatch();
+  }
+
+  stop() {
+    this.scanner.stopWatch();
+  }
+
+  // 重扫并等待索引完成（若监听触发的扫描正在进行，先等它结束，避免拿到旧快照）
+  async rescanAndIndex() {
+    while (this.scanner.scanning) await new Promise((r) => setTimeout(r, 50));
+    await this.scanner.rescan();
+    await this.indexing;
+  }
 }
 
-// 路径安全：限制在当前 baseDir 内（跟随符号链接校验真实路径）
-function resolveWithin(rel) {
-  const abs = path.resolve(scanner.baseDir, rel);
-  const baseNorm = path.resolve(scanner.baseDir);
+const libs = new Map(); // id -> Lib（已打开的资料库）
+let activeId = null;
+let libVersion = 0; // 增/删/激活变化计数，进入 config.generation 复合值
+
+const libMeta = (l) => ({ id: l.id, name: l.name, baseDir: l.baseDir, status: l.scanner.status() });
+
+function emptyStatus() {
+  return {
+    baseDir: null, scanning: false, watching: false, generation: 0, scannedAt: null,
+    counts: null, dirErrors: [], fileErrors: [],
+  };
+}
+
+function configResponse() {
+  const active = libs.get(activeId) || null;
+  return {
+    configured: !!active,
+    baseDir: active?.baseDir || null,
+    dsId: active?.id || null,
+    generation: libVersion * 1000000 + (active?.scanner.generation || 0),
+    status: active ? active.scanner.status() : emptyStatus(),
+    libraries: [...libs.values()].map(libMeta),
+    activeId,
+  };
+}
+
+// 按请求定位资料库：query.ds / body.dsId / body.dataSourceId，缺省为当前激活库；
+// 显式指定的 id 未打开时抛 404，无任何库时返回 null
+function resolveLib(req) {
+  // 仅用 query.ds 定位目标库；body 里的 dsId/dataSourceId 保持旧语义（stale 守卫），不参与定位
+  const want = req.query?.ds || null;
+  if (want) {
+    const lib = libs.get(String(want));
+    if (!lib) throw Object.assign(new Error('资料库未打开'), { status: 404 });
+    return lib;
+  }
+  return libs.get(activeId) || null;
+}
+
+function requireLib(res, req) {
+  let lib = null;
+  try {
+    lib = resolveLib(req);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+    return null;
+  }
+  if (!lib || !lib.scanner.baseDir || !lib.scanner.snapshot) {
+    res.status(409).json({ error: '尚未打开资料库或扫描未完成' });
+    return null;
+  }
+  return lib;
+}
+
+// 路径安全：限制在指定资料库 baseDir 内（跟随符号链接校验真实路径）
+function resolveWithin(lib, rel) {
+  const abs = path.resolve(lib.scanner.baseDir, rel);
+  const baseNorm = path.resolve(lib.scanner.baseDir);
   if (abs !== baseNorm && !abs.startsWith(baseNorm + path.sep)) {
     throw Object.assign(new Error('路径越界'), { status: 403 });
   }
@@ -74,8 +136,8 @@ function resolveWithin(rel) {
   return abs;
 }
 
-function findFile(rel) {
-  return scanner.snapshot.files.find((f) => f.path === rel);
+function findFile(lib, rel) {
+  return lib.scanner.snapshot.files.find((f) => f.path === rel);
 }
 
 function readTextPreserve(abs) {
@@ -122,17 +184,68 @@ function syncSidecarHash(abs, wroteBuf) {
   }
 }
 
-// ---------- 数据源配置 ----------
+// ---------- 资料库配置 ----------
 
 app.get('/api/config', (req, res) => {
-  const cfg = getConfig();
-  res.json({
-    configured: !!cfg,
-    baseDir: cfg?.baseDir || null,
-    dsId: cfg?.dsId || null,
-    generation: scanner.generation,
-    status: scanner.status(),
-  });
+  res.json(configResponse());
+});
+
+// 新增/打开资料库；同目录已打开则仅激活（老语义的“切换”兼容：末次指定者为当前）
+app.post('/api/config', async (req, res) => {
+  const { baseDir } = req.body || {};
+  const p = path.normalize(String(baseDir || '').trim().replace(/^["']|["']$/g, ''));
+  try {
+    const st = fs.statSync(p);
+    if (!st.isDirectory()) throw new Error('不是目录');
+    fs.accessSync(p, fs.constants.R_OK);
+  } catch (e) {
+    return res.status(400).json({ error: '目录不可访问: ' + e.message });
+  }
+  const lib = upsertLib(p);
+  if (!libs.has(lib.id)) {
+    const runtime = new Lib(lib);
+    libs.set(lib.id, runtime);
+    activeId = lib.id;
+    libVersion++;
+    try {
+      await runtime.start();
+    } catch (e) {
+      console.error('[' + lib.name + '] 首扫失败:', e.message);
+    }
+  } else if (activeId !== lib.id) {
+    activeId = lib.id;
+    libVersion++;
+  }
+  res.json({ ok: true, ...configResponse() });
+});
+
+// 已打开资料库清单（含各自扫描状态）
+app.get('/api/libraries', (req, res) => {
+  res.json({ libraries: [...libs.values()].map(libMeta), activeId, generation: libVersion * 1000000 });
+});
+
+app.post('/api/library/activate', (req, res) => {
+  const id = String(req.body?.ds || req.body?.dsId || '');
+  if (!libs.has(id)) return res.status(404).json({ error: '资料库未打开' });
+  activeId = id;
+  libVersion++;
+  setActiveLibInStore(id);
+  res.json({ ok: true, ...configResponse() });
+});
+
+// 从工作区移除：停监听、卸内存实例；磁盘语料与派生数据（草稿/最近/集合/备份）全保留
+app.post('/api/library/remove', async (req, res) => {
+  const id = String(req.body?.ds || req.body?.dsId || '');
+  const lib = libs.get(id);
+  if (!lib) return res.status(404).json({ error: '资料库未打开' });
+  try {
+    lib.stop();
+  } catch { /* ignore */ }
+  libs.delete(id);
+  const { activeId: nextActive } = removeLibFromStore(id);
+  if (activeId === id) activeId = nextActive;
+  libVersion++;
+  res.json({ ok: true, activeId, libraries: [...libs.values()].map(libMeta) });
 });
 
 app.post('/api/config/test', async (req, res) => {
@@ -164,30 +277,11 @@ app.post('/api/config/test', async (req, res) => {
   res.json(out);
 });
 
-app.post('/api/config', async (req, res) => {
-  const { baseDir } = req.body || {};
-  const p = path.normalize(String(baseDir || '').trim().replace(/^["']|["']$/g, ''));
-  try {
-    const st = fs.statSync(p);
-    if (!st.isDirectory()) throw new Error('不是目录');
-    fs.accessSync(p, fs.constants.R_OK);
-  } catch (e) {
-    return res.status(400).json({ error: '目录不可访问: ' + e.message });
-  }
-  const cfg = saveConfig(p);
-  currentDsId = cfg.dsId;
-  scanner.setBaseDir(p);
-  indexer.reset(cfg.dsId, p);
-  linkIndex.reset(cfg.dsId, p);
-  await scanner.rescan();
-  scanner.startWatch();
-  res.json({ ok: true, ...cfg, status: scanner.status() });
-});
-
 app.post('/api/rescan', async (req, res) => {
-  if (!scanner.baseDir) return res.status(409).json({ error: '尚未配置数据源' });
-  await scanner.rescan();
-  res.json({ ok: true, status: scanner.status() });
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  await lib.scanner.rescan();
+  res.json({ ok: true, status: lib.scanner.status() });
 });
 
 // ---------- 界面设置（外观主题；不依赖数据源，未配置时也可用） ----------
@@ -206,7 +300,12 @@ app.put('/api/ui-settings', (req, res) => {
 });
 
 app.get('/api/status', (req, res) => {
-  res.json({ dsId: currentDsId, ...scanner.status() });
+  const active = libs.get(activeId) || null;
+  const libStatuses = {};
+  for (const [id, l] of libs) {
+    libStatuses[id] = { scanning: l.scanner.scanning, watching: !!l.scanner.watcher, scannedAt: l.scanner.snapshot?.scannedAt || null };
+  }
+  res.json({ dsId: activeId, ...(active ? active.scanner.status() : emptyStatus()), libs: libStatuses });
 });
 
 // ---------- 目录树与统计 ----------
@@ -249,13 +348,15 @@ function buildTree(files, dirList = []) {
 }
 
 app.get('/api/tree', (req, res) => {
-  if (!requireSource(res)) return;
-  res.json({ dsId: currentDsId, tree: buildTree(scanner.snapshot.files, scanner.snapshot.dirs) });
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  res.json({ dsId: lib.id, tree: buildTree(lib.scanner.snapshot.files, lib.scanner.snapshot.dirs) });
 });
 
 app.get('/api/stats', (req, res) => {
-  if (!requireSource(res)) return;
-  const files = scanner.snapshot.files;
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const files = lib.scanner.snapshot.files;
   const topDist = new Map();
   for (const f of files) {
     const top = f.dir ? f.dir.split('/')[0] : '(根目录)';
@@ -263,17 +364,17 @@ app.get('/api/stats', (req, res) => {
   }
   const recent = [...files].sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 12);
   res.json({
-    dsId: currentDsId,
-    scannedAt: scanner.snapshot.scannedAt,
+    dsId: lib.id,
+    scannedAt: lib.scanner.snapshot.scannedAt,
     counts: {
       total: files.length,
       md: files.filter((f) => f.ext === '.md').length,
       json: files.filter((f) => f.ext === '.json').length,
       doc: files.filter((f) => f.ext === '.doc').length,
       docx: files.filter((f) => f.ext === '.docx').length,
-      dirs: scanner.snapshot.dirCount,
-      dirErrors: scanner.snapshot.dirErrors.length,
-      fileErrors: scanner.snapshot.fileErrors.length,
+      dirs: lib.scanner.snapshot.dirCount,
+      dirErrors: lib.scanner.snapshot.dirErrors.length,
+      fileErrors: lib.scanner.snapshot.fileErrors.length,
     },
     distribution: [...topDist.entries()]
       .map(([dir, count]) => ({ dir, count }))
@@ -285,23 +386,24 @@ app.get('/api/stats', (req, res) => {
 // ---------- 文件读取与保存 ----------
 
 app.get('/api/file', async (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const rel = String(req.query.path || '');
   try {
-    const abs = resolveWithin(rel);
-    const f = findFile(rel);
+    const abs = resolveWithin(lib, rel);
+    const f = findFile(lib, rel);
     if (!f) return res.status(404).json({ error: '文件不在当前扫描结果中（可能已被移动或删除）', missing: true });
     const ext = f.ext;
     if (ext === '.md' || ext === '.json') {
       const { content, bom } = readTextPreserve(abs);
       return res.json({
-        dsId: currentDsId, path: rel, name: f.name, ext, type: ext === '.md' ? 'markdown' : 'json',
+        dsId: lib.id, path: rel, name: f.name, ext, type: ext === '.md' ? 'markdown' : 'json',
         content, bom, mtimeMs: f.mtimeMs, size: f.size, readonly: false,
       });
     }
-    const parsed = await parseWord(currentDsId, abs, rel, f.mtimeMs);
+    const parsed = await parseWord(lib.id, abs, rel, f.mtimeMs);
     res.json({
-      dsId: currentDsId, path: rel, name: f.name, ext, type: 'word',
+      dsId: lib.id, path: rel, name: f.name, ext, type: 'word',
       html: parsed.html, text: parsed.text, engine: parsed.engine, warning: parsed.warning || null,
       mtimeMs: f.mtimeMs, size: f.size, readonly: true,
     });
@@ -311,9 +413,10 @@ app.get('/api/file', async (req, res) => {
 });
 
 app.get('/api/file/raw', (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   try {
-    const abs = resolveWithin(String(req.query.path || ''));
+    const abs = resolveWithin(lib, String(req.query.path || ''));
     res.download(abs);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
@@ -322,18 +425,19 @@ app.get('/api/file/raw', (req, res) => {
 
 // 显式保存：写回数据源原文件（仅 md/json）。原子写入 + 备份 + mtime 冲突检测
 app.put('/api/file', async (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const { path: rel, content, baseMtimeMs, dsId } = req.body || {};
-  if (dsId && dsId !== currentDsId) {
+  if (dsId && dsId !== lib.id) {
     return res.status(409).json({ error: '数据源已切换，请刷新后重试', stale: true });
   }
-  const f = findFile(rel);
+  const f = findFile(lib, rel);
   const ext = path.posix.extname(String(rel)).toLowerCase();
   if (!['.md', '.json'].includes(ext)) {
     return res.status(400).json({ error: '该格式不支持直接写回，请使用另存副本' });
   }
   try {
-    const abs = resolveWithin(rel);
+    const abs = resolveWithin(lib, rel);
     const exists = fs.existsSync(abs);
     if (exists) {
       const cur = fs.statSync(abs);
@@ -345,7 +449,7 @@ app.put('/api/file', async (req, res) => {
       }
       // 备份原文件
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const bdir = path.join(backupDir(currentDsId), path.dirname(rel));
+      const bdir = path.join(backupDir(lib.id), path.dirname(rel));
       fs.mkdirSync(bdir, { recursive: true });
       fs.copyFileSync(abs, path.join(bdir, path.basename(rel) + '.' + stamp + '.bak'));
       const { bom } = readTextPreserve(abs);
@@ -358,7 +462,7 @@ app.put('/api/file', async (req, res) => {
       return res.status(404).json({ error: '文件已被外部删除，未重新创建。可将内容另存为新文件。', missing: true });
     }
     const st = fs.statSync(abs);
-    await scanner.rescan();
+    await lib.scanner.rescan();
     res.json({ ok: true, mtimeMs: st.mtimeMs });
   } catch (e) {
     res.status(e.status || 500).json({ error: '写入失败: ' + e.message });
@@ -367,9 +471,10 @@ app.put('/api/file', async (req, res) => {
 
 // 另存为新文件（如 Word 转 Markdown 副本）
 app.post('/api/file/save-as', async (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const { path: rel, content, dsId } = req.body || {};
-  if (dsId && dsId !== currentDsId) {
+  if (dsId && dsId !== lib.id) {
     return res.status(409).json({ error: '数据源已切换，请刷新后重试', stale: true });
   }
   const ext = path.posix.extname(String(rel)).toLowerCase();
@@ -377,11 +482,11 @@ app.post('/api/file/save-as', async (req, res) => {
     return res.status(400).json({ error: '副本仅支持保存为 .md 或 .json' });
   }
   try {
-    const abs = resolveWithin(rel);
+    const abs = resolveWithin(lib, rel);
     if (fs.existsSync(abs)) return res.status(409).json({ error: '目标文件已存在', exists: true });
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     await writeTextAtomic(abs, String(content ?? ''), false);
-    await scanner.rescan();
+    await lib.scanner.rescan();
     res.json({ ok: true });
   } catch (e) {
     res.status(e.status || 500).json({ error: '写入失败: ' + e.message });
@@ -428,10 +533,11 @@ function localDate(d) {
 // 在数据源某目录下新建 Markdown 文档（同时写 <文件名>.meta.json 旁注）或子文件夹
 // body: { dsId|dataSourceId, dir, kind: 'md'|'folder', name, title?, docType?: 文章|讲稿|知乎 }
 app.post('/api/file/create', async (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const b = req.body || {};
   const dsId = b.dsId ?? b.dataSourceId;
-  if (dsId && dsId !== currentDsId) {
+  if (dsId && dsId !== lib.id) {
     return res.status(409).json({ error: '数据源已切换，请刷新后重试', stale: true });
   }
   // 兼容 type 字段：md/folder 视为 kind，文章/讲稿/知乎 视为 docType
@@ -440,7 +546,7 @@ app.post('/api/file/create', async (req, res) => {
   try {
     if (!['md', 'folder'].includes(kind)) throw badRequest('不支持的类型: ' + kind);
     const dir = validateRelDir(b.dir);
-    const dirAbs = resolveWithin(dir);
+    const dirAbs = resolveWithin(lib, dir);
     let st;
     try { st = fs.statSync(dirAbs); } catch { return res.status(404).json({ error: '目标目录不存在: ' + (dir || '/') }); }
     if (!st.isDirectory()) throw badRequest('目标不是目录');
@@ -448,10 +554,10 @@ app.post('/api/file/create', async (req, res) => {
     if (kind === 'folder') {
       const name = validateEntryName(b.name);
       const rel = dir ? dir + '/' + name : name;
-      const abs = resolveWithin(rel);
+      const abs = resolveWithin(lib, rel);
       if (pathTaken(abs)) return res.status(409).json({ error: '同名文件或文件夹已存在', exists: true, path: rel });
       fs.mkdirSync(abs);
-      await rescanAndIndex();
+      await lib.rescanAndIndex();
       return res.json({ ok: true, kind, path: rel });
     }
 
@@ -460,7 +566,7 @@ app.post('/api/file/create', async (req, res) => {
     if (!/\.md$/i.test(name)) name = validateEntryName(name + '.md');
     const title = String(b.title ?? '').replace(/[\r\n]+/g, ' ').trim() || name.replace(/\.md$/i, '');
     const rel = dir ? dir + '/' + name : name;
-    const abs = resolveWithin(rel);
+    const abs = resolveWithin(lib, rel);
     const metaAbs = abs + SIDECAR_SUFFIX;
     if (pathTaken(abs) || pathTaken(metaAbs)) {
       return res.status(409).json({ error: pathTaken(abs) ? '同名文档已存在' : '同名元数据文件已存在（' + name + SIDECAR_SUFFIX + '）', exists: true, path: rel });
@@ -485,8 +591,8 @@ app.post('/api/file/create', async (req, res) => {
       try { fs.unlinkSync(abs); } catch { /* ignore */ }
       throw e;
     }
-    await rescanAndIndex();
-    const f = findFile(rel);
+    await lib.rescanAndIndex();
+    const f = findFile(lib, rel);
     res.json({ ok: true, kind, path: rel, meta, mtimeMs: f?.mtimeMs ?? null });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message, ...(e.extra || {}) });
@@ -504,9 +610,9 @@ function validateEntryPath(raw) {
   return rel;
 }
 
-function checkDsId(b, res) {
+function checkDsId(lib, b, res) {
   const dsId = b.dsId ?? b.dataSourceId;
-  if (dsId && dsId !== currentDsId) {
+  if (dsId && dsId !== lib.id) {
     res.status(409).json({ error: '数据源已切换，请刷新后重试', stale: true });
     return false;
   }
@@ -514,9 +620,9 @@ function checkDsId(b, res) {
 }
 
 // 读取条目：{ rel, abs, isDir, metaAbs|null }
-function loadEntry(raw) {
+function loadEntry(lib, raw) {
   const rel = validateEntryPath(raw);
-  const abs = resolveWithin(rel);
+  const abs = resolveWithin(lib, rel);
   let st;
   try { st = fs.lstatSync(abs); } catch { throw Object.assign(new Error('条目不存在: ' + rel), { status: 404 }); }
   const isDir = st.isDirectory();
@@ -543,9 +649,9 @@ function renameAll(steps) {
 const sameCaseInsensitive = (a, b) => a !== b && a.toLowerCase() === b.toLowerCase();
 
 // 将条目（及旁注）移动到 newRel；处理仅大小写变化的重命名
-function relocate(entry, newRel) {
+function relocate(lib, entry, newRel) {
   if (newRel === entry.rel) throw badRequest('名称或位置未改变');
-  const newAbs = resolveWithin(newRel);
+  const newAbs = resolveWithin(lib, newRel);
   const caseOnly = sameCaseInsensitive(entry.rel, newRel);
   const newMeta = newAbs + SIDECAR_SUFFIX;
   if (!caseOnly && pathTaken(newAbs)) {
@@ -629,11 +735,12 @@ function moveBackups(dsId, oldRel, newRel, isDir) {
 }
 
 app.post('/api/file/rename', async (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const b = req.body || {};
-  if (!checkDsId(b, res)) return;
+  if (!checkDsId(lib, b, res)) return;
   try {
-    const entry = loadEntry(b.path);
+    const entry = loadEntry(lib, b.path);
     const oldName = path.posix.basename(entry.rel);
     let newName = validateEntryName(b.newName);
     if (!entry.isDir) {
@@ -643,7 +750,7 @@ app.post('/api/file/rename', async (req, res) => {
     if (isSidecar(newName)) throw badRequest('名称不能以 .meta.json 结尾', { invalidName: true });
     const dir = path.posix.dirname(entry.rel);
     const newRel = dir === '.' ? newName : dir + '/' + newName;
-    const moved = relocate(entry, newRel);
+    const moved = relocate(lib, entry, newRel);
     let titleUpdated = false;
     if (moved.newMeta) {
       // 旧标题等于旧文件名主体时，标题随新名称更新；id 永不改变
@@ -664,12 +771,12 @@ app.post('/api/file/rename', async (req, res) => {
       }
     }
     try {
-      moveBackups(currentDsId, entry.rel, newRel, entry.isDir);
+      moveBackups(lib.id, entry.rel, newRel, entry.isDir);
     } catch (be) {
       console.error('备份随迁失败:', be.message);
     }
-    linkIndex.notifyRename(entry.rel, newRel, entry.isDir); // 忽略记录随行
-    await rescanAndIndex();
+    lib.linkIndex.notifyRename(entry.rel, newRel, entry.isDir); // 忽略记录随行
+    await lib.rescanAndIndex();
     res.json({ ok: true, kind: entry.isDir ? 'folder' : 'file', oldPath: entry.rel, path: newRel, sidecar: !!moved.newMeta, titleUpdated });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message, ...(e.extra || {}) });
@@ -677,30 +784,31 @@ app.post('/api/file/rename', async (req, res) => {
 });
 
 app.post('/api/file/move', async (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const b = req.body || {};
-  if (!checkDsId(b, res)) return;
+  if (!checkDsId(lib, b, res)) return;
   try {
-    const entry = loadEntry(b.path);
+    const entry = loadEntry(lib, b.path);
     const targetDir = validateRelDir(b.targetDir);
     if (targetDir.split('/')[0] === TRASH_DIR) throw badRequest('不能移动到回收站，请使用删除');
     if (entry.isDir && (targetDir === entry.rel || targetDir.startsWith(entry.rel + '/'))) {
       throw badRequest('不能把文件夹移动到它自身或其子文件夹中');
     }
-    const dirAbs = resolveWithin(targetDir);
+    const dirAbs = resolveWithin(lib, targetDir);
     let st;
     try { st = fs.statSync(dirAbs); } catch { return res.status(404).json({ error: '目标目录不存在: ' + (targetDir || '/') }); }
     if (!st.isDirectory()) throw badRequest('目标不是目录');
     const name = path.posix.basename(entry.rel);
     const newRel = targetDir ? targetDir + '/' + name : name;
-    const moved = relocate(entry, newRel);
+    const moved = relocate(lib, entry, newRel);
     try {
-      moveBackups(currentDsId, entry.rel, newRel, entry.isDir);
+      moveBackups(lib.id, entry.rel, newRel, entry.isDir);
     } catch (be) {
       console.error('备份随迁失败:', be.message);
     }
-    linkIndex.notifyRename(entry.rel, newRel, entry.isDir); // 忽略记录随行
-    await rescanAndIndex();
+    lib.linkIndex.notifyRename(entry.rel, newRel, entry.isDir); // 忽略记录随行
+    await lib.rescanAndIndex();
     res.json({ ok: true, kind: entry.isDir ? 'folder' : 'file', oldPath: entry.rel, path: newRel, sidecar: !!moved.newMeta });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message, ...(e.extra || {}) });
@@ -715,13 +823,14 @@ function trashStamp(d = new Date()) {
 // 删除 = 移入回收站：先原子移入 .trash/<时间戳>__<名称>/（含旁注与来源说明），
 // 若宿主注册了系统回收站，再把该批次目录交给系统回收站；失败则保留在 .trash/。
 app.post('/api/file/delete', async (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const b = req.body || {};
-  if (!checkDsId(b, res)) return;
+  if (!checkDsId(lib, b, res)) return;
   try {
-    const entry = loadEntry(b.path);
+    const entry = loadEntry(lib, b.path);
     const name = path.posix.basename(entry.rel);
-    const trashRoot = path.join(scanner.baseDir, TRASH_DIR);
+    const trashRoot = path.join(lib.scanner.baseDir, TRASH_DIR);
     fs.mkdirSync(trashRoot, { recursive: true });
     let batchName = trashStamp() + '__' + name;
     for (let i = 2; pathTaken(path.join(trashRoot, batchName)); i++) batchName = trashStamp() + '-' + i + '__' + name;
@@ -745,7 +854,7 @@ app.post('/api/file/delete', async (req, res) => {
     if (osTrash) {
       try { await osTrash(batchAbs); trashedTo = 'os'; } catch (e) { console.error('系统回收站失败，保留在 .trash/:', e.message); }
     }
-    await rescanAndIndex();
+    await lib.rescanAndIndex();
     res.json({
       ok: true, kind: entry.isDir ? 'folder' : 'file', path: entry.rel, sidecar: !!entry.metaAbs, trashedTo,
       trashPath: trashedTo === 'local' ? TRASH_DIR + '/' + batchName : null,
@@ -759,7 +868,7 @@ app.post('/api/file/delete', async (req, res) => {
 
 const metaIssueCache = new WeakMap(); // snapshot -> issues
 
-function computeMetaIssues(snapshot) {
+function computeMetaIssues(lib, snapshot) {
   if (metaIssueCache.has(snapshot)) return metaIssueCache.get(snapshot);
   const issues = [];
   const sidecarSet = new Set(snapshot.sidecars || []);
@@ -768,7 +877,7 @@ function computeMetaIssues(snapshot) {
     const target = sc.slice(0, sc.length - SIDECAR_SUFFIX.length);
     let id = null;
     try {
-      const meta = JSON.parse(fs.readFileSync(path.join(scanner.baseDir, sc), 'utf8'));
+      const meta = JSON.parse(fs.readFileSync(path.join(lib.scanner.baseDir, sc), 'utf8'));
       if (meta && typeof meta.id === 'string') id = meta.id;
     } catch {
       issues.push({ kind: 'invalid', sidecar: sc, target, message: '元数据文件不是合法 JSON' });
@@ -777,7 +886,7 @@ function computeMetaIssues(snapshot) {
       if (!byId.has(id)) byId.set(id, []);
       byId.get(id).push(sc);
     }
-    if (!pathTaken(path.join(scanner.baseDir, target))) {
+    if (!pathTaken(path.join(lib.scanner.baseDir, target))) {
       // 同名文档在别处且自身没有旁注：很可能是在应用外被移动/重命名
       const targetName = path.posix.basename(target);
       const candidates = snapshot.files
@@ -796,38 +905,40 @@ function computeMetaIssues(snapshot) {
 }
 
 app.get('/api/meta/issues', (req, res) => {
-  if (!requireSource(res)) return;
-  const issues = computeMetaIssues(scanner.snapshot);
-  res.json({ dsId: currentDsId, scannedAt: scanner.snapshot.scannedAt, total: issues.length, issues });
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const issues = computeMetaIssues(lib, lib.scanner.snapshot);
+  res.json({ dsId: lib.id, scannedAt: lib.scanner.snapshot.scannedAt, total: issues.length, issues });
 });
 
 // ---------- AI 元数据导入（JSONL → 旁注） ----------
 
 // 导入行 path 校验：拒绝反斜杠/绝对路径/../盘符，且必须与规范化相对路径完全一致，再限制在数据源内
-function resolveDocPath(raw) {
+function resolveDocPathFor(lib, raw) {
   const s = String(raw);
   if (s.includes('\\')) throw badRequest('path 越界');
   const rel = validateRelDir(s);
   if (rel !== s) throw badRequest('path 越界'); // . 段、空段、被规范化们一律拒绝
-  return resolveWithin(rel);
+  return resolveWithin(lib, rel);
 }
 
 // body: { dsId, jsonl: string, mode: 'preview'|'apply', overwrite?: boolean }
 // 逐行解析校验并给出计划；apply 时重新计算同一计划后写入（只写旁注，绝不改文档），完成后重扫重建索引
 app.post('/api/meta/import', async (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const b = req.body || {};
-  if (!checkDsId(b, res)) return;
+  if (!checkDsId(lib, b, res)) return;
   const mode = b.mode ?? 'preview';
   if (!['preview', 'apply'].includes(mode)) return res.status(400).json({ error: 'mode 必须是 preview 或 apply' });
   if (typeof b.jsonl !== 'string') return res.status(400).json({ error: 'jsonl 必须是字符串' });
   const nonEmpty = b.jsonl.split(/\r?\n/).filter((l) => l.trim()).length;
   if (nonEmpty > 20000) return res.status(400).json({ error: '非空行数超过上限 20000' });
   try {
-    const args = { baseDir: scanner.baseDir, text: b.jsonl, overwrite: b.overwrite === true, resolveDocPath };
+    const args = { baseDir: lib.scanner.baseDir, text: b.jsonl, overwrite: b.overwrite === true, resolveDocPath: (raw) => resolveDocPathFor(lib, raw) };
     const { summary, items, errors } = mode === 'apply' ? applyImport(args) : planImport(args);
-    if (mode === 'apply') await rescanAndIndex();
-    res.json({ dsId: currentDsId, mode, overwrite: b.overwrite === true, summary, items, errors });
+    if (mode === 'apply') await lib.rescanAndIndex();
+    res.json({ dsId: lib.id, mode, overwrite: b.overwrite === true, summary, items, errors });
   } catch (e) {
     res.status(e.status || 500).json({ error: '导入失败: ' + e.message });
   }
@@ -836,94 +947,104 @@ app.post('/api/meta/import', async (req, res) => {
 // ---------- 检索与引用 ----------
 
 app.get('/api/search', (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const q = String(req.query.q || '');
   const types = req.query.types ? String(req.query.types).split(',') : null;
   const dir = String(req.query.dir || '');
   const excludeDirs = req.query.exclude ? String(req.query.exclude).split(',') : [];
-  res.json({ dsId: currentDsId, ...indexer.search(q, { types, dir, excludeDirs }) });
+  res.json({ dsId: lib.id, ...lib.indexer.search(q, { types, dir, excludeDirs }) });
 });
 
 app.get('/api/refs/resolve', (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const name = String(req.query.name || '');
   const collection = req.query.collection ? String(req.query.collection) : null;
   let dirs = null;
   if (collection) {
-    const cols = getState(currentDsId, 'collections', []);
+    const cols = getState(lib.id, 'collections', []);
     const col = cols.find((c) => c.name === collection);
     if (col) dirs = col.dirs;
   }
-  res.json({ dsId: currentDsId, ...indexer.resolveRef(name, dirs) });
+  res.json({ dsId: lib.id, ...lib.indexer.resolveRef(name, dirs) });
 });
 
 // 供前端做正文自动链接的文件名清单（完整名与主体名）
 app.get('/api/refs/names', (req, res) => {
-  if (!requireSource(res)) return;
-  const names = indexer.files.map((f) => ({
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const names = lib.indexer.files.map((f) => ({
     name: f.name, base: f.base, path: f.path, ext: f.ext, dir: f.dir,
   }));
-  const cols = getState(currentDsId, 'collections', []);
-  res.json({ dsId: currentDsId, names, collections: cols });
+  const cols = getState(lib.id, 'collections', []);
+  res.json({ dsId: lib.id, names, collections: cols });
 });
 
 app.get('/api/backlinks', (req, res) => {
-  if (!requireSource(res)) return;
-  const f = findFile(String(req.query.path || ''));
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const f = findFile(lib, String(req.query.path || ''));
   if (!f) return res.status(404).json({ error: '文件不存在' });
   // 由自动内链索引支撑（旧版为文本包含扫描）：返回提及该文档的文件清单，形状兼容
-  const backlinks = linkIndex.backlinksOf(f.path)
-    .map((b) => findFile(b.path))
+  const backlinks = lib.linkIndex.backlinksOf(f.path)
+    .map((b) => findFile(lib, b.path))
     .filter(Boolean);
-  res.json({ dsId: currentDsId, backlinks });
+  res.json({ dsId: lib.id, backlinks });
 });
 
 // ---------- 自动内链（词条）与反向链接 ----------
 
 app.get('/api/links/doc', (req, res) => {
-  if (!currentDsId) return res.status(409).json({ error: '尚未配置数据源' });
+  const lib = resolveLib(req);
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
   const p = String(req.query.path || '');
-  res.json({ dsId: currentDsId, path: p, ...linkIndex.status(), links: linkIndex.linksOf(p) });
+  res.json({ dsId: lib.id, path: p, ...lib.linkIndex.status(), links: lib.linkIndex.linksOf(p) });
 });
 
 app.get('/api/links/backlinks', (req, res) => {
-  if (!currentDsId) return res.status(409).json({ error: '尚未配置数据源' });
+  const lib = resolveLib(req);
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
   const p = String(req.query.path || '');
-  res.json({ dsId: currentDsId, path: p, ...linkIndex.status(), backlinks: linkIndex.backlinksOf(p) });
+  res.json({ dsId: lib.id, path: p, ...lib.linkIndex.status(), backlinks: lib.linkIndex.backlinksOf(p) });
 });
 
 app.get('/api/links/terms', (req, res) => {
-  if (!currentDsId) return res.status(409).json({ error: '尚未配置数据源' });
-  res.json({ dsId: currentDsId, ...linkIndex.status(), terms: linkIndex.terms(String(req.query.q || '')) });
+  const lib = resolveLib(req);
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
+  res.json({ dsId: lib.id, ...lib.linkIndex.status(), terms: lib.linkIndex.terms(String(req.query.q || '')) });
 });
 
 app.get('/api/links/preview', (req, res) => {
-  if (!currentDsId) return res.status(409).json({ error: '尚未配置数据源' });
+  const lib = resolveLib(req);
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
   const p = String(req.query.path || '');
-  const v = linkIndex.previewOf(p);
+  const v = lib.linkIndex.previewOf(p);
   if (!v) return res.status(404).json({ error: '文档不在链接索引中' });
   res.json(v);
 });
 
 app.get('/api/links/status', (req, res) => {
-  if (!currentDsId) return res.json({ ready: false, building: false });
-  res.json({ dsId: currentDsId, ...linkIndex.status() });
+  const lib = resolveLib(req);
+  if (!lib) return res.json({ ready: false, building: false });
+  res.json({ dsId: lib.id, ...lib.linkIndex.status() });
 });
 
 // 忽略某条自动链接（本篇）：存于应用数据目录的按数据源状态，不写入语料文件
 app.post('/api/links/ignore', async (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const b = req.body || {};
   try {
     if (b.clearAll) {
-      linkIndex.clearIgnores();
-      await linkIndex.rebuild(scanner.snapshot, indexer);
+      lib.linkIndex.clearIgnores();
+      await lib.linkIndex.rebuild(lib.scanner.snapshot, indexer);
       return res.json({ ok: true, ignoredCount: 0 });
     }
     const p = String(b.path || '');
-    if (!findFile(p)) return res.status(404).json({ error: '文件不存在' });
+    if (!findFile(lib, p)) return res.status(404).json({ error: '文件不存在' });
     const ignore = b.ignore !== false;
-    const ignoredCount = linkIndex.setIgnore(p, String(b.term || ''), String(b.targetPath || ''), ignore);
+    const ignoredCount = lib.linkIndex.setIgnore(p, String(b.term || ''), String(b.targetPath || ''), ignore);
     res.json({ ok: true, ignored: ignore, ignoredCount });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
@@ -932,94 +1053,105 @@ app.post('/api/links/ignore', async (req, res) => {
 
 // 屏蔽词表：命中的词条不自动链接（wikilink 仍可手动使用）
 app.get('/api/links/blocklist', (req, res) => {
-  if (!currentDsId) return res.status(409).json({ error: '尚未配置数据源' });
-  res.json({ dsId: currentDsId, terms: linkIndex.blocklist(), ignoredCount: linkIndex.ignoredCount() });
+  const lib = resolveLib(req);
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
+  res.json({ dsId: lib.id, terms: lib.linkIndex.blocklist(), ignoredCount: lib.linkIndex.ignoredCount() });
 });
 
 app.put('/api/links/blocklist', async (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   const terms = Array.isArray(req.body?.terms) ? req.body.terms.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim()) : null;
   if (!terms) return res.status(400).json({ error: 'terms 必须是字符串数组' });
-  linkIndex.saveBlocklist(terms);
-  await rescanAndIndex(); // 词表变化 → 全量重算链接（仅用内存文本）
-  res.json({ ok: true, terms, ignoredCount: linkIndex.ignoredCount() });
+  lib.linkIndex.saveBlocklist(terms);
+  await lib.rescanAndIndex(); // 词表变化 → 全量重算链接（仅用内存文本）
+  res.json({ ok: true, terms, ignoredCount: lib.linkIndex.ignoredCount() });
 });
 
 // ---------- 最近记录 / 常用入口 / 集合 / 元数据映射 ----------
 
 app.post('/api/recents', (req, res) => {
-  if (!currentDsId) return res.status(409).json({ error: '未配置数据源' });
+  const lib = resolveLib(req);
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
   const { path: rel } = req.body || {};
-  let recents = getState(currentDsId, 'recents', []);
+  let recents = getState(lib.id, 'recents', []);
   recents = [{ path: rel, at: Date.now() }, ...recents.filter((r) => r.path !== rel)].slice(0, 30);
-  setState(currentDsId, 'recents', recents);
+  setState(lib.id, 'recents', recents);
   res.json({ ok: true });
 });
 
 app.get('/api/recents', (req, res) => {
-  if (!currentDsId) return res.json({ recents: [] });
-  const recents = getState(currentDsId, 'recents', []);
-  const alive = scanner.snapshot
-    ? recents.map((r) => ({ ...r, exists: !!findFile(r.path), file: findFile(r.path) || null }))
+  const lib = resolveLib(req);
+  if (!lib) return res.json({ recents: [] });
+  const recents = getState(lib.id, 'recents', []);
+  const alive = lib.scanner.snapshot
+    ? recents.map((r) => ({ ...r, exists: !!findFile(lib, r.path), file: findFile(lib, r.path) || null }))
     : recents;
-  res.json({ dsId: currentDsId, recents: alive });
+  res.json({ dsId: lib.id, recents: alive });
 });
 
 app.get('/api/pins', (req, res) => {
-  if (!currentDsId) return res.json({ pins: [] });
-  const pins = getState(currentDsId, 'pins', []);
-  const alive = scanner.snapshot
-    ? pins.map((p) => ({ ...p, exists: !!findFile(p.path) }))
+  const lib = resolveLib(req);
+  if (!lib) return res.json({ pins: [] });
+  const pins = getState(lib.id, 'pins', []);
+  const alive = lib.scanner.snapshot
+    ? pins.map((p) => ({ ...p, exists: !!findFile(lib, p.path) }))
     : pins;
-  res.json({ dsId: currentDsId, pins: alive });
+  res.json({ dsId: lib.id, pins: alive });
 });
 
 app.post('/api/pins', (req, res) => {
-  if (!currentDsId) return res.status(409).json({ error: '未配置数据源' });
+  const lib = resolveLib(req);
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
   const { path: rel, action } = req.body || {};
-  let pins = getState(currentDsId, 'pins', []);
+  let pins = getState(lib.id, 'pins', []);
   if (action === 'remove') pins = pins.filter((p) => p.path !== rel);
   else if (!pins.some((p) => p.path === rel)) pins.push({ path: rel, at: Date.now() });
-  setState(currentDsId, 'pins', pins);
+  setState(lib.id, 'pins', pins);
   res.json({ ok: true, pins });
 });
 
 app.get('/api/collections', (req, res) => {
-  if (!currentDsId) return res.json({ collections: [] });
-  const cols = getState(currentDsId, 'collections', []);
+  const lib = resolveLib(req);
+  if (!lib) return res.json({ collections: [] });
+  const cols = getState(lib.id, 'collections', []);
   // 标记目录是否仍存在
-  const dirs = new Set((scanner.snapshot?.files || []).map((f) => f.dir));
+  const dirs = new Set((lib.scanner.snapshot?.files || []).map((f) => f.dir));
   const withStatus = cols.map((c) => ({
     ...c,
     validDirs: c.dirs.filter((d) => dirs.has(d) || d === ''),
     missingDirs: c.dirs.filter((d) => !dirs.has(d) && d !== ''),
   }));
-  res.json({ dsId: currentDsId, collections: withStatus });
+  res.json({ dsId: lib.id, collections: withStatus });
 });
 
 app.put('/api/collections', (req, res) => {
-  if (!currentDsId) return res.status(409).json({ error: '未配置数据源' });
+  const lib = resolveLib(req);
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
   const cols = Array.isArray(req.body?.collections) ? req.body.collections : [];
-  setState(currentDsId, 'collections', cols);
+  setState(lib.id, 'collections', cols);
   res.json({ ok: true });
 });
 
 app.get('/api/metadata', (req, res) => {
-  if (!currentDsId) return res.json({ mappings: [] });
-  res.json({ dsId: currentDsId, mappings: getState(currentDsId, 'metadata', []) });
+  const lib = resolveLib(req);
+  if (!lib) return res.json({ mappings: [] });
+  res.json({ dsId: lib.id, mappings: getState(lib.id, 'metadata', []) });
 });
 
 app.put('/api/metadata', (req, res) => {
-  if (!currentDsId) return res.status(409).json({ error: '未配置数据源' });
-  setState(currentDsId, 'metadata', Array.isArray(req.body?.mappings) ? req.body.mappings : []);
+  const lib = resolveLib(req);
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
+  setState(lib.id, 'metadata', Array.isArray(req.body?.mappings) ? req.body.mappings : []);
   res.json({ ok: true });
 });
 
 // 预览某个 JSON 文件的结构，辅助配置映射
 app.get('/api/metadata/inspect', (req, res) => {
-  if (!requireSource(res)) return;
+  const lib = requireLib(res, req);
+  if (!lib) return;
   try {
-    const abs = resolveWithin(String(req.query.path || ''));
+    const abs = resolveWithin(lib, String(req.query.path || ''));
     const { content } = readTextPreserve(abs);
     const data = JSON.parse(content);
     const shape = (v, depth) => {
@@ -1038,14 +1170,15 @@ app.get('/api/metadata/inspect', (req, res) => {
 
 // 主题/概念聚合：基于用户配置的元数据映射
 app.get('/api/topics', (req, res) => {
-  if (!requireSource(res)) return;
-  const mappings = getState(currentDsId, 'metadata', []);
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const mappings = getState(lib.id, 'metadata', []);
   const topicCount = new Map();
   const conceptCount = new Map();
   const errors = [];
   for (const m of mappings) {
     try {
-      const abs = resolveWithin(m.file);
+      const abs = resolveWithin(lib, m.file);
       const data = JSON.parse(readTextPreserve(abs).content);
       const items = m.itemPath
         ? m.itemPath.split('.').reduce((o, k) => (o ? o[k] : undefined), data)
@@ -1076,7 +1209,7 @@ app.get('/api/topics', (req, res) => {
     }
   }
   res.json({
-    dsId: currentDsId,
+    dsId: lib.id,
     configured: mappings.length > 0,
     topics: [...topicCount.values()].sort((a, b) => b.count - a.count),
     concepts: [...conceptCount.values()].sort((a, b) => b.count - a.count),
@@ -1140,21 +1273,24 @@ if (STATIC_DIR && fs.existsSync(INDEX_FILE)) {
 // ---------- 启动 ----------
 
 async function boot() {
-  const cfg = getConfig();
-  if (cfg) {
+  const { libraries, activeId: savedActive } = listLibs();
+  for (const meta of libraries) {
+    const lib = new Lib(meta);
+    libs.set(lib.id, lib);
     try {
-      fs.accessSync(cfg.baseDir, fs.constants.R_OK);
-      currentDsId = cfg.dsId;
-      scanner.setBaseDir(cfg.baseDir);
-      indexer.reset(cfg.dsId, cfg.baseDir);
-      linkIndex.reset(cfg.dsId, cfg.baseDir);
-      await scanner.rescan();
-      scanner.startWatch();
-      console.log('已恢复数据源:', cfg.baseDir);
+      fs.accessSync(lib.baseDir, fs.constants.R_OK);
+      await lib.start();
+      console.log('已恢复资料库:', lib.baseDir);
     } catch (e) {
-      console.error('上次数据源不可访问:', e.message);
+      // 目录不可达：保留在列表中可移除，但不扫描不监听
+      lib.scanner.setBaseDir(lib.baseDir);
+      lib.indexer.reset(lib.id, lib.baseDir);
+      lib.linkIndex.reset(lib.id, lib.baseDir);
+      console.error('[' + lib.name + '] 目录不可访问:', e.message);
     }
   }
+  activeId = libs.has(savedActive) ? savedActive : (libraries[0]?.id ?? null);
+  if (activeId) setActiveLibInStore(activeId);
   app.listen(PORT, HOST, () => console.log('语料工作台后端已启动: http://localhost:' + PORT));
 }
 

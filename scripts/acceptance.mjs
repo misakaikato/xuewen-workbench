@@ -1074,5 +1074,123 @@ console.log('== 16. 自动内链与反向链接 ==');
   }
 }
 
+
+console.log('== 17. 多资料库工作区 ==');
+// 独立服务 + 临时数据目录 + test-data 临时副本：多库并行、ds 定位、隔离、移除恢复、v1 迁移
+{
+  const PORT17 = 7497;
+  const B17 = 'http://127.0.0.1:' + PORT17;
+  const tmp17 = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-multilib-'));
+  const corpus17 = path.join(tmp17, 'test-data');
+  fs.cpSync(path.join(ROOT, 'test-data', 'ds-a'), path.join(corpus17, 'ds-a'), { recursive: true });
+  fs.cpSync(path.join(ROOT, 'test-data', 'ds-b'), path.join(corpus17, 'ds-b'), { recursive: true });
+  const DSA = path.join(corpus17, 'ds-a');
+  const DSB = path.join(corpus17, 'ds-b');
+  const dataDir17 = path.join(tmp17, 'data');
+  const j17 = async (url, init) => {
+    const r = await fetch(B17 + url, init);
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  };
+  const post17 = (url, body) => j17(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let child17 = null;
+  const spawn17 = async (migrateFixture) => {
+    fs.mkdirSync(dataDir17, { recursive: true });
+    if (migrateFixture) {
+      fs.writeFileSync(path.join(dataDir17, 'config.json'), JSON.stringify({ baseDir: DSA, savedAt: '2026-10-01T00:00:00Z' }));
+    }
+    child17 = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
+      env: { ...process.env, WORKBENCH_PORT: String(PORT17), WORKBENCH_HOST: '127.0.0.1', WORKBENCH_DATA_DIR: dataDir17 },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    child17.stderr.on('data', (d) => process.stderr.write('[srv17] ' + d));
+    const t0 = Date.now();
+    for (;;) {
+      try { const r = await fetch(B17 + '/api/config'); if (r.ok) return; } catch { /* 未就绪 */ }
+      if (Date.now() - t0 > 20000) throw new Error('§17 服务等待超时');
+      await new Promise((s) => setTimeout(s, 200));
+    }
+  };
+  const stop17 = async () => {
+    if (child17 && !child17.killed) {
+      try { child17.kill('SIGKILL'); } catch { /* ignore */ }
+      child17 = null;
+      await new Promise((s) => setTimeout(s, 300));
+    }
+  };
+  const treePaths = (body) => {
+    const out = [];
+    (function walk(n) { (n.files || []).forEach((f) => out.push(f.path)); (n.dirs || []).forEach(walk); })(body.tree || {});
+    return out;
+  };
+
+  try {
+    // (a) v1 配置迁移：旧单库 config.json → v2 单库
+    await spawn17(true);
+    let r17 = await j17('/api/config');
+    check('v1 config 迁移为单库', r17.body.configured === true && r17.body.libraries.length === 1 &&
+      r17.body.libraries[0].id === r17.body.dsId, JSON.stringify(r17.body.libraries));
+    check('迁移后状态可用（11 文件）', r17.body.status.counts && r17.body.status.counts.files === 11, JSON.stringify(r17.body.status.counts));
+    const cfgDisk = JSON.parse(fs.readFileSync(path.join(dataDir17, 'config.json'), 'utf8'));
+    check('磁盘配置已是 v2', cfgDisk.version === 2 && Array.isArray(cfgDisk.libraries) && cfgDisk.libraries.length === 1, JSON.stringify(cfgDisk));
+    await stop17();
+
+    // (b) 多库并行
+    await spawn17(false);
+    r17 = await post17('/api/config', { baseDir: DSA });
+    const dsA17 = r17.body.dsId;
+    check('添加 A 成功且返回库清单', r17.body.ok === true && r17.body.libraries.length === 1 && r17.body.libraries[0].name === 'ds-a', JSON.stringify(r17.body.libraries));
+    r17 = await post17('/api/config', { baseDir: DSB });
+    const dsB17 = r17.body.dsId;
+    check('添加 B 后两库并存且 B 为当前', r17.body.libraries.length === 2 && r17.body.activeId === dsB17 && r17.body.dsId === dsB17, JSON.stringify(r17.body.libraries.map((l) => l.name)));
+    check('A/B id 不同', dsA17 !== dsB17);
+
+    // (c) ds 定位与隔离
+    const curPaths = treePaths((await j17('/api/tree')).body);
+    const aPaths = treePaths((await j17('/api/tree?ds=' + dsA17)).body);
+    check('当前(B)树只含 B 文件', curPaths.includes('配置.json') && !curPaths.some((p) => p.startsWith('笔记/子目录')), curPaths.join(','));
+    check('?ds=A 树只含 A 文件', aPaths.includes('笔记/子目录/第10章 总结.md') && !aPaths.some((p) => p === '配置.json'), aPaths.join(','));
+    r17 = await j17('/api/tree?ds=notopen00000');
+    check('未打开的 ds 返回 404', r17.status === 404 && r17.body.error === '资料库未打开', String(r17.status));
+
+    // (d) 状态含各库
+    r17 = await j17('/api/status');
+    check('status.libs 覆盖全部库', r17.body.libs && r17.body.libs[dsA17] && r17.body.libs[dsB17] &&
+      r17.body.libs[dsA17].scannedAt && r17.body.libs[dsB17].watching === true, JSON.stringify(r17.body.libs));
+
+    // (e) 检索隔离（雪拥蓝关为 ds-a 独有词）
+    r17 = await j17('/api/search?q=' + encodeURIComponent('雪拥蓝关') + '&ds=' + dsA17);
+    check('?ds=A 搜索命中 A 内容', r17.body.total >= 1, JSON.stringify(r17.body.total));
+    r17 = await j17('/api/search?q=' + encodeURIComponent('雪拥蓝关') + '&ds=' + dsB17);
+    check('?ds=B 搜索无 A 内容', r17.body.total === 0, JSON.stringify(r17.body.total));
+
+    // (f) 移除 → 派生数据保留 → 重加恢复
+    await post17('/api/recents?ds=' + dsA17, { path: '笔记/第1章 入门.md' });
+    r17 = await post17('/api/library/remove', { ds: dsA17 });
+    check('移除 A 后回落 B 为当前', r17.body.ok === true && r17.body.activeId === dsB17 && r17.body.libraries.length === 1, JSON.stringify(r17.body.libraries));
+    r17 = await j17('/api/tree?ds=' + dsA17);
+    check('移除后 ?ds=A 404', r17.status === 404);
+    r17 = await j17('/api/config');
+    check('配置清单只剩 B', r17.body.libraries.length === 1 && r17.body.dsId === dsB17);
+    check('A 的派生数据仍在磁盘', fs.existsSync(path.join(dataDir17, 'sources', dsA17, 'recents.json')));
+    r17 = await post17('/api/config', { baseDir: DSA });
+    check('重新添加 A 成功（同 id）', r17.body.ok === true && r17.body.dsId === dsA17 && r17.body.libraries.length === 2);
+    r17 = await j17('/api/recents?ds=' + dsA17);
+    check('重加后最近记录恢复', r17.body.recents.length === 1 && r17.body.recents[0].path === '笔记/第1章 入门.md' && r17.body.recents[0].exists === true, JSON.stringify(r17.body.recents));
+
+    // (g) 激活切换
+    r17 = await post17('/api/library/activate', { ds: dsB17 });
+    check('激活 B 后 config 指向 B', r17.body.ok === true && r17.body.dsId === dsB17 && r17.body.activeId === dsB17);
+    r17 = await post17('/api/library/activate', { ds: 'notopen00000' });
+    check('激活未打开库 404', r17.status === 404);
+
+    // (h) 同目录重复添加 = 仅激活，不重复
+    r17 = await post17('/api/config', { baseDir: DSB });
+    check('重复添加 B 不产生重复库', r17.body.libraries.length === 2 && r17.body.libraries.filter((l) => l.id === dsB17).length === 1, JSON.stringify(r17.body.libraries.map((l) => l.name)));
+  } finally {
+    await stop17();
+    fs.rmSync(tmp17, { recursive: true, force: true });
+  }
+}
+
 console.log(`\n结果：${pass} 通过，${fail} 失败`);
 process.exit(fail ? 1 : 0);
