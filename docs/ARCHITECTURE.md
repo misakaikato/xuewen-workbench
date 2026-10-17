@@ -127,8 +127,11 @@ flowchart TB
 | `server/index.js` | REST API 入口，端口 7410 |
 | `server/scanner.js` | 扫描数据源目录，生成文件树 |
 | `server/indexer.js` | 建索引、搜索（文件名、路径、md 正文、JSON 键值、Word 文本） |
-| `server/store.js` | 数据源配置、原子写回、备份 |
+| `server/store.js` | 资料库配置（v2 多库清单）、原子写回、备份 |
 | `server/word.js` | 用 mammoth 解析 Word（仅 docx） |
+
+- **多资料库并行**（2026-10-17）：后端为每个已打开资料库维护一套 Lib（scanner / indexer / linkIndex / indexing），`libs Map + activeId` 管理；请求经 `?ds=<id>` 定位目标库，缺省当前库。`POST /api/config` = 添加或激活；`POST /api/library/remove` 移出工作区（停监听、卸内存实例，`sources/<dsId>/` 派生数据全保留，重加即恢复）。配置文件 v2：`{ version, libraries[], activeId }`，v1 单库自动迁移。
+- **应用标识与原生控件主题化**（2026-10-17）：logo 源头 `assets/logo-master.svg`（朱砂「学问」白文印，报隶印文），派生 `assets/icons/icon.png`（electron-builder/窗口）与 `public/logo-*.png`（favicon/顶栏）；滚动条、::selection、range/checkbox 的 accent 全部走主题令牌（`src/index.css`），Settings 原生 select 换 shadcn Select。
 
 - scanner 跳过 `*.meta.json`（不进文件树、搜索、统计、链接），并记录空文件夹。
 
@@ -261,7 +264,7 @@ flowchart TB
 | Windows 打包 | `app.getPath('userData')` 下对应目录（%APPDATA%） |
 | 覆盖 | 环境变量 `WORKBENCH_DATA_DIR` |
 
-内容：数据源配置、`sources/<dsId>/backups/` 编辑备份；之后加入 SQLite 缓存与向量模型文件（模型也可由用户指定目录）。
+内容：资料库配置（多库清单）、`sources/<dsId>/backups/` 编辑备份；之后加入 SQLite 缓存与向量模型文件（模型也可由用户指定目录）。
 
 ### 4.6 语料本地版本历史【已定未做】
 - 语料有自己的**本地**版本历史，与代码仓库分开。
