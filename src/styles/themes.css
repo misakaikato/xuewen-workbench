@@ -254,7 +254,9 @@ html { background-color: var(--wb-bg); }
   background-image: linear-gradient(90deg, rgba(150, 120, 70, 0.05), transparent 3%, transparent 97%, rgba(150, 120, 70, 0.05));
 }
 [data-theme="A"] .reader a,
-[data-theme="B"] .reader a {
+[data-theme="B"] .reader a,
+[data-theme="A"] .md-link,
+[data-theme="B"] .md-link {
   color: var(--wb-link);
   text-decoration: none;
   border-bottom: var(--wb-link-border);
@@ -264,7 +266,8 @@ html { background-color: var(--wb-bg); }
 [data-theme="B"] .wb-chrome { border-bottom-color: transparent; }
 
 /* 深色阅读偏好优先于 A/B 的链接描边 */
-.dark .reader a {
+.dark .reader a,
+.dark .md-link {
   color: hsl(var(--primary));
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -274,36 +277,40 @@ html { background-color: var(--wb-bg); }
 /* C 夜读：暖白正文、米色大标题、鎏金高亮与点线链接（特异性压过 .dark 规则） */
 :root[data-theme="C"] .reader { color: var(--wb-text); }
 :root[data-theme="C"] .reader h1 { color: #f1e6cc; font-weight: 600; }
-:root[data-theme="C"] .reader a { color: var(--wb-link); text-decoration: none; border-bottom: var(--wb-link-border); }
+:root[data-theme="C"] .reader a,
+:root[data-theme="C"] .md-link { color: var(--wb-link); text-decoration: none; border-bottom: var(--wb-link-border); }
 :root[data-theme="C"] .reader mark,
 :root[data-theme="C"] .hl { background: var(--wb-hl); color: #f3e7c9; }
 
 /* ---------- 自动内链（词条）：阅读页词条链接与 wikilink ---------- */
 /* 词条下划线与 .reader a 同一套链接变量；wikilink 用点线区分，缺失词条弱化提示 */
-.reader .wb-autolink,
-.reader .wb-wikilink {
+.md-link { cursor: pointer; }
+
+/* 词条装饰（阅读页 chip 与编辑器装饰同用，不再限定 .reader 作用域） */
+.wb-autolink,
+.wb-wikilink {
   color: var(--wb-link);
   text-decoration: none;
   border-bottom: var(--wb-link-border);
   cursor: pointer;
 }
-.reader .wb-wikilink { border-bottom-style: dotted; }
-.reader .wb-wikilink-missing {
+.wb-wikilink { border-bottom-style: dotted; }
+.wb-wikilink-missing {
   color: hsl(var(--muted-foreground));
   text-decoration: line-through dotted;
   text-decoration-thickness: 1px;
   border-bottom: none;
   cursor: help;
 }
-.dark .reader .wb-autolink,
-.dark .reader .wb-wikilink {
+.dark .wb-autolink,
+.dark .wb-wikilink {
   color: hsl(var(--primary));
   text-decoration: underline;
   text-underline-offset: 3px;
   border-bottom: none;
 }
-:root[data-theme="C"] .reader .wb-autolink,
-:root[data-theme="C"] .reader .wb-wikilink {
+:root[data-theme="C"] .wb-autolink,
+:root[data-theme="C"] .wb-wikilink {
   color: var(--wb-link);
   text-decoration: none;
   border-bottom: var(--wb-link-border);

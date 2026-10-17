@@ -6,7 +6,6 @@ import { useNavigate, useParams, useBlocker, useLocation } from 'react-router-do
 import { EditorState } from '@codemirror/state';
 import type { Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { markdown } from '@codemirror/lang-markdown';
 import { json } from '@codemirror/lang-json';
 import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
@@ -20,6 +19,7 @@ import { runEntryAction, type EntryAction } from '@/lib/entryOps';
 import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
 import { editorBaseExtensions, editorBaseThemeSpec } from '@/components/editor/setup';
 import { livePreview } from '@/components/editor/livePreview';
+import { mdLang } from '@/components/editor/mdLanguage';
 import { linksExtensionFor, pushDocLinks } from '@/components/editor/autoLinks';
 import { detectLineSeparator } from '@/components/editor/lineSeparator';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
@@ -395,7 +395,7 @@ export default function Edit() {
       if (isLive) {
         list.push(...livePreview({ docPath: relPath, openLink }));
       } else {
-        list.push(markdown(), plainTheme);
+        list.push(...mdLang(), plainTheme);
       }
     }
     return list;

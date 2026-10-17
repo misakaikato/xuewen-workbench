@@ -39,7 +39,7 @@ function buildDecorations(links: DocLink[], active: Set<number>, doc: { lineAt(p
   const parts: Range<Decoration>[] = [];
   for (const l of links) {
     if (l.ignored || l.to <= l.from) continue;
-    const cls = l.kind === 'auto' ? 'cm-lp-autolink' : l.kind === 'wiki' ? 'cm-lp-wikilink' : 'cm-lp-wikilink-missing';
+    const cls = l.kind === 'auto' ? 'wb-autolink' : l.kind === 'wiki' ? 'wb-wikilink' : 'wb-wikilink-missing';
     if (l.kind !== 'auto') {
       // wikilink：活动行显示源码
       const a = doc.lineAt(l.from).number;
@@ -176,25 +176,8 @@ function notifyLinksUpdated() {
 
 export function autoLinks(opts: AutoLinksOptions): Extension {
   const theme = EditorView.theme({
-    // 自动内链：纯下划线标记，不改文字；颜色/光标提示可点击（Cmd/Ctrl+点击跳转）
-    '.cm-lp-autolink': {
-      textDecoration: 'underline',
-      textDecorationColor: 'hsl(var(--primary) / 0.55)',
-      textUnderlineOffset: '3px',
-      cursor: 'pointer',
-    },
-    '.cm-lp-wikilink': {
-      color: 'var(--wb-link)',
-      borderBottom: 'var(--wb-link-border)',
-      borderBottomStyle: 'dotted',
-      cursor: 'pointer',
-    },
-    '.cm-lp-wikilink-missing': {
-      color: 'hsl(var(--muted-foreground))',
-      textDecoration: 'line-through dotted',
-      cursor: 'help',
-    },
-    // 悬停预览与操作（忽略 / 屏蔽）：走应用 CSS 变量，三主题通用
+    // 词条链接样式走 themes.css 的 .wb-autolink/.wb-wikilink/.wb-wikilink-missing
+    // （与阅读页同源，三主题 + 深浅色全覆盖）；此处只定义悬停预览弹层
     '.cm-al-tip': {
       background: 'hsl(var(--card))',
       color: 'hsl(var(--foreground))',

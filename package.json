@@ -19,6 +19,7 @@
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language-data": "^6.5.2",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -71,9 +72,13 @@
     "react-router-dom": "^7.18.4",
     "recharts": "^2.15.4",
     "rehype-highlight": "^7.0.2",
+    "rehype-stringify": "^10.0.1",
     "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.4.0",
+    "unified": "^11.0.5",
     "vaul": "^1.1.2",
     "word-extractor": "^1.0.4",
     "zod": "^4.3.5"

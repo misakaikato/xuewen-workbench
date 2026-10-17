@@ -3,12 +3,12 @@
 // 重算时机：文档 / 选区 / 视口 / 语法树变化；内联装饰只为可见范围构建，长文档保持轻快。
 // 表格的整块替换装饰来自 StateField（块级替换装饰要求如此），点击表格进入源码编辑。
 import { syntaxTree } from '@codemirror/language';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { Facet, StateEffect, StateField } from '@codemirror/state';
 import type { EditorState, Range } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, WidgetType } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
+import { mdLang } from './mdLanguage';
 import { editorBaseThemeSpec } from './setup';
 import { getApiScope } from '@/lib/api';
 
@@ -379,7 +379,7 @@ function decorateLink(state: EditorState, node: SyntaxNode, parts: Range<Decorat
   }
   if (labelTo > labelFrom) {
     parts.push(
-      Decoration.mark({ class: 'cm-lp-link', attributes: { 'data-lp-href': href } }).range(labelFrom, labelTo)
+      Decoration.mark({ class: 'md-link', attributes: { 'data-lp-href': href } }).range(labelFrom, labelTo)
     );
   }
 }
@@ -596,35 +596,47 @@ const lpTheme = EditorView.theme({
   // 正文列与阅读页（MarkdownReader/.reader）同版式：同一套 --rd-* 变量、
   // 同一上限（--rd-width）并居中；calc(100% - 96px) 对应阅读页容器的水平留白
   // （max-w-5xl 容器 px-4 共 32px + 正文卡片 p-8 共 64px），窄窗口下两列同宽收缩
+  // 正文列与阅读页同版式：同一套 --rd-* 变量、同一上限并居中。
+  // 阅读页文字列 = min(--rd-width, 卡片内宽)（卡片在 max-w-5xl 容器内，页边留白共 96px）；
+  // 这里 .cm-content 上限取 min(rd-width + 28px, 100% - 68px)，减去 .cm-line 左右 14px
+  // padding 后文字列与阅读页逐像素对齐（窄窗口下两列同宽收缩）
   '.cm-content': {
     caretColor: 'hsl(var(--foreground))',
     paddingBottom: '20vh',
-    maxWidth: 'min(var(--rd-width), calc(100% - 96px))',
+    maxWidth: 'min(calc(var(--rd-width) + 28px), calc(100% - 68px))',
     marginLeft: 'auto',
     marginRight: 'auto',
   },
   // 空行间隙 = 阅读页段间距 --rd-para（设下限避免段间距为 0 时空行无法点入）
   '.cm-lp-blank': { lineHeight: 'max(var(--rd-para), 0.6)' },
 
-  '.cm-lp-h1': { fontSize: '1.7em', fontWeight: '700', lineHeight: '1.35', paddingTop: '0.35em' },
-  '.cm-lp-h2': { fontSize: '1.4em', fontWeight: '700', lineHeight: '1.4', paddingTop: '0.3em', paddingBottom: '0.25em', borderBottom: '1px solid hsl(var(--border))' },
-  '.cm-lp-h3': { fontSize: '1.2em', fontWeight: '600', paddingTop: '0.25em' },
-  '.cm-lp-h4': { fontSize: '1.08em', fontWeight: '600', paddingTop: '0.2em' },
-  '.cm-lp-h5, .cm-lp-h6': { fontSize: '1em', fontWeight: '600', paddingTop: '0.2em' },
+  '.cm-lp-h1': { fontSize: '1.7em', fontWeight: '700', lineHeight: '1.35', paddingTop: '0.75em' },
+  '.cm-lp-h2': { fontSize: '1.4em', fontWeight: '700', lineHeight: '1.4', paddingTop: '0.65em', paddingBottom: '0.25em', borderBottom: '1px solid hsl(var(--border))' },
+  '.cm-lp-h3': { fontSize: '1.2em', fontWeight: '600', paddingTop: '0.5em' },
+  '.cm-lp-h4': { fontSize: '1.08em', fontWeight: '600', paddingTop: '0.4em' },
+  '.cm-lp-h5, .cm-lp-h6': { fontSize: '1em', fontWeight: '600', paddingTop: '0.35em' },
 
   '.cm-lp-quote': {
     borderLeft: '3px solid hsl(var(--primary) / 0.5)',
-    paddingLeft: '1em',
+    padding: '0.15em 1em',
     color: 'hsl(var(--muted-foreground))',
-    background: 'hsl(var(--muted) / 0.4)',
-    fontStyle: 'italic',
+    background: 'hsl(var(--muted) / 0.5)',
+    borderRadius: '0 6px 6px 0',
   },
 
-  '.cm-lp-code': { fontFamily: 'var(--font-mono)', fontSize: 'var(--rd-code-size)', background: 'hsl(var(--muted) / 0.55)', lineHeight: '1.6' },
-  '.cm-lp-code-first': { borderRadius: '8px 8px 0 0', marginTop: '0.6em' },
-  '.cm-lp-code-last': { borderRadius: '0 0 8px 8px', marginBottom: '0.6em' },
-  '.cm-lp-fence': { display: 'inline-block', color: 'hsl(var(--muted-foreground))', fontSize: '11px', lineHeight: '1.4', letterSpacing: '0.05em' },
-  '.cm-lp-fence-lang': { display: 'inline-block', padding: '0 6px', borderLeft: '2px solid hsl(var(--border))' },
+  // 代码块恒深色（同旧阅读页 pre）：token 色由 mdLanguage 的高亮样式提供
+  '.cm-lp-code': {
+    fontFamily: 'var(--font-mono)',
+    fontSize: 'var(--rd-code-size)',
+    background: 'hsl(30 8% 16%)',
+    color: 'hsl(40 20% 90%)',
+    lineHeight: '1.6',
+    padding: '0 1.1em',
+  },
+  '.cm-lp-code-first': { borderRadius: '8px 8px 0 0', marginTop: '0.6em', paddingTop: '0.9em' },
+  '.cm-lp-code-last': { borderRadius: '0 0 8px 8px', marginBottom: '0.6em', paddingBottom: '0.9em' },
+  '.cm-lp-fence': { display: 'inline-block', color: 'hsl(40 20% 90% / 0.55)', fontSize: '11px', lineHeight: '1.4', letterSpacing: '0.05em' },
+  '.cm-lp-fence-lang': { display: 'inline-block', padding: '0 6px', borderLeft: '2px solid hsl(40 20% 90% / 0.25)' },
 
   '.cm-lp-em': { fontStyle: 'italic' },
   '.cm-lp-strong': { fontWeight: '700' },
@@ -636,11 +648,10 @@ const lpTheme = EditorView.theme({
     borderRadius: '4px',
     padding: '0.1em 0.35em',
   },
-  '.cm-lp-link': { color: 'var(--wb-link)', borderBottom: 'var(--wb-link-border)', cursor: 'pointer' },
   '.cm-lp-bullet': { color: 'hsl(var(--primary))', fontWeight: '600', display: 'inline-block', minWidth: '0.9em' },
   '.cm-lp-task': { accentColor: 'hsl(var(--primary))', margin: '0 0.4em 0 0', pointerEvents: 'none', verticalAlign: 'middle' },
   '.cm-lp-img': { maxWidth: '100%', verticalAlign: 'middle', borderRadius: '6px' },
-  '.cm-lp-hr-w': { display: 'inline-block', width: '100%', height: 0, borderTop: '1px solid hsl(var(--border))', margin: '0.8em 0', verticalAlign: 'middle' },
+  '.cm-lp-hr-w': { display: 'inline-block', width: '100%', height: 0, borderTop: '1px solid hsl(var(--border))', margin: '1.2em 0', verticalAlign: 'middle' },
 
   // 表格部件：自身携带横向滚动（窄列内长表格不把整个编辑器撑宽），
   // 单元格内折行规则与阅读页一致（break-word 而非继承的 break-spaces）
@@ -655,14 +666,14 @@ const lpTheme = EditorView.theme({
     overflowWrap: 'break-word',
   },
   '.cm-lp-table table': { borderCollapse: 'collapse', fontSize: '0.92em', lineHeight: '1.5' },
-  '.cm-lp-table th, .cm-lp-table td': { border: '1px solid hsl(var(--border))', padding: '0.35em 0.8em', textAlign: 'left' },
+  '.cm-lp-table th, .cm-lp-table td': { border: '1px solid hsl(var(--border))', padding: '0.4em 0.8em', textAlign: 'left' },
   '.cm-lp-table th': { background: 'hsl(var(--muted))', fontWeight: '600' },
 });
 
 // 实时预览扩展入口
 export function livePreview(opts: LivePreviewOptions) {
   return [
-    markdown({ base: markdownLanguage, codeLanguages: [] }),
+    ...mdLang(),
     lpDocPath.of(opts.docPath),
     lpTableField,
     makeLpPlugin(opts.openLink),
