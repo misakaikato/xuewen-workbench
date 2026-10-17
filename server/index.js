@@ -1274,7 +1274,8 @@ if (STATIC_DIR && fs.existsSync(INDEX_FILE)) {
 
 async function boot() {
   const { libraries, activeId: savedActive } = listLibs();
-  for (const meta of libraries) {
+  // 各库并行恢复（扫描互相独立，串行会人为拉长多库启动时间）
+  await Promise.all(libraries.map(async (meta) => {
     const lib = new Lib(meta);
     libs.set(lib.id, lib);
     try {
@@ -1288,7 +1289,7 @@ async function boot() {
       lib.linkIndex.reset(lib.id, lib.baseDir);
       console.error('[' + lib.name + '] 目录不可访问:', e.message);
     }
-  }
+  }));
   activeId = libs.has(savedActive) ? savedActive : (libraries[0]?.id ?? null);
   if (activeId) setActiveLibInStore(activeId);
   app.listen(PORT, HOST, () => console.log('语料工作台后端已启动: http://localhost:' + PORT));
