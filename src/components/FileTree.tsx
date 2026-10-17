@@ -2,7 +2,12 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { TreeNode } from '@/lib/types';
-import { ChevronRight, ChevronDown, Folder, FolderOpen } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, FolderOpen, FilePlus, FolderPlus } from 'lucide-react';
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu';
+import { useApp } from '@/store/app';
+import { CreateEntryDialog, type CreateKind, type CreateTarget } from './CreateEntryDialog';
+
+type OnCreate = (dir: string, kind: CreateKind) => void;
 import { extIcon } from './RefChip';
 
 function Node({
@@ -10,15 +15,19 @@ function Node({
   depth,
   filter,
   currentPath,
+  onCreate,
 }: {
   node: TreeNode;
   depth: number;
   filter: string;
   currentPath?: string;
+  onCreate: OnCreate;
 }) {
   const [open, setOpen] = useState(depth < 1);
   const navigate = useNavigate();
   const f = filter.trim().toLowerCase();
+  // 从菜单打开对话框时延后一帧，避免菜单关闭与对话框焦点管理冲突
+  const create = (kind: CreateKind) => { setOpen(true); setTimeout(() => onCreate(node.path, kind), 0); };
 
   const dirs = useMemo(
     () =>
@@ -35,8 +44,10 @@ function Node({
   return (
     <div>
       {node.path !== '' && (
+        <ContextMenu>
+        <ContextMenuTrigger asChild>
         <div
-          className="flex items-center gap-1 py-1 px-1.5 rounded cursor-pointer hover:bg-sidebar-accent text-sm select-none"
+          className="group flex items-center gap-1 py-1 px-1.5 rounded cursor-pointer hover:bg-sidebar-accent text-sm select-none"
           style={{ paddingLeft: depth * 14 + 4 }}
           onClick={() => setOpen(!open)}
         >
@@ -52,12 +63,34 @@ function Node({
           >
             {node.name}
           </button>
+          <span className="hidden group-hover:flex group-focus-within:flex items-center gap-0.5 shrink-0">
+            <button
+              className="p-0.5 rounded hover:bg-background"
+              title="新建文档" aria-label="新建文档"
+              onClick={(e) => { e.stopPropagation(); create('md'); }}
+            >
+              <FilePlus className="w-3.5 h-3.5" />
+            </button>
+            <button
+              className="p-0.5 rounded hover:bg-background"
+              title="新建文件夹" aria-label="新建文件夹"
+              onClick={(e) => { e.stopPropagation(); create('folder'); }}
+            >
+              <FolderPlus className="w-3.5 h-3.5" />
+            </button>
+          </span>
         </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => create('md')}><FilePlus />新建文档</ContextMenuItem>
+          <ContextMenuItem onSelect={() => create('folder')}><FolderPlus />新建文件夹</ContextMenuItem>
+        </ContextMenuContent>
+        </ContextMenu>
       )}
       {(node.path === '' || open) && (
         <>
           {dirs.map((d) => (
-            <Node key={d.path} node={d} depth={depth + (node.path === '' ? 0 : 1)} filter={filter} currentPath={currentPath} />
+            <Node key={d.path} node={d} depth={depth + (node.path === '' ? 0 : 1)} filter={filter} currentPath={currentPath} onCreate={onCreate} />
           ))}
           {files.map((x) => (
             <button
@@ -82,9 +115,35 @@ function Node({
 export function FileTree({ tree, filter }: { tree: TreeNode; filter: string }) {
   const params = useParams();
   const currentPath = params['*'] ? decodeURIComponent(params['*']) : undefined;
+  const navigate = useNavigate();
+  const { refreshTree } = useApp();
+  const [target, setTarget] = useState<CreateTarget | null>(null);
+  const onCreate: OnCreate = (dir, kind) => setTarget({ dir, kind });
+  const onCreated = async (p: string, kind: CreateKind) => {
+    setTarget(null);
+    await refreshTree().catch(() => {});
+    if (kind === 'md') navigate('/edit/' + p.split('/').map(encodeURIComponent).join('/'));
+  };
   return (
     <div className="text-sidebar-foreground">
-      <Node node={tree} depth={0} filter={filter} currentPath={currentPath} />
+      <div className="flex items-center gap-1 px-1 pb-1 mb-1 border-b border-sidebar-border">
+        <button
+          className="flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent"
+          onClick={() => onCreate('', 'md')}
+          title="在数据源根目录新建文档"
+        >
+          <FilePlus className="w-3.5 h-3.5" />新建文档
+        </button>
+        <button
+          className="flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent"
+          onClick={() => onCreate('', 'folder')}
+          title="在数据源根目录新建文件夹"
+        >
+          <FolderPlus className="w-3.5 h-3.5" />新建文件夹
+        </button>
+      </div>
+      <Node node={tree} depth={0} filter={filter} currentPath={currentPath} onCreate={onCreate} />
+      <CreateEntryDialog target={target} onClose={() => setTarget(null)} onCreated={onCreated} />
       {tree.files.length === 0 && tree.dirs.length === 0 && (
         <div className="text-xs text-muted-foreground p-3">数据源中没有可支持的文件（.md / .json / .doc / .docx）</div>
       )}

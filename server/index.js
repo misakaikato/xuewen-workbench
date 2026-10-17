@@ -1,10 +1,11 @@
 // 主服务：Express API。语料配置、扫描状态、目录树、文件读写（原子写+备份+冲突检测）、
 // 检索、引用解析、集合与元数据映射、最近记录与常用入口、Word 能力诊断。
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import express from 'express';
 import { getConfig, saveConfig, dsIdFor, getState, setState, backupDir } from './store.js';
-import { Scanner, SUPPORTED_EXTS } from './scanner.js';
+import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX } from './scanner.js';
 import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
 
@@ -19,15 +20,26 @@ const indexer = new Indexer();
 
 let currentDsId = null;
 
-scanner.on('scan-done', async (snapshot) => {
-  if (currentDsId && scanner.baseDir) {
-    try {
-      await indexer.build(snapshot);
-    } catch (e) {
-      console.error('索引构建失败:', e.message);
+let indexing = Promise.resolve(); // 最近一次索引构建，供需要“立即可检索”的写操作等待
+
+scanner.on('scan-done', (snapshot) => {
+  indexing = (async () => {
+    if (currentDsId && scanner.baseDir) {
+      try {
+        await indexer.build(snapshot);
+      } catch (e) {
+        console.error('索引构建失败:', e.message);
+      }
     }
-  }
+  })();
 });
+
+// 重扫并等待索引完成（若监听触发的扫描正在进行，先等它结束，避免拿到旧快照）
+async function rescanAndIndex() {
+  while (scanner.scanning) await new Promise((r) => setTimeout(r, 50));
+  await scanner.rescan();
+  await indexing;
+}
 
 function requireSource(res) {
   if (!scanner.baseDir || !scanner.snapshot) {
@@ -147,8 +159,19 @@ app.get('/api/status', (req, res) => {
 
 // ---------- 目录树与统计 ----------
 
-function buildTree(files) {
+function buildTree(files, dirList = []) {
   const root = { name: '', path: '', dirs: new Map(), files: [] };
+  // 空目录也要出现（如刚新建的文件夹）；隐藏目录（.xxx）不单独展示
+  const ensureDir = (rel) => {
+    let node = root;
+    const parts = rel.split('/');
+    for (let i = 0; i < parts.length; i++) {
+      if (!node.dirs.has(parts[i])) {
+        node.dirs.set(parts[i], { name: parts[i], path: parts.slice(0, i + 1).join('/'), dirs: new Map(), files: [] });
+      }
+      node = node.dirs.get(parts[i]);
+    }
+  };
   for (const f of files) {
     const parts = f.path.split('/');
     let node = root;
@@ -161,6 +184,7 @@ function buildTree(files) {
     }
     node.files.push(f);
   }
+  for (const d of dirList) if (!d.split('/').some((p) => p.startsWith('.'))) ensureDir(d);
   function serialize(node) {
     return {
       name: node.name,
@@ -174,7 +198,7 @@ function buildTree(files) {
 
 app.get('/api/tree', (req, res) => {
   if (!requireSource(res)) return;
-  res.json({ dsId: currentDsId, tree: buildTree(scanner.snapshot.files) });
+  res.json({ dsId: currentDsId, tree: buildTree(scanner.snapshot.files, scanner.snapshot.dirs) });
 });
 
 app.get('/api/stats', (req, res) => {
@@ -306,6 +330,109 @@ app.post('/api/file/save-as', async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(e.status || 500).json({ error: '写入失败: ' + e.message });
+  }
+});
+
+// ---------- 新建文档 / 文件夹 ----------
+
+const DOC_TYPES = ['文章', '讲稿', '知乎'];
+const WIN_RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
+const badRequest = (msg, extra = {}) => Object.assign(new Error(msg), { status: 400, extra });
+
+// 文件/文件夹名校验：禁止分隔符、Windows 保留字符与保留名、隐藏名、末尾点/空格
+function validateEntryName(raw) {
+  const name = String(raw ?? '').normalize('NFC').trim();
+  if (!name) throw badRequest('名称不能为空', { invalidName: true });
+  if (name === '.' || name === '..') throw badRequest('名称无效', { invalidName: true });
+  if (/[/\\<>:"|?*\u0000-\u001f\u007f]/.test(name)) throw badRequest('名称不能包含 / \\ < > : " | ? * 或控制字符', { invalidName: true });
+  if (name.startsWith('.')) throw badRequest('名称不能以点开头', { invalidName: true });
+  if (/[. ]$/.test(name)) throw badRequest('名称不能以点或空格结尾', { invalidName: true });
+  if (WIN_RESERVED.test(name)) throw badRequest('名称为 Windows 保留名', { invalidName: true });
+  if (Buffer.byteLength(name, 'utf8') > 200) throw badRequest('名称过长', { invalidName: true });
+  return name;
+}
+
+// 目录：必须为数据源内相对路径，不允许绝对路径与 ..
+function validateRelDir(raw) {
+  const s = String(raw ?? '').split('\\').join('/');
+  if (path.isAbsolute(s) || path.win32.isAbsolute(s) || /^[a-zA-Z]:/.test(s)) throw badRequest('目录必须是数据源内的相对路径');
+  const parts = s.split('/').filter((p) => p !== '' && p !== '.');
+  if (parts.includes('..')) throw badRequest('目录不能包含 ..');
+  return parts.join('/');
+}
+
+function pathTaken(abs) {
+  try { fs.lstatSync(abs); return true; } catch { return false; }
+}
+
+function localDate(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+// 在数据源某目录下新建 Markdown 文档（同时写 <文件名>.meta.json 旁注）或子文件夹
+// body: { dsId|dataSourceId, dir, kind: 'md'|'folder', name, title?, docType?: 文章|讲稿|知乎 }
+app.post('/api/file/create', async (req, res) => {
+  if (!requireSource(res)) return;
+  const b = req.body || {};
+  const dsId = b.dsId ?? b.dataSourceId;
+  if (dsId && dsId !== currentDsId) {
+    return res.status(409).json({ error: '数据源已切换，请刷新后重试', stale: true });
+  }
+  // 兼容 type 字段：md/folder 视为 kind，文章/讲稿/知乎 视为 docType
+  const kind = b.kind ?? (['md', 'folder'].includes(b.type) ? b.type : 'md');
+  const docType = b.docType ?? (DOC_TYPES.includes(b.type) ? b.type : '文章');
+  try {
+    if (!['md', 'folder'].includes(kind)) throw badRequest('不支持的类型: ' + kind);
+    const dir = validateRelDir(b.dir);
+    const dirAbs = resolveWithin(dir);
+    let st;
+    try { st = fs.statSync(dirAbs); } catch { return res.status(404).json({ error: '目标目录不存在: ' + (dir || '/') }); }
+    if (!st.isDirectory()) throw badRequest('目标不是目录');
+
+    if (kind === 'folder') {
+      const name = validateEntryName(b.name);
+      const rel = dir ? dir + '/' + name : name;
+      const abs = resolveWithin(rel);
+      if (pathTaken(abs)) return res.status(409).json({ error: '同名文件或文件夹已存在', exists: true, path: rel });
+      fs.mkdirSync(abs);
+      await rescanAndIndex();
+      return res.json({ ok: true, kind, path: rel });
+    }
+
+    if (!DOC_TYPES.includes(docType)) throw badRequest('文档类型必须是 ' + DOC_TYPES.join(' / '));
+    let name = validateEntryName(String(b.name ?? '').trim() || b.title);
+    if (!/\.md$/i.test(name)) name = validateEntryName(name + '.md');
+    const title = String(b.title ?? '').replace(/[\r\n]+/g, ' ').trim() || name.replace(/\.md$/i, '');
+    const rel = dir ? dir + '/' + name : name;
+    const abs = resolveWithin(rel);
+    const metaAbs = abs + SIDECAR_SUFFIX;
+    if (pathTaken(abs) || pathTaken(metaAbs)) {
+      return res.status(409).json({ error: pathTaken(abs) ? '同名文档已存在' : '同名元数据文件已存在（' + name + SIDECAR_SUFFIX + '）', exists: true, path: rel });
+    }
+    const now = new Date();
+    const meta = {
+      id: 'doc_' + crypto.randomUUID(),
+      title,
+      type: docType,
+      date: localDate(now),
+      source_url: null,
+      aliases: [],
+      tags: [],
+      created_at: now.toISOString(),
+    };
+    await writeTextAtomic(abs, '# ' + title + '\n', false);
+    try {
+      await writeTextAtomic(metaAbs, JSON.stringify(meta, null, 2) + '\n', false);
+    } catch (e) {
+      try { fs.unlinkSync(abs); } catch { /* ignore */ }
+      throw e;
+    }
+    await rescanAndIndex();
+    const f = findFile(rel);
+    res.json({ ok: true, kind, path: rel, meta, mtimeMs: f?.mtimeMs ?? null });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, ...(e.extra || {}) });
   }
 });
 

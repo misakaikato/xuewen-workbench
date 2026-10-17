@@ -4,6 +4,8 @@ import type {
   SearchResult, RefResolution, Collection, MetadataMapping, TopicEntry, ConceptEntry, FileEntry,
 } from './types';
 
+export type DocType = '文章' | '讲稿' | '知乎';
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const body = await res.json().catch(() => ({}));
@@ -37,6 +39,8 @@ export const api = {
     req<{ ok: boolean; mtimeMs: number }>('/api/file', json('PUT', { path, content, baseMtimeMs, dsId })),
   saveAs: (path: string, content: string, dsId: string) =>
     req<{ ok: boolean }>('/api/file/save-as', json('POST', { path, content, dsId })),
+  createEntry: (body: { dsId: string | null; dir: string; kind: 'md' | 'folder'; name: string; title?: string; docType?: DocType }) =>
+    req<{ ok: boolean; kind: 'md' | 'folder'; path: string }>('/api/file/create', json('POST', body)),
   search: (q: string, opts: { types?: string[]; dir?: string; exclude?: string[] } = {}) => {
     const p = new URLSearchParams({ q });
     if (opts.types?.length) p.set('types', opts.types.join(','));

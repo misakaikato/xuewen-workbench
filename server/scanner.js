@@ -5,6 +5,9 @@ import chokidar from 'chokidar';
 import { EventEmitter } from 'node:events';
 
 export const SUPPORTED_EXTS = ['.md', '.json', '.doc', '.docx'];
+// 元数据旁注文件：<原文件名>.meta.json，不出现在目录树/检索中
+export const SIDECAR_SUFFIX = '.meta.json';
+export const isSidecar = (name) => String(name).toLowerCase().endsWith(SIDECAR_SUFFIX);
 
 function toRel(baseDir, abs) {
   return path.relative(baseDir, abs).split(path.sep).join('/');
@@ -32,6 +35,7 @@ export function naturalCompare(a, b) {
 
 export function scanTree(baseDir) {
   const files = [];
+  const dirs = []; // 全部子目录相对路径（含空目录）
   const dirErrors = []; // { path, reason }
   const fileErrors = [];
   let dirCount = 0;
@@ -57,6 +61,7 @@ export function scanTree(baseDir) {
       return;
     }
     dirCount++;
+    if (relDir) dirs.push(relDir);
     let hasContent = false;
 
     for (const ent of entries) {
@@ -75,7 +80,7 @@ export function scanTree(baseDir) {
           walk(abs, rel);
         } else if (isFile) {
           const ext = path.extname(ent.name).toLowerCase();
-          if (!SUPPORTED_EXTS.includes(ext)) continue;
+          if (!SUPPORTED_EXTS.includes(ext) || isSidecar(ent.name)) continue;
           hasContent = true;
           try {
             const st = fs.statSync(abs);
@@ -101,7 +106,8 @@ export function scanTree(baseDir) {
 
   walk(baseDir, '');
   files.sort((a, b) => naturalCompare(a.path, b.path));
-  return { files, dirCount, dirErrors, fileErrors, emptyDirCount };
+  dirs.sort(naturalCompare);
+  return { files, dirs, dirCount, dirErrors, fileErrors, emptyDirCount };
 }
 
 export class Scanner extends EventEmitter {

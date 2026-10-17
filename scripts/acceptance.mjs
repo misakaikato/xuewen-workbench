@@ -1,5 +1,6 @@
 // 后端验收脚本：逐项调用 API 并断言，输出通过/失败明细
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -141,6 +142,84 @@ console.log(`  ℹ 文件数=${perfCount}，扫描+索引耗时=${scanMs}ms，�
 console.log('== 10. 路径安全 ==');
 r = await j('/api/file?path=' + encodeURIComponent('../../etc/passwd'));
 check('越界路径被拒绝', r.status === 403 || r.status === 404 || r.status === 500, String(r.status));
+
+console.log('== 11. 新建文档 / 文件夹 / 元数据旁注 ==');
+r = await post('/api/config', { baseDir: A });
+const dsA2 = r.body.dsId;
+const NEWDIR = '验收新建目录';
+const created = [path.join(A, NEWDIR), path.join(A, '笔记', '验收新建讲稿.md'), path.join(A, '笔记', '验收新建讲稿.md.meta.json'),
+  path.join(A, '笔记', '验收旁注占用.md.meta.json'), path.join(A, '笔记', '验收逃逸链接')];
+const cleanup = () => created.forEach((p) => fs.rmSync(p, { recursive: true, force: true }));
+cleanup();
+const create = (body) => post('/api/file/create', { dsId: dsA2, ...body });
+
+r = await create({ dir: '笔记', kind: 'md', name: '验收新建讲稿', title: '验收新建讲稿 庚辛壬癸', docType: '讲稿' });
+check('新建 md 成功（自动补 .md）', r.status === 200 && r.body.ok && r.body.path === '笔记/验收新建讲稿.md', JSON.stringify(r.body));
+const mdAbs = path.join(A, '笔记', '验收新建讲稿.md');
+const md = fs.existsSync(mdAbs) ? fs.readFileSync(mdAbs, 'utf8') : '';
+check('md 正文为最小标题且无 front matter', md === '# 验收新建讲稿 庚辛壬癸\n', JSON.stringify(md));
+const metaAbs = mdAbs + '.meta.json';
+check('旁注 <文件名>.meta.json 已生成', fs.existsSync(metaAbs));
+let meta = null;
+try { meta = JSON.parse(fs.readFileSync(metaAbs, 'utf8')); } catch { /* invalid */ }
+check('旁注为合法 JSON（2 空格缩进）', !!meta && fs.readFileSync(metaAbs, 'utf8').startsWith('{\n  "id"'));
+check('旁注含 id/title/type/date 等字段', !!meta && /^doc_[0-9a-f-]{36}$/.test(meta.id) && meta.title === '验收新建讲稿 庚辛壬癸' &&
+  meta.type === '讲稿' && /^\d{4}-\d{2}-\d{2}$/.test(meta.date) && meta.source_url === null &&
+  Array.isArray(meta.aliases) && meta.aliases.length === 0 && Array.isArray(meta.tags) && !isNaN(Date.parse(meta.created_at)), JSON.stringify(meta));
+r = await j('/api/tree');
+const paths2 = []; const dirs2 = [];
+(function walk(n) { n.files.forEach(f => paths2.push(f.path)); n.dirs.forEach(d => { dirs2.push(d.path); walk(d); }); })(r.body.tree);
+check('新文档立即出现在目录树', paths2.includes('笔记/验收新建讲稿.md'));
+check('旁注不出现在目录树', !paths2.some(p => p.endsWith('.meta.json')));
+r = await j('/api/search?q=' + encodeURIComponent('庚辛壬癸'));
+check('新文档立即可检索', r.body.results?.some(x => x.file.path === '笔记/验收新建讲稿.md'), JSON.stringify(r.body.results?.map(x => x.file.path)));
+r = await j('/api/search?q=' + encodeURIComponent(meta?.id || 'doc_'));
+check('旁注内容不进入检索', r.body.results?.length === 0);
+r = await j('/api/file?path=' + encodeURIComponent('笔记/验收新建讲稿.md'));
+check('新文档可在编辑器打开（读取成功）', r.status === 200 && r.body.type === 'markdown');
+
+r = await create({ dir: '笔记', kind: 'md', name: '验收新建讲稿.md' });
+check('重复文档返回 409', r.status === 409 && r.body.exists === true, String(r.status));
+fs.writeFileSync(path.join(A, '笔记', '验收旁注占用.md.meta.json'), '{}');
+r = await create({ dir: '笔记', kind: 'md', name: '验收旁注占用' });
+check('仅旁注已存在也返回 409', r.status === 409 && !fs.existsSync(path.join(A, '笔记', '验收旁注占用.md')), String(r.status));
+
+r = await create({ dir: '', kind: 'folder', name: NEWDIR });
+check('新建文件夹成功', r.status === 200 && fs.statSync(path.join(A, NEWDIR)).isDirectory(), JSON.stringify(r.body));
+r = await j('/api/tree');
+check('空文件夹出现在目录树', r.body.tree.dirs.some(d => d.path === NEWDIR));
+r = await create({ dir: '', kind: 'folder', name: NEWDIR });
+check('重复文件夹返回 409', r.status === 409, String(r.status));
+r = await create({ dir: NEWDIR, title: '默认类型文档' });
+check('在新文件夹内建文档，类型默认文章', r.status === 200 && JSON.parse(fs.readFileSync(path.join(A, NEWDIR, '默认类型文档.md.meta.json'), 'utf8')).type === '文章', JSON.stringify(r.body));
+
+r = await create({ dir: '../', kind: 'md', name: '越界' });
+check('目录含 .. 被拒绝', r.status === 400, String(r.status));
+r = await create({ dir: '笔记/../../', kind: 'md', name: '越界' });
+check('嵌套 .. 被拒绝', r.status === 400, String(r.status));
+r = await create({ dir: '/tmp', kind: 'md', name: '越界' });
+check('绝对路径被拒绝', r.status === 400, String(r.status));
+r = await create({ dir: 'C:\\Windows', kind: 'md', name: '越界' });
+check('Windows 绝对路径被拒绝', r.status === 400, String(r.status));
+fs.symlinkSync(fs.realpathSync(os.tmpdir()), path.join(A, '笔记', '验收逃逸链接'));
+r = await create({ dir: '笔记/验收逃逸链接', kind: 'md', name: '越界' });
+check('符号链接逃逸被拒绝', r.status === 403, String(r.status));
+fs.rmSync(path.join(A, '笔记', '验收逃逸链接'), { force: true });
+
+for (const bad of ['a/b', '..\\evil', 'CON', 'lpt1.md', 'x?y', '名称.', '.hidden', '   ']) {
+  r = await create({ dir: '笔记', kind: 'md', name: bad });
+  check('非法名称被拒绝: ' + JSON.stringify(bad), r.status === 400, String(r.status));
+}
+r = await create({ dir: '笔记', kind: 'folder', name: 'a:b' });
+check('非法文件夹名被拒绝', r.status === 400, String(r.status));
+r = await create({ dir: '笔记', kind: 'md', name: '类型错误', docType: '小说' });
+check('非法文档类型被拒绝', r.status === 400, String(r.status));
+r = await create({ dir: '不存在的目录', kind: 'md', name: '找不到' });
+check('目标目录不存在返回 404', r.status === 404, String(r.status));
+r = await post('/api/file/create', { dsId: 'stale000', dir: '', kind: 'md', name: '旧数据源' });
+check('旧 dsId 新建被拒绝', r.status === 409 && r.body.stale === true, String(r.status));
+cleanup();
+await post('/api/rescan');
 
 console.log(`\n结果：${pass} 通过，${fail} 失败`);
 process.exit(fail ? 1 : 0);
