@@ -17,10 +17,13 @@ export interface LivePreviewOptions {
   docPath: string;
   /** Cmd/Ctrl+点击链接时交给上层：内部相对路径应用内导航，http(s) 外开 */
   openLink: (href: string) => void;
+  /** 只读实例（阅读视图）：选区不再揭示源码、表格恒渲染、链接单击即开 */
+  readOnly?: boolean;
 }
 
 // 文档路径以 facet 提供，构建装饰时读取
 const lpDocPath = Facet.define<string, string>({ combine: (v) => (v.length ? v[v.length - 1] : '') });
+const lpReadOnly = Facet.define<boolean, boolean>({ combine: (v) => v.some(Boolean) });
 
 // 语法树延迟补全后，提醒表格 StateField 重算的空效果
 const lpTreeRefresh = StateEffect.define<null>();
@@ -65,8 +68,10 @@ function selectionEndpoints(state: EditorState): number[] {
   return out;
 }
 
-// 活动行集合：选区覆盖的行；光标在围栏代码块或表格内时扩展为整块
+// 活动行集合：选区覆盖的行；光标在围栏代码块或表格内时扩展为整块。
+// 只读实例恒为空（装饰全时渲染，选区不揭示源码）。
 function activeLineSet(state: EditorState): Set<number> {
+  if (state.facet(lpReadOnly)) return new Set();
   const active = new Set<number>();
   for (const r of state.selection.ranges) {
     const a = state.doc.lineAt(r.from).number;
@@ -117,6 +122,60 @@ function parseTable(src: string): TableModel | null {
     return l && r ? 'center' : r ? 'right' : l ? 'left' : null;
   });
   return { header: splitRow(lines[0]), align, rows: lines.slice(2).map(splitRow) };
+}
+
+// ---------- 表格单元格行内格式（常用子集，DOM API 构建防注入） ----------
+
+const INLINE_RE = /(\*\*(?:[^*]|\*(?!\*))+\*\*)|(~~[^~]+~~)|(`[^`]+`)|(\[[^\]]*\]\([^)\s]*(?:\s+"[^"]*")?\))|(\*(?:[^*]|\*(?=\S))+\*)/g;
+
+const cellCache = new Map<string, HTMLElement>();
+
+function renderInlineInto(parent: HTMLElement, text: string) {
+  INLINE_RE.lastIndex = 0;
+  let pos = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INLINE_RE.exec(text))) {
+    if (m.index > pos) parent.appendChild(document.createTextNode(text.slice(pos, m.index)));
+    const tok = m[0];
+    if (tok.startsWith('**')) {
+      const s = document.createElement('strong');
+      s.textContent = tok.slice(2, -2);
+      parent.appendChild(s);
+    } else if (tok.startsWith('~~')) {
+      const s = document.createElement('s');
+      s.className = 'cm-lp-strike';
+      s.textContent = tok.slice(2, -2);
+      parent.appendChild(s);
+    } else if (tok.startsWith('`')) {
+      const c = document.createElement('code');
+      c.className = 'cm-lp-code-inline';
+      c.textContent = tok.slice(1, -1);
+      parent.appendChild(c);
+    } else if (tok.startsWith('[')) {
+      const mm = /^\[([^\]]*)\]\(([^)\s]*)/.exec(tok);
+      const a = document.createElement('a');
+      a.className = 'md-link';
+      if (mm) a.setAttribute('data-lp-href', mm[2]);
+      a.textContent = mm ? mm[1] : tok;
+      parent.appendChild(a);
+    } else {
+      const e = document.createElement('em');
+      e.textContent = tok.slice(1, -1);
+      parent.appendChild(e);
+    }
+    pos = m.index + tok.length;
+  }
+  if (pos < text.length) parent.appendChild(document.createTextNode(text.slice(pos)));
+}
+
+function buildCell(text: string): HTMLElement {
+  const cached = cellCache.get(text);
+  if (cached) return cached.cloneNode(true) as HTMLElement;
+  const el = document.createElement('span');
+  renderInlineInto(el, text);
+  if (cellCache.size > 2000) cellCache.delete(cellCache.keys().next().value as string);
+  cellCache.set(text, el);
+  return el.cloneNode(true) as HTMLElement;
 }
 
 // ---------- 部件（Widget） ----------
@@ -222,15 +281,17 @@ class FenceBarWidget extends WidgetType {
 class TableWidget extends WidgetType {
   private pos: number;
   private model: TableModel;
+  private readOnly: boolean;
 
-  constructor(pos: number, model: TableModel) {
+  constructor(pos: number, model: TableModel, readOnly: boolean) {
     super();
     this.pos = pos;
     this.model = model;
+    this.readOnly = readOnly;
   }
 
   eq(other: TableWidget): boolean {
-    return other.pos === this.pos && JSON.stringify(other.model) === JSON.stringify(this.model);
+    return other.pos === this.pos && other.readOnly === this.readOnly && JSON.stringify(other.model) === JSON.stringify(this.model);
   }
 
   toDOM(view: EditorView): HTMLElement {
@@ -242,7 +303,7 @@ class TableWidget extends WidgetType {
     const htr = document.createElement('tr');
     this.model.header.forEach((cell, i) => {
       const th = document.createElement('th');
-      th.textContent = cell;
+      th.appendChild(buildCell(cell));
       if (this.model.align[i]) th.style.textAlign = this.model.align[i] as string;
       htr.appendChild(th);
     });
@@ -253,7 +314,7 @@ class TableWidget extends WidgetType {
       const tr = document.createElement('tr');
       for (let i = 0; i < this.model.header.length; i++) {
         const td = document.createElement('td');
-        td.textContent = row[i] ?? '';
+        td.appendChild(buildCell(row[i] ?? ''));
         if (this.model.align[i]) td.style.textAlign = this.model.align[i] as string;
         tr.appendChild(td);
       }
@@ -261,10 +322,12 @@ class TableWidget extends WidgetType {
     }
     table.appendChild(tbody);
     wrap.appendChild(table);
-    wrap.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      view.dispatch({ selection: { anchor: this.pos }, scrollIntoView: true });
-    });
+    if (!this.readOnly) {
+      wrap.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        view.dispatch({ selection: { anchor: this.pos }, scrollIntoView: true });
+      });
+    }
     return wrap;
   }
 }
@@ -507,19 +570,20 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
 
 // 表格块级替换（StateField，全文档扫描，量级为块数而非字符数）
 function buildTableDecorations(state: EditorState): DecorationSet {
+  const ro = state.facet(lpReadOnly);
   const endpoints = selectionEndpoints(state);
   const parts: Range<Decoration>[] = [];
   const scan = (node: SyntaxNode) => {
     for (let c = node.firstChild; c; c = c.nextSibling) {
       if (c.name === 'Table') {
-        const isActive = endpoints.some((p) => p >= c.from && p <= c.to);
+        const isActive = !ro && endpoints.some((p) => p >= c.from && p <= c.to);
         if (!isActive) {
           const fromL = state.doc.lineAt(c.from);
           const toL = state.doc.lineAt(c.to);
           const model = parseTable(state.sliceDoc(fromL.from, toL.to));
           if (model) {
             parts.push(
-              Decoration.replace({ widget: new TableWidget(fromL.from, model), block: true }).range(fromL.from, toL.to)
+              Decoration.replace({ widget: new TableWidget(fromL.from, model, ro), block: true }).range(fromL.from, toL.to)
             );
           }
         }
@@ -576,8 +640,9 @@ function makeLpPlugin(openLink: (href: string) => void) {
     {
       decorations: (v: { decorations: DecorationSet }) => v.decorations,
       eventHandlers: {
-        mousedown(event: MouseEvent) {
-          if (!(event.metaKey || event.ctrlKey)) return false;
+        mousedown(event: MouseEvent, view: EditorView) {
+          const ro = view.state.facet(lpReadOnly);
+          if (!(ro || event.metaKey || event.ctrlKey)) return false;
           const el = (event.target as HTMLElement | null)?.closest('[data-lp-href]');
           if (!el) return false;
           event.preventDefault();
@@ -675,6 +740,7 @@ export function livePreview(opts: LivePreviewOptions) {
   return [
     ...mdLang(),
     lpDocPath.of(opts.docPath),
+    lpReadOnly.of(!!opts.readOnly),
     lpTableField,
     makeLpPlugin(opts.openLink),
     lpTheme,

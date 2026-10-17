@@ -133,3 +133,8 @@
 .word-original { transform-origin: top left; }
 
 .stat-num { font-variant-numeric: tabular-nums; }
+
+/* 阅读视图（只读 CM）搜索命中高亮：与旧 .reader mark 同规则 */
+.cm-rd-hl { background: hsl(48 95% 70%); color: #3a2e00; border-radius: 2px; padding: 0 1px; }
+.dark .cm-rd-hl { background: hsl(48 80% 35%); color: hsl(48 60% 92%); }
+:root[data-theme="C"] .cm-rd-hl { background: var(--wb-hl); color: #f3e7c9; }

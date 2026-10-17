@@ -132,3 +132,54 @@ export function CorpusRefPopover({
     </div>
   );
 }
+
+// 歧义词条候选弹层：wikilink / 自动内链点击命中多个目标时由宿主挂起
+export interface PathListRequest {
+  title: string;
+  paths: string[];
+  x: number;
+  y: number;
+}
+
+export function PathListPopover({ req, onClose }: { req: PathListRequest | null; onClose: () => void }) {
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (!req) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [req, onClose]);
+  if (!req) return null;
+  const go = (path: string) => {
+    onClose();
+    navigate('/read/' + encPath(path));
+  };
+  const x = Math.min(req.x, window.innerWidth - 360);
+  const y = req.y + 18 > window.innerHeight - 220 ? Math.max(8, req.y - 210) : req.y + 18;
+  return (
+    <div className="fixed inset-0 z-50" onClick={onClose}>
+      <div
+        className="absolute bg-card border border-border rounded-lg shadow-xl p-3 w-96 max-w-[92vw] text-sm"
+        style={{ left: Math.max(8, x), top: y }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="font-medium mb-2">{req.title}</div>
+        <ul className="max-h-64 overflow-auto">
+          {req.paths.map((p) => (
+            <li key={p}>
+              <button
+                className="w-full text-left px-2 py-1.5 rounded hover:bg-accent flex items-center gap-2 min-w-0"
+                onClick={() => go(p)}
+              >
+                <FileText className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate mono text-xs">{p}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}

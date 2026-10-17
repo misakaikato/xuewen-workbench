@@ -16,9 +16,11 @@ export interface CodeMirrorEditorProps {
   onCreate?: (view: EditorView) => void;
   className?: string;
   ariaLabel?: string;
+  /** 容器高度：'100%'（默认，内部滚动）或 'auto'（只读阅读态，随内容增长） */
+  height?: string;
 }
 
-export function CodeMirrorEditor({ initialDoc, extensions, onDocChanged, onCreate, className, ariaLabel }: CodeMirrorEditorProps) {
+export function CodeMirrorEditor({ initialDoc, extensions, onDocChanged, onCreate, className, ariaLabel, height = '100%' }: CodeMirrorEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const changedRef = useRef(onDocChanged);
@@ -62,5 +64,5 @@ export function CodeMirrorEditor({ initialDoc, extensions, onDocChanged, onCreat
     });
   }, [extensions]);
 
-  return <div ref={hostRef} className={className} style={{ height: '100%', overflow: 'hidden' }} />;
+  return <div ref={hostRef} className={className} style={{ height, overflow: 'hidden' }} />;
 }

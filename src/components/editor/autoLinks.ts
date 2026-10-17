@@ -15,6 +15,7 @@ import type { DocLink } from '@/lib/api';
 import { wikiNameAt } from '../../../server/linkMatch.js';
 
 const alDocPath = Facet.define<string, string>({ combine: (v) => (v.length ? v[v.length - 1] : '') });
+const alReadOnly = Facet.define<boolean, boolean>({ combine: (v) => v.some(Boolean) });
 
 const setDocLinks = StateEffect.define<{ links: DocLink[]; seq: number }>();
 
@@ -35,13 +36,15 @@ function activeLines(state: EditorState): Set<number> {
   return set;
 }
 
-function buildDecorations(links: DocLink[], active: Set<number>, doc: { lineAt(p: number): { number: number } }): DecorationSet {
+function buildDecorations(links: DocLink[], state: EditorState): DecorationSet {
+  const doc = state.doc;
+  const active = state.facet(alReadOnly) ? new Set<number>() : activeLines(state);
   const parts: Range<Decoration>[] = [];
   for (const l of links) {
     if (l.ignored || l.to <= l.from) continue;
     const cls = l.kind === 'auto' ? 'wb-autolink' : l.kind === 'wiki' ? 'wb-wikilink' : 'wb-wikilink-missing';
     if (l.kind !== 'auto') {
-      // wikilink：活动行显示源码
+      // wikilink：活动行显示源码（只读实例除外）
       const a = doc.lineAt(l.from).number;
       const b = doc.lineAt(l.to).number;
       let onActive = false;
@@ -93,7 +96,7 @@ export const alField = StateField.define<AlState>({
     return {
       links,
       seq,
-      deco: buildDecorations(links, activeLines(tr.state), tr.state.doc),
+      deco: buildDecorations(links, tr.state),
     };
   },
   provide: (f) => EditorView.decorations.from(f, (v) => v.deco),
@@ -122,10 +125,12 @@ async function previewOf(path: string) {
 }
 
 export interface AutoLinksOptions {
-  /** Cmd/Ctrl+点击打开目标（应用内导航由上层决定） */
+  /** Cmd/Ctrl+点击打开目标（应用内导航由上层决定）；只读实例单击即开 */
   onOpen: (target: { path: string; heading?: string | null }) => void;
-  /** 歧义词条点击：交给上层展示候选 */
-  onCandidates?: (term: string, candidates: string[]) => void;
+  /** 歧义词条点击：交给上层展示候选（at 为点击坐标） */
+  onCandidates?: (term: string, candidates: string[], at: { x: number; y: number }) => void;
+  /** 只读实例：永不因选区隐藏，单击即触发 */
+  readOnly?: boolean;
 }
 
 // 拉取本文链接并注入编辑器（mount / 保存后 / 索引更新后调用）
@@ -267,14 +272,14 @@ export function autoLinks(opts: AutoLinksOptions): Extension {
 
   const plugin = EditorView.domEventHandlers({
     mousedown(event, view) {
-      if (!(event.metaKey || event.ctrlKey)) return false;
+      if (!(opts.readOnly || event.metaKey || event.ctrlKey)) return false;
       const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
       if (pos == null) return false;
       const l = linkAt(view, pos);
       if (!l) return false;
       event.preventDefault();
       if (l.target?.path) opts.onOpen(l.target);
-      else if (l.candidates?.length) opts.onCandidates?.(l.term, l.candidates);
+      else if (l.candidates?.length) opts.onCandidates?.(l.term, l.candidates, { x: event.clientX, y: event.clientY });
       return true;
     },
   });
@@ -290,5 +295,5 @@ export function autoLinks(opts: AutoLinksOptions): Extension {
 
 /** 供 Edit 页在打开 / 保存后触发拉取（扩展内事件处理也用它） */
 export function linksExtensionFor(docPath: string, opts: AutoLinksOptions): Extension[] {
-  return [alDocPath.of(docPath), autoLinks(opts)];
+  return [alDocPath.of(docPath), alReadOnly.of(!!opts.readOnly), autoLinks(opts)];
 }
