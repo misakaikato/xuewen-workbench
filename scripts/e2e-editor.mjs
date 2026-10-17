@@ -1,5 +1,5 @@
 // Electron 端到端测试：真实编辑器里的字节往返、实时预览冒烟、重命名/移动期间输入不丢、主题外观。
-// 用法：npm run test:e2e（先构建 dist），或 ./node_modules/.bin/electron scripts/e2e-editor.mjs [--screenshot <png>] [--screenshot-wrap <png>]
+// 用法：npm run test:e2e（先构建 dist），或 ./node_modules/.bin/electron scripts/e2e-editor.mjs [--screenshot <png>] [--screenshot-wrap <png>] [--screenshot-links <png>]
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -15,6 +15,8 @@ const shotIdx = process.argv.indexOf('--screenshot');
 const SHOT = shotIdx > -1 ? process.argv[shotIdx + 1] : null;
 const shotWrapIdx = process.argv.indexOf('--screenshot-wrap');
 const SHOT_WRAP = shotWrapIdx > -1 ? process.argv[shotWrapIdx + 1] : null;
+const shotLinksIdx = process.argv.indexOf('--screenshot-links');
+const SHOT_LINKS = shotLinksIdx > -1 ? process.argv[shotLinksIdx + 1] : null;
 
 app.on('window-all-closed', () => {}); // 窗口销毁不退出，由脚本自己收尾
 
@@ -365,12 +367,147 @@ async function main() {
   check('ds-perf 文档0000 编辑器无横向溢出', !!perfInfo && perfInfo.sw <= perfInfo.cw + 1, JSON.stringify(perfInfo));
   check('ds-perf 文档0000 页面无横向溢出', !!perfInfo && perfInfo.dsw <= perfInfo.iw, JSON.stringify(perfInfo));
 
-  // ---------- F. 可选截图 ----------
-  if (SHOT || SHOT_WRAP) {
-    await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-fmt') });
+  // ---------- F. 自动内链与反向链接（ds-links） ----------
+  console.log('== F. 自动内链与反向链接 ==');
+  await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-links') });
+
+  const linkMarks = `(() => [...window.__wb.editor().dom.querySelectorAll('[data-al-kind]')]
+    .map((el) => ({ kind: el.dataset.alKind, term: el.dataset.alTerm, text: el.textContent })))()`;
+  const clickMark = (sel) => exec(`(() => {
+    const el = window.__wb.editor().dom.querySelector(${JSON.stringify(sel)});
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    const opts = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, metaKey: true, ctrlKey: true };
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    el.dispatchEvent(new MouseEvent('mouseup', opts));
+    el.dispatchEvent(new MouseEvent('click', opts));
+    return true;
+  })()`);
+  const hoverMark = async (sel) => {
+    await exec(`(() => {
+      const el = window.__wb.editor().dom.querySelector(${JSON.stringify(sel)});
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const opts = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+      el.dispatchEvent(new MouseEvent('mousemove', opts));
+      return true;
+    })()`);
+    return waitFor(`!!document.querySelector('.cm-al-tip')`, '悬停提示');
+  };
+
+  // F1 实时预览中的自动链接标记与 wikilink 标记
+  await openEditor('论语讲稿.md');
+  await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})'); // 光标在标题行：不影响正文标记
+  let marks = await waitFor(`(() => { const m = ${linkMarks}; return m.some((x) => x.term === '孔子家语' && x.kind === 'auto') ? JSON.stringify(m) : null; })()`, '自动链接标记');
+  marks = JSON.parse(marks);
+  check('自动链接标记存在（孔子家语/孔子/仲尼）',
+    marks.some((m) => m.term === '孔子家语' && m.kind === 'auto') &&
+    marks.some((m) => m.term === '孔子' && m.kind === 'auto') &&
+    marks.some((m) => m.term === '仲尼' && m.kind === 'auto'));
+  check('wikilink 标记存在且缺失词条另有样式',
+    marks.some((m) => m.kind === 'wiki' && m.text.includes('孔夫子')) &&
+    marks.some((m) => m.kind === 'wiki-missing' && m.term === '不存在词条'));
+  // 光标移入 wikilink 所在行：该行显示源码（标记隐藏）
+  const wikiLine = await exec(`(() => {
+    const v = window.__wb.editor();
+    const doc = v.state.doc;
+    for (let i = 1; i <= doc.lines; i++) if (doc.line(i).text.includes('[[孔子]]')) return i;
+    return 0;
+  })()`);
+  await exec(`window.__wb.editor().dispatch({selection: {anchor: window.__wb.editor().state.doc.line(${wikiLine}).from}})`);
+  await sleep(300);
+  check('光标行 wikilink 显示源码（标记隐藏）',
+    !(await exec(`[...window.__wb.editor().dom.querySelectorAll('[data-al-kind="wiki"]')].some((el) => el.textContent === '孔子')`)));
+  await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})');
+  await sleep(300);
+
+  // F2 Cmd/Ctrl+点击跳转目标
+  await waitFor(`!!window.__wb.editor().dom.querySelector('[data-al-term="孔子家语"]')`, '孔子家语标记');
+  check('点击标记发起导航', (await clickMark('[data-al-term="孔子家语"]')) === true);
+  await waitFor(`window.location.pathname.includes(${JSON.stringify('/read/' + encodeURIComponent('孔子家语.md'))})`, '跳转阅读页', 8000);
+  check('Cmd/Ctrl+点击打开目标文档', decodeURIComponent(await exec('window.location.pathname')).includes('孔子家语.md'));
+
+  // F3 反向链接面板：列出来源并点击打开
+  await openEditor('孔子.md');
+  await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.includes('反向链接'))`, '反向链接按钮');
+  await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('反向链接')); b.click(); return true; })()`);
+  await waitFor(`document.body.textContent.includes('提到本篇的文档')`, '面板标题');
+  check('反向链接面板列出来源文档', await waitFor(`document.body.textContent.includes('论语讲稿')`, '来源文档', 6000) === true);
+  check('面板片段高亮命中词', await exec(`!!document.querySelector('.wb-bl-mark')`));
+  await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.title === '论语讲稿.md'); if (b) { b.click(); return true; } return false; })()`);
+  await waitFor(`decodeURIComponent(window.location.pathname).includes('论语讲稿.md')`, '打开来源');
+  check('点击来源打开该文档并携带高亮词', (await exec('window.location.search')).includes('h='));
+
+  // F4 「忽略此链接」移除标记并持久
+  await openEditor('文艺复兴.md');
+  await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})');
+  await waitFor(`!!window.__wb.editor().dom.querySelector('[data-al-term="孔子"]')`, '孔子标记（文艺复兴）');
+  check('悬停出现词条提示', (await hoverMark('[data-al-term="孔子"]')) === true);
+  await exec(`(() => { const b = [...document.querySelectorAll('.cm-al-tip button')].find((x) => x.textContent.includes('忽略此链接')); if (b) { b.click(); return true; } return false; })()`);
+  check('忽略后标记移除', await waitFor(`!window.__wb.editor().dom.querySelector('[data-al-term="孔子"]')`, '标记移除', 6000) === true);
+  await openEditor('文艺复兴.md'); // 重新打开：验证持久
+  await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})');
+  await sleep(600);
+  check('重开后忽略仍然生效', !(await exec(`!!window.__wb.editor().dom.querySelector('[data-al-term="孔子"]')`)));
+  await post('/api/links/ignore', { clearAll: true }); // 清理，不影响后续
+
+  // F5 编辑映射：链接前插入文字标记随动；保存后重拉
+  await openEditor('讲稿1.md');
+  const markInfo = await waitFor(`(() => {
+    const el = window.__wb.editor().dom.querySelector('[data-al-term="孔子"]');
+    return el ? JSON.stringify({ text: el.textContent }) : null;
+  })()`, '讲稿1 孔子标记');
+  check('讲稿1 有孔子标记', JSON.parse(markInfo).text === '孔子');
+  await exec(`(() => {
+    const v = window.__wb.editor();
+    const doc = v.state.doc;
+    for (let i = 1; i <= doc.lines; i++) {
+      const t = doc.line(i).text;
+      const j = t.indexOf('孔子');
+      if (j >= 0 && !t.startsWith('#')) { v.dispatch({ changes: { from: doc.line(i).from + j, insert: '前言：' } }); return true; }
+    }
+    return false;
+  })()`);
+  await sleep(300);
+  check('链接前插入文字后标记随动（仍是完整词条）',
+    (await exec(`(() => { const el = window.__wb.editor().dom.querySelector('[data-al-term="孔子"]'); return el ? el.textContent : ''; })()`)) === '孔子');
+  await exec('window.__wb.save()');
+  await sleep(600);
+  check('保存后标记重新拉取仍存在', await exec(`!!window.__wb.editor().dom.querySelector('[data-al-term="孔子"]')`));
+
+  // F6 代码区无标记 + 阅读页同源链接
+  await openEditor('编码与链接.md');
+  await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})');
+  await sleep(600);
+  check('标记不进入代码块（行内与国栏）',
+    !(await exec(`(function () { const els = window.__wb.editor().dom.querySelectorAll('[data-al-kind]'); return [...els].some((el) => el.closest('.cm-lp-code') || el.closest('.cm-lp-code-inline')); })()`)));
+  check('标签间正文词条有标记', await exec(`!!window.__wb.editor().dom.querySelector('[data-al-term="孔子"]')`));
+  await win.loadURL(BASE + '/read/' + encodeURIComponent('论语讲稿.md'));
+  await waitFor('!!document.querySelector(".reader")', '阅读页就绪');
+  await waitFor(`!!document.querySelector('.wb-autolink, .wb-wikilink')`, '阅读页词条链接');
+  check('阅读页显示同源自动链接',
+    (await exec(`[...document.querySelectorAll('.wb-autolink')].some((a) => a.textContent === '孔子家语')`)));
+  check('阅读页 wikilink 渲染为词条链接',
+    (await exec(`[...document.querySelectorAll('.wb-wikilink')].some((a) => a.textContent === '孔夫子')`)));
+
+  // F7 主题 C 下面板可读
+  await put('/api/ui-settings', { theme: 'C' });
+  await openEditor('文艺复兴.md');
+  await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('反向链接')); b.click(); return true; })()`);
+  await waitFor(`document.body.textContent.includes('提到本篇的文档')`, '面板（主题 C）');
+  const panelColor = await exec(`(() => {
+    const el = [...document.querySelectorAll('aside div')].find((x) => x.textContent.includes('提到本篇的文档'));
+    return el ? getComputedStyle(el).color : '';
+  })()`);
+  check('主题 C 反向链接面板文字为浅色（可读）', luminance(panelColor) > 0.5, panelColor);
+  await put('/api/ui-settings', { theme: 'A' });
+
+  // ---------- G. 可选截图 ----------
+  if (SHOT || SHOT_WRAP || SHOT_LINKS) {
     await put('/api/ui-settings', { theme: 'A' });
   }
   if (SHOT) {
+    await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-fmt') });
     await openEditor('rich.md');
     await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})');
     await sleep(800);
@@ -379,6 +516,7 @@ async function main() {
     console.log('截图已写入:', path.resolve(SHOT));
   }
   if (SHOT_WRAP) {
+    await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-fmt') });
     win.setSize(1440, 900);
     await sleep(250);
     await openEditor('long-line.md'); // 实时预览默认模式
@@ -387,6 +525,21 @@ async function main() {
     const img = await win.webContents.capturePage();
     fs.writeFileSync(SHOT_WRAP, img.toPNG());
     console.log('折行截图已写入:', path.resolve(SHOT_WRAP));
+  }
+  if (SHOT_LINKS) {
+    // 主题 A：孔子（反链最多）实时预览 + 反向链接面板展开，光标不在链接行
+    await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-links') });
+    win.setSize(1440, 900);
+    await sleep(250);
+    await openEditor('孔子.md');
+    await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('反向链接')); b.click(); return true; })()`);
+    await waitFor(`document.body.textContent.includes('提到本篇的文档（')`, '面板展开');
+    await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})'); // 光标在标题行
+    await waitFor(`!!window.__wb.editor().dom.querySelector('[data-al-kind]')`, '自动链接标记');
+    await sleep(800);
+    const img = await win.webContents.capturePage();
+    fs.writeFileSync(SHOT_LINKS, img.toPNG());
+    console.log('内链截图已写入:', path.resolve(SHOT_LINKS));
   }
 }
 

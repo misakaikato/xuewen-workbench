@@ -1,11 +1,14 @@
-// Markdown 阅读器：GFM 渲染、语法高亮、语料引用自动解析、相对链接与图片解析
+// Markdown 阅读器：GFM 渲染、语法高亮、语料引用自动解析、服务端词条自动内链、相对链接与图片解析
 import { useMemo } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { useNavigate } from 'react-router-dom';
 import { remarkCorpusRefs, type RefNameEntry } from '@/lib/remarkRefs';
+import { remarkAutoLinks, decodeWblink } from '@/lib/remarkAutoLinks';
+import type { DocLink } from '@/lib/api';
 import { RefChip } from './RefChip';
+import { LinkChip } from './LinkChip';
 import { rawFileUrl } from '@/lib/api';
 import 'highlight.js/styles/github-dark.css';
 
@@ -24,16 +27,23 @@ export function MarkdownReader({
   docPath,
   refNames,
   collections,
+  links = [],
 }: {
   content: string;
   docPath: string;
   refNames: RefNameEntry[];
   collections: { name: string }[];
+  /** 服务端算好的本篇自动内链（/api/links/doc），与编辑器实时预览同源 */
+  links?: DocLink[];
 }) {
   const navigate = useNavigate();
   const plugins = useMemo(
-    () => [remarkGfm, [remarkCorpusRefs, { names: refNames, collections }]],
-    [refNames, collections]
+    () => [
+      remarkGfm,
+      [remarkCorpusRefs, { names: refNames, collections, fileLinks: false }],
+      [remarkAutoLinks, links],
+    ],
+    [refNames, collections, links]
   );
   const docDir = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
 
@@ -43,11 +53,22 @@ export function MarkdownReader({
         remarkPlugins={plugins as never}
         rehypePlugins={[rehypeHighlight]}
         urlTransform={(url) =>
-          url.startsWith('ref://') || url.startsWith('refc://') ? url : defaultUrlTransform(url)
+          url.startsWith('ref://') || url.startsWith('refc://') || url.startsWith('wblink://')
+            ? url
+            : defaultUrlTransform(url)
         }
         components={{
           a({ href, children, node }) {
             const url = href || '';
+            if (url.startsWith('wblink://')) {
+              // 服务端词条链接：携带 kind 信息，由 LinkChip 区分样式与交互
+              const info = decodeWblink(url);
+              return (
+                <LinkChip href={url} kind={info?.kind || 'auto'}>
+                  {children}
+                </LinkChip>
+              );
+            }
             if (url.startsWith('ref://') || url.startsWith('refc://')) {
               const firstChild = node?.children?.[0] as { type?: string; tagName?: string } | undefined;
               const inlineCode = firstChild?.type === 'inlineCode' || firstChild?.tagName === 'code';

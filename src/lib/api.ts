@@ -46,6 +46,46 @@ export interface MetaImportResponse {
   errors: { line: number; path?: string; error: string }[];
 }
 
+// ---------- 自动内链（词条）与反向链接 ----------
+
+export interface DocLink {
+  from: number;
+  to: number;
+  term: string;
+  norm?: string;
+  kind: 'auto' | 'wiki' | 'wiki-missing';
+  display: string | null;
+  target: { path: string; heading?: string | null } | null;
+  candidates?: string[];
+  ignored?: boolean;
+}
+
+export interface LinksStatus {
+  ready: boolean;
+  building: boolean;
+  buildSeq: number;
+  files: number;
+  terms: number;
+  links: number;
+  lastFullMs: number;
+  lastUpdateMs: number;
+  ignoredCount?: number;
+}
+
+export interface BacklinkEntry {
+  path: string;
+  title: string;
+  count: number;
+  kinds: string[];
+  snippets: { text: string; offset: number; term: string }[];
+}
+
+export interface LinkTerm {
+  term: string;
+  path: string;
+  heading: string | null;
+}
+
 type EntryResult = { ok: boolean; kind: 'file' | 'folder'; oldPath?: string; path: string };
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
@@ -112,6 +152,21 @@ export const api = {
       '/api/refs/names'),
   backlinks: (path: string) =>
     req<{ backlinks: FileEntry[] }>('/api/backlinks?path=' + encodeURIComponent(path)),
+  linksDoc: (path: string) =>
+    req<{ dsId: string; path: string; links: DocLink[] } & LinksStatus>('/api/links/doc?path=' + encodeURIComponent(path)),
+  linksBacklinks: (path: string) =>
+    req<{ dsId: string; path: string; backlinks: BacklinkEntry[] } & LinksStatus>('/api/links/backlinks?path=' + encodeURIComponent(path)),
+  linksTerms: (q: string) =>
+    req<{ terms: LinkTerm[] } & LinksStatus>('/api/links/terms?q=' + encodeURIComponent(q)),
+  linksPreview: (path: string) =>
+    req<{ path: string; title: string; excerpt: string }>('/api/links/preview?path=' + encodeURIComponent(path)),
+  linksStatus: () => req<LinksStatus & { dsId?: string }>('/api/links/status'),
+  linksIgnore: (body: { path: string; term: string; targetPath: string; ignore: boolean } | { clearAll: true }) =>
+    req<{ ok: boolean; ignored?: boolean; ignoredCount: number }>('/api/links/ignore', json('POST', body)),
+  linksBlocklist: () =>
+    req<{ dsId: string; terms: string[]; ignoredCount: number }>('/api/links/blocklist'),
+  saveLinksBlocklist: (terms: string[]) =>
+    req<{ ok: boolean; terms: string[]; ignoredCount: number }>('/api/links/blocklist', json('PUT', { terms })),
   recents: () => req<{ recents: { path: string; at: number; exists: boolean; file: FileEntry | null }[] }>('/api/recents'),
   touchRecent: (path: string) => req('/api/recents', json('POST', { path })),
   pins: () => req<{ pins: { path: string; at: number; exists: boolean }[] }>('/api/pins'),

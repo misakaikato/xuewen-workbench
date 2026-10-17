@@ -10,6 +10,7 @@ import { planImport, applyImport, contentHash } from './meta.js';
 import { getTrashHandler } from './trash.js';
 import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
+import { LinkIndex } from './links.js';
 
 const PORT = process.env.WORKBENCH_PORT || 7410;
 const HOST = process.env.WORKBENCH_HOST || undefined; // 未设置时保持原行为（监听所有地址）
@@ -19,6 +20,7 @@ app.use(express.json({ limit: '20mb' }));
 
 const scanner = new Scanner();
 const indexer = new Indexer();
+const linkIndex = new LinkIndex();
 
 let currentDsId = null;
 
@@ -29,6 +31,7 @@ scanner.on('scan-done', (snapshot) => {
     if (currentDsId && scanner.baseDir) {
       try {
         await indexer.build(snapshot);
+        await linkIndex.rebuild(snapshot, indexer); // 自动内链索引随文本索引之后增量更新
       } catch (e) {
         console.error('索引构建失败:', e.message);
       }
@@ -175,6 +178,7 @@ app.post('/api/config', async (req, res) => {
   currentDsId = cfg.dsId;
   scanner.setBaseDir(p);
   indexer.reset(cfg.dsId, p);
+  linkIndex.reset(cfg.dsId, p);
   await scanner.rescan();
   scanner.startWatch();
   res.json({ ok: true, ...cfg, status: scanner.status() });
@@ -664,6 +668,7 @@ app.post('/api/file/rename', async (req, res) => {
     } catch (be) {
       console.error('备份随迁失败:', be.message);
     }
+    linkIndex.notifyRename(entry.rel, newRel, entry.isDir); // 忽略记录随行
     await rescanAndIndex();
     res.json({ ok: true, kind: entry.isDir ? 'folder' : 'file', oldPath: entry.rel, path: newRel, sidecar: !!moved.newMeta, titleUpdated });
   } catch (e) {
@@ -694,6 +699,7 @@ app.post('/api/file/move', async (req, res) => {
     } catch (be) {
       console.error('备份随迁失败:', be.message);
     }
+    linkIndex.notifyRename(entry.rel, newRel, entry.isDir); // 忽略记录随行
     await rescanAndIndex();
     res.json({ ok: true, kind: entry.isDir ? 'folder' : 'file', oldPath: entry.rel, path: newRel, sidecar: !!moved.newMeta });
   } catch (e) {
@@ -865,7 +871,78 @@ app.get('/api/backlinks', (req, res) => {
   if (!requireSource(res)) return;
   const f = findFile(String(req.query.path || ''));
   if (!f) return res.status(404).json({ error: '文件不存在' });
-  res.json({ dsId: currentDsId, backlinks: indexer.backlinks(f) });
+  // 由自动内链索引支撑（旧版为文本包含扫描）：返回提及该文档的文件清单，形状兼容
+  const backlinks = linkIndex.backlinksOf(f.path)
+    .map((b) => findFile(b.path))
+    .filter(Boolean);
+  res.json({ dsId: currentDsId, backlinks });
+});
+
+// ---------- 自动内链（词条）与反向链接 ----------
+
+app.get('/api/links/doc', (req, res) => {
+  if (!currentDsId) return res.status(409).json({ error: '尚未配置数据源' });
+  const p = String(req.query.path || '');
+  res.json({ dsId: currentDsId, path: p, ...linkIndex.status(), links: linkIndex.linksOf(p) });
+});
+
+app.get('/api/links/backlinks', (req, res) => {
+  if (!currentDsId) return res.status(409).json({ error: '尚未配置数据源' });
+  const p = String(req.query.path || '');
+  res.json({ dsId: currentDsId, path: p, ...linkIndex.status(), backlinks: linkIndex.backlinksOf(p) });
+});
+
+app.get('/api/links/terms', (req, res) => {
+  if (!currentDsId) return res.status(409).json({ error: '尚未配置数据源' });
+  res.json({ dsId: currentDsId, ...linkIndex.status(), terms: linkIndex.terms(String(req.query.q || '')) });
+});
+
+app.get('/api/links/preview', (req, res) => {
+  if (!currentDsId) return res.status(409).json({ error: '尚未配置数据源' });
+  const p = String(req.query.path || '');
+  const v = linkIndex.previewOf(p);
+  if (!v) return res.status(404).json({ error: '文档不在链接索引中' });
+  res.json(v);
+});
+
+app.get('/api/links/status', (req, res) => {
+  if (!currentDsId) return res.json({ ready: false, building: false });
+  res.json({ dsId: currentDsId, ...linkIndex.status() });
+});
+
+// 忽略某条自动链接（本篇）：存于应用数据目录的按数据源状态，不写入语料文件
+app.post('/api/links/ignore', async (req, res) => {
+  if (!requireSource(res)) return;
+  const b = req.body || {};
+  try {
+    if (b.clearAll) {
+      linkIndex.clearIgnores();
+      await linkIndex.rebuild(scanner.snapshot, indexer);
+      return res.json({ ok: true, ignoredCount: 0 });
+    }
+    const p = String(b.path || '');
+    if (!findFile(p)) return res.status(404).json({ error: '文件不存在' });
+    const ignore = b.ignore !== false;
+    const ignoredCount = linkIndex.setIgnore(p, String(b.term || ''), String(b.targetPath || ''), ignore);
+    res.json({ ok: true, ignored: ignore, ignoredCount });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// 屏蔽词表：命中的词条不自动链接（wikilink 仍可手动使用）
+app.get('/api/links/blocklist', (req, res) => {
+  if (!currentDsId) return res.status(409).json({ error: '尚未配置数据源' });
+  res.json({ dsId: currentDsId, terms: linkIndex.blocklist(), ignoredCount: linkIndex.ignoredCount() });
+});
+
+app.put('/api/links/blocklist', async (req, res) => {
+  if (!requireSource(res)) return;
+  const terms = Array.isArray(req.body?.terms) ? req.body.terms.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim()) : null;
+  if (!terms) return res.status(400).json({ error: 'terms 必须是字符串数组' });
+  linkIndex.saveBlocklist(terms);
+  await rescanAndIndex(); // 词表变化 → 全量重算链接（仅用内存文本）
+  res.json({ ok: true, terms, ignoredCount: linkIndex.ignoredCount() });
 });
 
 // ---------- 最近记录 / 常用入口 / 集合 / 元数据映射 ----------
@@ -1070,6 +1147,7 @@ async function boot() {
       currentDsId = cfg.dsId;
       scanner.setBaseDir(cfg.baseDir);
       indexer.reset(cfg.dsId, cfg.baseDir);
+      linkIndex.reset(cfg.dsId, cfg.baseDir);
       await scanner.rescan();
       scanner.startWatch();
       console.log('已恢复数据源:', cfg.baseDir);

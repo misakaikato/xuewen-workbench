@@ -277,3 +277,43 @@ html { background-color: var(--wb-bg); }
 :root[data-theme="C"] .reader a { color: var(--wb-link); text-decoration: none; border-bottom: var(--wb-link-border); }
 :root[data-theme="C"] .reader mark,
 :root[data-theme="C"] .hl { background: var(--wb-hl); color: #f3e7c9; }
+
+/* ---------- 自动内链（词条）：阅读页词条链接与 wikilink ---------- */
+/* 词条下划线与 .reader a 同一套链接变量；wikilink 用点线区分，缺失词条弱化提示 */
+.reader .wb-autolink,
+.reader .wb-wikilink {
+  color: var(--wb-link);
+  text-decoration: none;
+  border-bottom: var(--wb-link-border);
+  cursor: pointer;
+}
+.reader .wb-wikilink { border-bottom-style: dotted; }
+.reader .wb-wikilink-missing {
+  color: hsl(var(--muted-foreground));
+  text-decoration: line-through dotted;
+  text-decoration-thickness: 1px;
+  border-bottom: none;
+  cursor: help;
+}
+.dark .reader .wb-autolink,
+.dark .reader .wb-wikilink {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  border-bottom: none;
+}
+:root[data-theme="C"] .reader .wb-autolink,
+:root[data-theme="C"] .reader .wb-wikilink {
+  color: var(--wb-link);
+  text-decoration: none;
+  border-bottom: var(--wb-link-border);
+}
+
+/* 反向链接面板：片段命中词高亮（三主题通用，走 --wb-hl 令牌） */
+.wb-bl-mark {
+  background: var(--wb-hl, hsl(var(--primary) / 0.25));
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+[data-theme="C"] .wb-bl-mark { background: var(--wb-hl); color: #f3e7c9; }

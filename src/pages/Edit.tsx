@@ -13,14 +13,17 @@ import { useApp } from '@/store/app';
 import { useReadingPrefs } from '@/lib/prefs';
 import { saveDraft, loadDraft, clearDraft } from '@/lib/drafts';
 import type { FilePayload } from '@/lib/types';
+import type { DocLink } from '@/lib/api';
 import { MarkdownReader } from '@/components/MarkdownReader';
 import { registerOpenDoc } from '@/lib/openEditor';
 import { runEntryAction, type EntryAction } from '@/lib/entryOps';
 import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
 import { editorBaseExtensions, editorBaseThemeSpec } from '@/components/editor/setup';
 import { livePreview } from '@/components/editor/livePreview';
+import { linksExtensionFor, pushDocLinks } from '@/components/editor/autoLinks';
 import { detectLineSeparator } from '@/components/editor/lineSeparator';
-import { Save, Undo2, AlertTriangle, X, CheckCircle2, Columns2, Eye, Code2, Wand2 } from 'lucide-react';
+import { BacklinksPanel } from '@/components/BacklinksPanel';
+import { Save, Undo2, AlertTriangle, X, CheckCircle2, Columns2, Eye, Code2, Wand2, Link2 } from 'lucide-react';
 
 type SaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
 type Mode = 'live' | 'source' | 'preview' | 'split';
@@ -87,6 +90,8 @@ export default function Edit() {
   pathRef.current = relPath;
   const [refNames, setRefNames] = useState<{ name: string; base: string; path: string; ext: string; dir: string }[]>([]);
   const [collections, setCollections] = useState<{ name: string }[]>([]);
+  const [docLinks, setDocLinks] = useState<DocLink[]>([]);
+  const [showBacklinks, setShowBacklinks] = useState(false);
 
   const isJson = file?.type === 'json';
   const effMode: 'source' | 'preview' | 'split' | 'live' = isJson ? 'source' : mode;
@@ -191,6 +196,47 @@ export default function Edit() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [dirty]);
 
+  // 自动内链：拉取服务端链接（就绪前轮询），注入编辑器装饰与预览面板；保存/更新后重拉
+  const linksSeqRef = useRef(0);
+  const isJsonRef = useRef(false);
+  isJsonRef.current = isJson;
+  const pullLinksAbortRef = useRef<() => void>(() => {});
+  const pullLinks = useCallback(
+    async (minSeq: number) => {
+      if (!dsId || !relPath || isJsonRef.current) return;
+      let dead = false;
+      const stop = () => {
+        dead = true;
+      };
+      pullLinksAbortRef.current?.();
+      pullLinksAbortRef.current = stop;
+      for (let i = 0; i < 30 && !dead; i++) {
+        const r = await api.linksDoc(relPath).catch(() => null);
+        if (dead || !r || r.dsId !== dsId) return;
+        if (r.ready && r.buildSeq >= minSeq) {
+          linksSeqRef.current = r.buildSeq;
+          setDocLinks(r.links);
+          pushDocLinks(viewRef.current, r.links, r.buildSeq);
+          return;
+        }
+        await new Promise((s) => setTimeout(s, 500));
+      }
+    },
+    [dsId, relPath]
+  );
+  useEffect(() => {
+    linksSeqRef.current = 0;
+    setDocLinks([]);
+    pullLinks(0);
+    return () => pullLinksAbortRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dsId, relPath, loadSeq]);
+  useEffect(() => {
+    const h = () => pullLinks(0);
+    window.addEventListener('wb-links-updated', h);
+    return () => window.removeEventListener('wb-links-updated', h);
+  }, [pullLinks]);
+
   // 实际写盘（抛错由调用方处理）；成功后更新基准文本与 mtime
   const performSave = useCallback(
     async (text: string, overrideMtime?: number) => {
@@ -221,6 +267,9 @@ export default function Edit() {
         setConflict(null);
         setSaveState('saved');
         setSaveMsg('已保存到 ' + relPath);
+        // 保存后重拉自动内链（等待新一次索引构建）并刷新反向链接面板
+        pullLinks(linksSeqRef.current + 1);
+        window.dispatchEvent(new CustomEvent('wb-links-updated'));
         if (andReturn) {
           navigate('/read/' + encPath(relPath));
         }
@@ -235,7 +284,7 @@ export default function Edit() {
         }
       }
     },
-    [file, dsId, buffer, dirty, isJson, relPath, navigate, performSave, validateJson]
+    [file, dsId, buffer, dirty, isJson, relPath, navigate, performSave, validateJson, pullLinks]
   );
 
   // Ctrl+S 保存
@@ -322,6 +371,14 @@ export default function Edit() {
     navRef.current(anchor ? nav + '#' + encodeURIComponent(anchor) : nav);
   }, []);
 
+  // 自动内链目标打开：跳阅读页（含标题锚点）
+  const openLinkTarget = useCallback((t: { path: string; heading?: string | null }) => {
+    const nav = '/read/' + encPath(t.path);
+    navRef.current(t.heading ? nav + '#' + encodeURIComponent(t.heading) : nav);
+  }, []);
+  const openLinkTargetRef = useRef(openLinkTarget);
+  openLinkTargetRef.current = openLinkTarget;
+
   // 编辑器扩展：显式行分隔符保证字节精确；实时预览/源码按模式切换（重配置不重建）
   const extensions = useMemo<Extension[]>(() => {
     const list: Extension[] = [
@@ -330,10 +387,16 @@ export default function Edit() {
     ];
     if (isJson) {
       list.push(json(), jsonTheme(prefs.codeFontSize));
-    } else if (isLive) {
-      list.push(...livePreview({ docPath: relPath, openLink }));
     } else {
-      list.push(markdown(), plainTheme);
+      // 自动内链标记只在 md 模式挂载（实时预览与源码都有下划线；JSON 不适用）
+      list.push(...linksExtensionFor(relPath, {
+        onOpen: (t) => openLinkTargetRef.current(t),
+      }));
+      if (isLive) {
+        list.push(...livePreview({ docPath: relPath, openLink }));
+      } else {
+        list.push(markdown(), plainTheme);
+      }
     }
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -428,6 +491,15 @@ export default function Edit() {
             格式化
           </button>
         )}
+        {!isJson && (
+          <button
+            className={`text-xs px-2.5 py-1.5 rounded border flex items-center gap-1 ${showBacklinks ? 'border-primary text-primary' : 'border-border hover:bg-accent'}`}
+            onClick={() => setShowBacklinks(!showBacklinks)}
+            title="提到本篇的文档"
+          >
+            <Link2 className="w-3.5 h-3.5" /> 反向链接
+          </button>
+        )}
         <button
           className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent disabled:opacity-40 flex items-center gap-1"
           disabled={!dirty}
@@ -474,8 +546,18 @@ export default function Edit() {
         )}
         {(effMode === 'preview' || effMode === 'split') && (
           <div className={`min-w-0 overflow-auto p-6 ${effMode === 'split' ? 'w-1/2' : 'flex-1'}`}>
-            <MarkdownReader content={content} docPath={relPath} refNames={refNames} collections={collections} />
+            <MarkdownReader content={content} docPath={relPath} refNames={refNames} collections={collections} links={docLinks} />
           </div>
+        )}
+        {showBacklinks && !isJson && (
+          <aside className="hidden lg:block w-64 shrink-0 border-l border-border overflow-x-hidden overflow-y-auto p-3">
+            <BacklinksPanel
+              path={relPath}
+              dsId={dsId}
+              onOpen={(src, term) => navigate('/read/' + encPath(src) + '?h=' + encodeURIComponent(term))}
+              onClose={() => setShowBacklinks(false)}
+            />
+          </aside>
         )}
       </div>
 

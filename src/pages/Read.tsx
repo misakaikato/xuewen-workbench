@@ -10,7 +10,9 @@ import type { FilePayload, FileEntry } from '@/lib/types';
 import { MarkdownReader } from '@/components/MarkdownReader';
 import { JsonViewer } from '@/components/JsonViewer';
 import { WordReader } from '@/components/WordReader';
+import { BacklinksPanel } from '@/components/BacklinksPanel';
 import { extIcon } from '@/components/RefChip';
+import type { DocLink } from '@/lib/api';
 import {
   Pencil, Pin, PinOff, ListTree, Link2, Search, X, Settings2, ChevronUp, AlertCircle,
 } from 'lucide-react';
@@ -31,6 +33,7 @@ export default function Read() {
   const [error, setError] = useState<{ message: string; missing?: boolean } | null>(null);
   const [refNames, setRefNames] = useState<{ name: string; base: string; path: string; ext: string; dir: string }[]>([]);
   const [collections, setCollections] = useState<{ name: string }[]>([]);
+  const [docLinks, setDocLinks] = useState<DocLink[]>([]);
   const [toc, setToc] = useState<TocItem[]>([]);
   const [backlinks, setBacklinks] = useState<FileEntry[]>([]);
   const [showToc, setShowToc] = useState(true);
@@ -46,6 +49,7 @@ export default function Read() {
   useEffect(() => {
     if (!dsId || !relPath) return;
     let dead = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 既有行为：切换文档时先清空
     setFile(null);
     setError(null);
     api.file(relPath)
@@ -54,10 +58,11 @@ export default function Read() {
         if (f.dsId !== dsId) return; // 数据源已切换，丢弃旧响应
         setFile(f);
         api.touchRecent(relPath).catch(() => {});
-        const [names, bl, pins] = await Promise.all([
+        const [names, bl, pins, linksDoc] = await Promise.all([
           api.refNames().catch(() => null),
           api.backlinks(relPath).catch(() => ({ backlinks: [] })),
           api.pins().catch(() => ({ pins: [] })),
+          api.linksDoc(relPath).catch(() => null),
         ]);
         if (dead) return;
         if (names && names.dsId === dsId) {
@@ -66,6 +71,18 @@ export default function Read() {
         }
         setBacklinks(bl.backlinks);
         setPinned(pins.pins.some((p) => p.path === relPath));
+        if (linksDoc && linksDoc.dsId === dsId) {
+          if (linksDoc.ready) setDocLinks(linksDoc.links);
+          else {
+            // 索引尚在构建：稍后重拉一次
+            setTimeout(() => {
+              if (dead) return;
+              api.linksDoc(relPath).then((r) => {
+                if (!dead && r.dsId === dsId && r.ready) setDocLinks(r.links);
+              }).catch(() => {});
+            }, 1500);
+          }
+        }
       })
       .catch((e) => {
         if (!dead) setError({ message: e.message, missing: (e as { missing?: boolean }).missing });
@@ -342,7 +359,7 @@ export default function Read() {
           {/* 正文 */}
           <div ref={contentRef} className="bg-card border border-border rounded-lg p-6 md:p-8 min-h-[40vh]">
             {file.type === 'markdown' && (
-              <MarkdownReader content={file.content || ''} docPath={relPath} refNames={refNames} collections={collections} />
+              <MarkdownReader content={file.content || ''} docPath={relPath} refNames={refNames} collections={collections} links={docLinks} />
             )}
             {file.type === 'json' && <JsonViewer content={file.content || ''} />}
             {file.type === 'word' && (
@@ -393,30 +410,12 @@ export default function Read() {
             </button>
           )}
           {showBacklinks && (
-            <div>
-              <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground mb-2">
-                <Link2 className="w-3.5 h-3.5" /> 反向引用（{backlinks.length}）
-                <button className="ml-auto p-0.5 rounded hover:bg-accent" onClick={() => setShowBacklinks(false)}>
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-              {backlinks.length ? (
-                <ul className="space-y-1">
-                  {backlinks.map((b) => (
-                    <li key={b.path}>
-                      <button
-                        className="text-xs text-left w-full py-1 px-1.5 rounded hover:bg-accent truncate"
-                        onClick={() => navigate('/read/' + b.path.split('/').map(encodeURIComponent).join('/'))}
-                      >
-                        {b.path}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="text-xs text-muted-foreground">没有其他文件引用本文档</div>
-              )}
-            </div>
+            <BacklinksPanel
+              path={relPath}
+              dsId={dsId}
+              onOpen={(src, term) => navigate('/read/' + src.split('/').map(encodeURIComponent).join('/') + '?h=' + encodeURIComponent(term))}
+              onClose={() => setShowBacklinks(false)}
+            />
           )}
         </aside>
       )}

@@ -23,10 +23,14 @@ const BOUNDARY = 'A-Za-z0-9_.\\-/~'; // 文件名特征字符，邻接这些字�
 export interface RefsPluginOptions {
   names: RefNameEntry[];
   collections: { name: string }[];
+  /** 文件名自动链接：已由服务端词条索引（/api/links/doc）接管，默认关闭 */
+  fileLinks?: boolean;
 }
 
 export function remarkCorpusRefs(options: RefsPluginOptions) {
-  const fileNames = [...new Set(options.names.map((n) => n.name))].sort((a, b) => b.length - a.length);
+  const fileNames = options.fileLinks === false
+    ? []
+    : [...new Set(options.names.map((n) => n.name))].sort((a, b) => b.length - a.length);
   const colNames = options.collections.map((c) => c.name).filter(Boolean);
   if (!fileNames.length && !colNames.length) return () => {};
 
