@@ -5,7 +5,7 @@ import type { Extension } from '@codemirror/state';
 import {
   crosshairCursor, drawSelection, dropCursor, highlightActiveLine,
   highlightActiveLineGutter, highlightSpecialChars,
-  keymap, lineNumbers, rectangularSelection,
+  keymap, lineNumbers, rectangularSelection, EditorView,
 } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
@@ -18,6 +18,8 @@ import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from '@codemir
 const SPECIALS_NO_CR = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u061c\u200b\u200e\u200f\u2028\u2029\u202d\u202e\u2066\u2067\u2069\ufeff\ufff9-\ufffc]/gu;
 
 // 基础主题（编辑器底色 / 字体走阅读偏好变量），实时预览主题在此之上叠加
+// 换行（lineWrapping）：所有模式（实时预览 / 源码 / 分栏 / JSON）长行一律折行，
+// 编辑器本身不出现横向滚动条（表格部件 / 图片等块内自有滚动见 livePreview 主题）。
 export const editorBaseThemeSpec = {
   '&': { color: 'hsl(var(--foreground))', backgroundColor: 'hsl(var(--background))' },
   '&.cm-focused': { outline: 'none' },
@@ -28,6 +30,7 @@ export const editorBaseThemeSpec = {
 
 export function editorBaseExtensions(opts: { lineNumbers: boolean; foldGutter: boolean }): Extension[] {
   return [
+    EditorView.lineWrapping,
     history(),
     drawSelection(),
     dropCursor(),

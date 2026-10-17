@@ -400,6 +400,8 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
   const active = activeLineSet(state);
   const docPath = state.facet(lpDocPath);
   const parts: Range<Decoration>[] = [];
+  // 围栏代码区间：空行压缩（cm-lp-blank）不得进入代码块内部
+  const codeIntervals: { from: number; to: number }[] = [];
   const hide = (from: number, to: number) => {
     if (to > from) parts.push(Decoration.replace({}).range(from, to));
   };
@@ -414,6 +416,7 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
         const n = node.name;
         if (n === 'Table') return false; // 整表由 StateField 的块级替换接管
         if (n === 'FencedCode') {
+          codeIntervals.push({ from: node.from, to: node.to });
           decorateFence(state, node, active, parts, vFrom, vTo);
           return false;
         }
@@ -480,6 +483,20 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
         return; // 其余节点继续下探
       },
     });
+  }
+  // 空行（段落分隔）表现为与阅读页段间距等高的间隙而非整行空白：
+  // 行高 = --rd-para（见 .cm-lp-blank），使实时预览段落节奏与阅读视图一致；
+  // 光标所在的空行（活动行）保持原行高，便于编辑定位
+  const inCode = (pos: number) => codeIntervals.some((iv) => pos >= iv.from && pos <= iv.to);
+  for (const { from: vFrom, to: vTo } of view.visibleRanges) {
+    const l1 = doc.lineAt(vFrom).number;
+    const l2 = doc.lineAt(Math.min(vTo, doc.length)).number;
+    for (let ln = l1; ln <= l2; ln++) {
+      const line = doc.line(ln);
+      if (line.text === '' && !active.has(ln) && !inCode(line.from)) {
+        parts.push(Decoration.line({ class: 'cm-lp-blank' }).range(line.from));
+      }
+    }
   }
   return Decoration.set(parts, true);
 }
@@ -572,8 +589,21 @@ function makeLpPlugin(openLink: (href: string) => void) {
 const lpTheme = EditorView.theme({
   ...editorBaseThemeSpec,
 
+  // 正文列与阅读页（MarkdownReader/.reader）同版式：同一套 --rd-* 变量、
+  // 同一上限（--rd-width）并居中；calc(100% - 96px) 对应阅读页容器的水平留白
+  // （max-w-5xl 容器 px-4 共 32px + 正文卡片 p-8 共 64px），窄窗口下两列同宽收缩
+  '.cm-content': {
+    caretColor: 'hsl(var(--foreground))',
+    paddingBottom: '20vh',
+    maxWidth: 'min(var(--rd-width), calc(100% - 96px))',
+    marginLeft: 'auto',
+    marginRight: 'auto',
+  },
+  // 空行间隙 = 阅读页段间距 --rd-para（设下限避免段间距为 0 时空行无法点入）
+  '.cm-lp-blank': { lineHeight: 'max(var(--rd-para), 0.6)' },
+
   '.cm-lp-h1': { fontSize: '1.7em', fontWeight: '700', lineHeight: '1.35', paddingTop: '0.35em' },
-  '.cm-lp-h2': { fontSize: '1.4em', fontWeight: '700', lineHeight: '1.4', paddingTop: '0.3em', borderBottom: '1px solid hsl(var(--border))' },
+  '.cm-lp-h2': { fontSize: '1.4em', fontWeight: '700', lineHeight: '1.4', paddingTop: '0.3em', paddingBottom: '0.25em', borderBottom: '1px solid hsl(var(--border))' },
   '.cm-lp-h3': { fontSize: '1.2em', fontWeight: '600', paddingTop: '0.25em' },
   '.cm-lp-h4': { fontSize: '1.08em', fontWeight: '600', paddingTop: '0.2em' },
   '.cm-lp-h5, .cm-lp-h6': { fontSize: '1em', fontWeight: '600', paddingTop: '0.2em' },
@@ -608,7 +638,18 @@ const lpTheme = EditorView.theme({
   '.cm-lp-img': { maxWidth: '100%', verticalAlign: 'middle', borderRadius: '6px' },
   '.cm-lp-hr-w': { display: 'inline-block', width: '100%', height: 0, borderTop: '1px solid hsl(var(--border))', margin: '0.8em 0', verticalAlign: 'middle' },
 
-  '.cm-lp-table': { margin: '0.4em 0', cursor: 'pointer' },
+  // 表格部件：自身携带横向滚动（窄列内长表格不把整个编辑器撑宽），
+  // 单元格内折行规则与阅读页一致（break-word 而非继承的 break-spaces）
+  '.cm-lp-table': {
+    display: 'block',
+    margin: '0.4em 0',
+    cursor: 'pointer',
+    maxWidth: '100%',
+    overflowX: 'auto',
+    whiteSpace: 'normal',
+    wordBreak: 'normal',
+    overflowWrap: 'break-word',
+  },
   '.cm-lp-table table': { borderCollapse: 'collapse', fontSize: '0.92em', lineHeight: '1.5' },
   '.cm-lp-table th, .cm-lp-table td': { border: '1px solid hsl(var(--border))', padding: '0.35em 0.8em', textAlign: 'left' },
   '.cm-lp-table th': { background: 'hsl(var(--muted))', fontWeight: '600' },

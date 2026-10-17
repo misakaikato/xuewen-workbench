@@ -115,4 +115,30 @@ write('img/dot.png', Buffer.from([
   0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 ]));
 
+// 10. 长行夹具（编辑器折行验收）：~3000 字无空格段落 / 超长 URL 记号 / 长列表项 / 长引用
+{
+  const unit = '学问workbench折行验证'; // 中英混排、无空格，16 字符/次
+  let para = '';
+  for (let i = 0; i < 188; i++) para += unit; // 3008 字符
+  const url = 'https://example.com/very/long/' + 'abcdefghij'.repeat(60) + '/end'; // 632 字符长记号
+  let item = '- 长列表项：';
+  for (let i = 0; i < 38; i++) item += unit;
+  let quote = '> 长引用：';
+  for (let i = 0; i < 50; i++) quote += unit;
+  write('long-line.md', Buffer.from([
+    '# 长行折行样例',
+    '',
+    para,
+    '',
+    '长链接记号：' + url,
+    '',
+    item,
+    '',
+    quote,
+    '',
+    '收尾一段正文。',
+    '',
+  ].join('\n'), 'utf8'));
+}
+
 console.log('ds-fmt 夹具已生成:', DIR);

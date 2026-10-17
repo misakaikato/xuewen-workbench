@@ -1,5 +1,5 @@
 // Electron 端到端测试：真实编辑器里的字节往返、实时预览冒烟、重命名/移动期间输入不丢、主题外观。
-// 用法：npm run test:e2e（先构建 dist），或 ./node_modules/.bin/electron scripts/e2e-editor.mjs [--screenshot <png>]
+// 用法：npm run test:e2e（先构建 dist），或 ./node_modules/.bin/electron scripts/e2e-editor.mjs [--screenshot <png>] [--screenshot-wrap <png>]
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -13,6 +13,8 @@ const PORT = 7496;
 const BASE = `http://127.0.0.1:${PORT}`;
 const shotIdx = process.argv.indexOf('--screenshot');
 const SHOT = shotIdx > -1 ? process.argv[shotIdx + 1] : null;
+const shotWrapIdx = process.argv.indexOf('--screenshot-wrap');
+const SHOT_WRAP = shotWrapIdx > -1 ? process.argv[shotWrapIdx + 1] : null;
 
 app.on('window-all-closed', () => {}); // 窗口销毁不退出，由脚本自己收尾
 
@@ -296,7 +298,78 @@ async function main() {
   check('主题 C 标题文字为浅色（亮度 > 0.5）', luminance(hColor) > 0.5, hColor);
   await put('/api/ui-settings', { theme: 'A' });
 
-  // ---------- E. 可选截图 ----------
+  // ---------- E. 长行折行：编辑器无横向溢出，实时预览排版与阅读页一致 ----------
+  console.log('== E. 长行折行与排版一致 ==');
+  await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-fmt') });
+
+  const overflowInfo = `(() => {
+    const sc = document.querySelector('.cm-scroller');
+    const de = document.documentElement;
+    return sc ? JSON.stringify({ sw: sc.scrollWidth, cw: sc.clientWidth, dsw: de.scrollWidth, iw: window.innerWidth }) : null;
+  })()`;
+  const colInfoOf = (sel) => `(() => {
+    const c = document.querySelector(${JSON.stringify(sel)});
+    if (!c) return null;
+    const r = c.getBoundingClientRect();
+    const cs = getComputedStyle(c);
+    const m = document.querySelector('main');
+    const mr = m ? m.getBoundingClientRect() : null;
+    return JSON.stringify({ width: r.width, fs: cs.fontSize, lh: cs.lineHeight,
+      gapL: mr ? r.left - mr.left : null, gapR: mr ? mr.right - r.right : null });
+  })()`;
+
+  for (const [w, h] of [[1440, 900], [900, 700]]) {
+    win.setSize(w, h);
+    await sleep(300);
+    for (const label of ['实时预览', '源码', '分栏']) {
+      await openEditor('long-line.md');
+      await exec(`(() => {
+        const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim().endsWith(${JSON.stringify(label)}));
+        if (b) { b.click(); return true; }
+        return false;
+      })()`);
+      await sleep(400);
+      const info = JSON.parse((await exec(overflowInfo)) || 'null');
+      check(`长行 ${label}@${w}x${h} 编辑器无横向溢出`, !!info && info.sw <= info.cw + 1, JSON.stringify(info));
+      check(`长行 ${label}@${w}x${h} 页面无横向溢出`, !!info && info.dsw <= info.iw, JSON.stringify(info));
+    }
+  }
+
+  // 实时预览与阅读页同一文档直接对比：列宽 ±40px、居中、字号与行高相等
+  for (const [w, h] of [[1440, 900], [900, 700]]) {
+    win.setSize(w, h);
+    await sleep(300);
+    await openEditor('long-line.md');
+    await sleep(400);
+    const live = JSON.parse((await exec(colInfoOf('.cm-content'))) || 'null');
+    await win.loadURL(BASE + '/read/' + encodeURIComponent('long-line.md'));
+    await waitFor('!!document.querySelector(".reader")', '阅读页就绪');
+    await sleep(400);
+    const read = JSON.parse((await exec(colInfoOf('.reader'))) || 'null');
+    check(`live@${w} 正文列宽与阅读页一致（±40px）`, !!live && !!read && Math.abs(live.width - read.width) <= 40,
+      `live=${live && live.width} read=${read && read.width}`);
+    // 居中：列在其所在视区（main）内左右留白相等；阅读页带目录侧栏，不比对绝对中心
+    check(`live@${w} 正文列在编辑区居中（左右留白差 ≤ 4px）`,
+      !!live && live.gapL !== null && Math.abs(live.gapL - live.gapR) <= 4,
+      `gapL=${live && live.gapL} gapR=${live && live.gapR}`);
+    check(`live@${w} 字号与阅读页相等`, !!live && !!read && live.fs === read.fs, `live=${live && live.fs} read=${read && read.fs}`);
+    check(`live@${w} 行高与阅读页相等`, !!live && !!read && live.lh === read.lh, `live=${live && live.lh} read=${read && read.lh}`);
+  }
+  win.setSize(1440, 900);
+
+  // ds-perf 长文档（副本）：同样不允许横向溢出
+  await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-perf') });
+  await openEditor('分区00/组0/文档0000.md');
+  await sleep(600);
+  const perfInfo = JSON.parse((await exec(overflowInfo)) || 'null');
+  check('ds-perf 文档0000 编辑器无横向溢出', !!perfInfo && perfInfo.sw <= perfInfo.cw + 1, JSON.stringify(perfInfo));
+  check('ds-perf 文档0000 页面无横向溢出', !!perfInfo && perfInfo.dsw <= perfInfo.iw, JSON.stringify(perfInfo));
+
+  // ---------- F. 可选截图 ----------
+  if (SHOT || SHOT_WRAP) {
+    await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-fmt') });
+    await put('/api/ui-settings', { theme: 'A' });
+  }
   if (SHOT) {
     await openEditor('rich.md');
     await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})');
@@ -304,6 +377,16 @@ async function main() {
     const img = await win.webContents.capturePage();
     fs.writeFileSync(SHOT, img.toPNG());
     console.log('截图已写入:', path.resolve(SHOT));
+  }
+  if (SHOT_WRAP) {
+    win.setSize(1440, 900);
+    await sleep(250);
+    await openEditor('long-line.md'); // 实时预览默认模式
+    await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})'); // 光标置于首行标题
+    await sleep(800);
+    const img = await win.webContents.capturePage();
+    fs.writeFileSync(SHOT_WRAP, img.toPNG());
+    console.log('折行截图已写入:', path.resolve(SHOT_WRAP));
   }
 }
 

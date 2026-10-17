@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validateMeta } from '../server/meta.js';
+import { dataDir } from '../server/store.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const A = path.join(ROOT, 'test-data', 'ds-a');
@@ -580,12 +581,12 @@ const listMd = (dir) => {
   return out.sort();
 };
 const tempDsIds = [];
-const sourcesDir15 = path.join(ROOT, 'server', 'data', 'sources');
+const sourcesDir15 = path.join(dataDir(), 'sources'); // 随 WORKBENCH_DATA_DIR，可在临时数据目录上验收
 try {
   // (a) ds-fmt：GET→PUT 全量往返，字节一致（含 BOM / CRLF / 混行尾 / 无末尾换行）
   r = await post('/api/config', { baseDir: T15('ds-fmt') });
   tempDsIds.push(r.body.dsId);
-  check('切换到临时 ds-fmt（8 个 md）', r.body.ok && r.body.status.counts.md === 8, JSON.stringify(r.body.status?.counts));
+  check('切换到临时 ds-fmt（9 个 md）', r.body.ok && r.body.status.counts.md === 9, JSON.stringify(r.body.status?.counts));
   const dsFmt = r.body.dsId;
   let rtOk = 0;
   let rtTotal = 0;
@@ -599,7 +600,7 @@ try {
     if (p.body.ok === true && sha256b(before) === sha256b(after)) rtOk++;
     else check('ds-fmt 往返一致: ' + rel, false, JSON.stringify(p.body).slice(0, 120));
   }
-  check('ds-fmt 全部 .md 打开→不改→保存 字节一致', rtOk === rtTotal && rtTotal === 8, `${rtOk}/${rtTotal}`);
+  check('ds-fmt 全部 .md 打开→不改→保存 字节一致', rtOk === rtTotal && rtTotal === 9, `${rtOk}/${rtTotal}`);
 
   // (b) ds-a / ds-b 全量 + ds-perf 抽样 20
   for (const [ds, limit] of [['ds-a', Infinity], ['ds-b', Infinity], ['ds-perf', 20]]) {

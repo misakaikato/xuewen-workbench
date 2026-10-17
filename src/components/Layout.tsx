@@ -89,7 +89,7 @@ export function Layout() {
         <span className="text-border">|</span>
         <Link
           to="/setup"
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary max-w-[220px] md:max-w-md"
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary max-w-[220px] md:max-w-md min-w-0"
           title={config?.baseDir || '配置数据源'}
         >
           <Database className="w-3.5 h-3.5 shrink-0" />
