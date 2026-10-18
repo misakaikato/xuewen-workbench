@@ -238,12 +238,33 @@ export const api = {
   ragLlmGet: () => req<RagLlmConfig>('/api/rag/llm'),
   ragLlmSave: (cfg: Partial<RagLlmConfig>) => req<{ ok: boolean }>('/api/rag/llm', json('PUT', cfg)),
   ragLlmTest: () => req<{ ok: boolean; models?: string[]; error?: string }>('/api/rag/llm/test', json('POST', {})),
+
+  // ---- 智能助手（pi agent） ----
+  agentStatus: () => req<AgentStatus>('/api/agent/status'),
+  agentNewSession: () => req<{ id: string; title: string }>('/api/agent/session', json('POST', {})),
+  agentSession: (id: string) => req<{ id: string; title: string; messages: AgentMessage[] }>('/api/agent/session/' + encodeURIComponent(id)),
+  agentDeleteSession: (id: string) => req<{ ok: boolean }>('/api/agent/session/' + encodeURIComponent(id), json('DELETE', {})),
+  agentAbort: (id: string) => req<{ ok: boolean }>('/api/agent/abort', json('POST', { sessionId: id })),
 };
 
 export interface RagConfig {
   chunk: { maxChars: number; jsonValueLimit: number; headingContext: boolean; fileNameContext: boolean; hardSplitOversize: boolean };
   embed: { maxLength: number };
   search: { topN: number; rrfK: number; rrfMin: number; cosFloor: number; cosSigma: number; semanticWeight: number };
+}
+
+export interface AgentMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  tools?: { name: string; args?: unknown; summary?: string; isError?: boolean }[];
+  at?: string;
+}
+
+export interface AgentStatus {
+  endpoint: { baseUrl: string; model: string; ready: boolean; enabled: boolean };
+  agentDir: string;
+  skills: string[];
+  conversations: { id: string; title: string; updatedAt: string; busy?: boolean }[];
 }
 
 export interface RagModelStatus {

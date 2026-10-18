@@ -12,6 +12,8 @@ import { getTrashHandler } from './trash.js';
 import { mountUpdateRoutes, getUpdateBridge, disabledUpdateState } from './update.js';
 import { RagManager } from './rag/manager.js';
 import { mountRag } from './rag/routes.js';
+import { AgentHub } from './agent/manager.js';
+import { mountAgent } from './agent/routes.js';
 import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
 import { LinkIndex } from './links.js';
@@ -85,6 +87,16 @@ const ragManager = new RagManager({
   },
 });
 app.use('/api/rag', mountRag(ragManager, resolveLib));
+
+// 智能助手（pi agent）：工具闭包经 resolveLib 拿当前库；llm 配置变化时同步 models.json
+const agentHub = new AgentHub({
+  dataDir: dataDir(),
+  getLib: () => libs.get(activeId) || null,
+  ragManager,
+  getRagConfig: () => ragManager.llm,
+});
+ragManager.onLlmChanged = () => agentHub._syncModelsJson();
+app.use('/api/agent', mountAgent(agentHub, resolveLib));
 let activeId = null;
 let libVersion = 0; // 增/删/激活变化计数，进入 config.generation 复合值
 

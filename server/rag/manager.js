@@ -164,6 +164,7 @@ export class RagManager {
     this.embed = new EmbedService(dataDir);
     this.indices = new Map(); // dsId -> RagIndex
     this.llm = { enabled: false, baseUrl: 'http://localhost:11434/v1', model: '', apiKey: '' };
+    this.onLlmChanged = null; // 由 agent 模块挂接：端点变化时同步 models.json
   }
 
   index(dsId) {

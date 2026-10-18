@@ -80,6 +80,7 @@ export function mountRag(manager, resolveLib) {
     for (const k of ['enabled', 'baseUrl', 'model', 'apiKey']) {
       if (k in b) manager.llm[k] = b[k];
     }
+    manager.onLlmChanged?.();
     res.json({ ok: true, llm: { ...manager.llm, apiKey: undefined } });
   });
 

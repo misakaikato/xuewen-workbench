@@ -10,6 +10,7 @@ import Edit from '@/pages/Edit';
 import Search from '@/pages/Search';
 import Settings from '@/pages/Settings';
 import RagManage from './pages/RagManage';
+import AgentChat from './pages/AgentChat';
 
 function RequireSource({ children }: { children: React.ReactNode }) {
   const { config, loading } = useApp();
@@ -46,6 +47,7 @@ export default function App() {
           <Route path="/edit/*" element={<Edit />} />
           <Route path="/search" element={<Search />} />
           <Route path="/rag" element={<RagManage />} />
+          <Route path="/agent" element={<AgentChat />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

@@ -8,7 +8,7 @@ import { FileTree } from './FileTree';
 import { setEntryContext } from '@/lib/entryOps';
 import {
   LayoutDashboard, RefreshCw, Settings, Database, PanelLeftClose, PanelLeftOpen, Search,
-  ChevronsUpDown, Check, Plus, FolderMinus, Sparkles } from 'lucide-react';
+  ChevronsUpDown, Check, Plus, FolderMinus, Sparkles, Bot } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -150,6 +150,10 @@ export function Layout() {
         <Link to="/" className="flex items-center gap-1.5 text-sm font-medium hover:text-primary px-1">
           <LayoutDashboard className="w-4 h-4" />
           <span className="hidden sm:inline">语料概览</span>
+        </Link>
+        <Link to="/agent" className="flex items-center gap-1.5 text-sm font-medium hover:text-primary px-1" title="智能助手：多轮对话 · 工具 · skills/MCP">
+          <Bot className="w-4 h-4" />
+          <span className="hidden sm:inline">智能助手</span>
         </Link>
         <Link to="/rag" className="flex items-center gap-1.5 text-sm font-medium hover:text-primary px-1" title="RAG：模型、索引与检索测试">
           <Sparkles className="w-4 h-4" />
