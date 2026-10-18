@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const PORT = 7496;
+const PORT = Number(process.env.E2E_PORT) || 7496;
 const BASE = `http://127.0.0.1:${PORT}`;
 const shotIdx = process.argv.indexOf('--screenshot');
 const SHOT = shotIdx > -1 ? process.argv[shotIdx + 1] : null;
@@ -606,6 +606,31 @@ async function main() {
   check('反向链接面板列出来源文档',
     await waitFor(`!!document.querySelector('[data-wb-backlinks] button[title="论语讲稿.md"]')`, '面板条目', 8000) === true);
   check('面板片段高亮命中词', await exec(`!!document.querySelector('[data-wb-backlinks] .wb-bl-mark')`));
+  // 高亮必须用服务端给出的链接精确区间：.wb-bl-mark 恰为被链文字，且不在更长的词（如 孔子家语）内部
+  const blMarks = JSON.parse((await exec(`(() => {
+    const btns = [...document.querySelectorAll('[data-wb-backlinks] button[title="论语讲稿.md"]')];
+    const out = [];
+    for (const btn of btns) {
+      const m = btn.querySelector('.wb-bl-mark');
+      if (!m) continue;
+      out.push({
+        mark: m.textContent,
+        prev: (m.previousSibling ? m.previousSibling.textContent : '').slice(-4),
+        next: (m.nextSibling ? m.nextSibling.textContent : '').slice(0, 4),
+        text: btn.textContent,
+      });
+    }
+    return JSON.stringify(out);
+  })()`)) || '[]');
+  const kzMark = blMarks.find((x) => x.mark === '孔子');
+  check('面板高亮用链接精确区间（孔子 恰在 都提到 之后，非 孔子家语 内部）',
+    !!kzMark && kzMark.prev.endsWith('都提到') && !kzMark.next.startsWith('家语') &&
+    !blMarks.some((x) => x.mark === '孔子' && x.next.startsWith('家语')),
+    JSON.stringify(blMarks));
+  check('面板片段为纯文本且保留长词上下文（无标题/代码/wikilink 记号，孔子家语 可见）',
+    blMarks.length >= 2 && blMarks.every((x) => !/(^|\s)#{1,6}(\s|$)|`|\[\[|\]\(|\]\]/.test(x.text)) &&
+    blMarks.some((x) => x.text.includes('孔子家语')),
+    JSON.stringify(blMarks));
   await exec(`(() => { const b = [...document.querySelectorAll('[data-wb-backlinks] button')].find((x) => x.title === '论语讲稿.md'); if (b) { b.click(); return true; } return false; })()`);
   await waitFor(`decodeURIComponent(window.location.pathname).includes('论语讲稿.md')`, '打开来源');
   check('点击来源打开该文档并携带高亮词', (await exec('window.location.search')).includes('h='));

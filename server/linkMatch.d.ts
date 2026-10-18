@@ -6,6 +6,8 @@ export interface AutoIndexEntry {
   isLatin: boolean;
   term: string | null;
   targets: { path: string; heading?: string | null }[];
+  /** 屏蔽/歧义占位条目：仅参与最长匹配整体消费，永不链出（byNorm 不收） */
+  blocked?: boolean;
 }
 export interface AutoIndex {
   byChar: Map<string, AutoIndexEntry[]>;

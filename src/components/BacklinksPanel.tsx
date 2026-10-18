@@ -82,7 +82,11 @@ export function BacklinksPanel({
               </button>
               <div className="mt-1 space-y-1">
                 {b.snippets.slice(0, 3).map((s, i) => {
-                  const idx = s.text.indexOf(s.term);
+                  // 高亮一律用服务端给出的精确区间（由链接 from/to 拼出）；
+                  // 旧响应无区间时才退回文本搜索，绝不能把长词（如 孔子家语）内部的短词误标
+                  const aligned =
+                    Number.isInteger(s.hiFrom) && Number.isInteger(s.hiTo) && s.text.slice(s.hiFrom, s.hiTo) === s.term;
+                  const idx = aligned ? s.hiFrom : s.text.indexOf(s.term);
                   return (
                     <button
                       key={i}
@@ -93,7 +97,7 @@ export function BacklinksPanel({
                       {idx >= 0 ? (
                         <>
                           {s.text.slice(0, idx)}
-                          <mark className="wb-bl-mark">{s.term}</mark>
+                          <mark className="wb-bl-mark">{s.text.slice(idx, idx + s.term.length)}</mark>
                           {s.text.slice(idx + s.term.length)}
                         </>
                       ) : (

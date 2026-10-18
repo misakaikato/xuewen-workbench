@@ -53,9 +53,11 @@ export function isTermLike(name) {
 // ---------- 词条索引 ----------
 
 // entries: [{term, path, heading?, kind:'title'|'alias'|'heading'}]
-// 返回按首归一化字符分桶的自动链接词表（已剔除歧义项）：
-//   { byChar: Map<首字, Array<{norm, len, isLatin, targets:[{path,heading?}]}>>,
-//     byNorm: Map<norm, 同上条目>, ambiguous:Set<norm> }
+// 返回按首归一化字符分桶的自动链接词表：
+//   { byChar: Map<首字, Array<{norm, len, isLatin, blocked?, targets:[{path,heading?}]}>>,
+//     byNorm: Map<norm, 可链条目>, ambiguous:Set<norm> }
+// 屏蔽词与歧义词（同归一化名 → ≥2 个不同文档）不可链（byNorm 不收），但仍以 blocked
+// 占位条目进入 byChar 参与最长匹配：命中即整体消费，绝不再回退到其内部的短词条。
 export function buildAutoIndex(entries, blocklist = []) {
   const block = new Set(blocklist.map((t) => normalizeText(String(t).trim()).toLowerCase()));
   // norm -> path -> 候选目标（同文档去重，标题优先于别名优先于标题条目）
@@ -64,7 +66,6 @@ export function buildAutoIndex(entries, blocklist = []) {
     const term = String(e.term ?? '').trim();
     if (!term || !isTermLike(term)) continue;
     const norm = normalizeText(term);
-    if (block.has(norm.toLowerCase())) continue;
     if (!grouped.has(norm)) grouped.set(norm, new Map());
     const byPath = grouped.get(norm);
     if (!byPath.has(e.path)) byPath.set(e.path, []);
@@ -74,9 +75,16 @@ export function buildAutoIndex(entries, blocklist = []) {
   const byChar = new Map();
   const byNorm = new Map();
   const ambiguous = new Set();
+  const addToChar = (item) => {
+    const first = item.norm[0];
+    if (!byChar.has(first)) byChar.set(first, []);
+    byChar.get(first).push(item);
+  };
   for (const [norm, byPath] of grouped) {
-    if (byPath.size >= 2) {
-      ambiguous.add(norm); // 同名指向 ≥2 个不同文档：不自动链，wikilink 仍可解析
+    if (block.has(norm.toLowerCase()) || byPath.size >= 2) {
+      // 屏蔽/歧义（含两篇以上文档同名的通用标题）：不链，只作占位长词整体消费
+      if (byPath.size >= 2) ambiguous.add(norm);
+      addToChar({ norm, len: norm.length, isLatin: !hasCJK(norm), term: null, targets: [], blocked: true });
       continue;
     }
     const [[path, cands]] = [...byPath];
@@ -89,9 +97,7 @@ export function buildAutoIndex(entries, blocklist = []) {
       targets: [{ path, heading: cands[0].heading }],
     };
     byNorm.set(norm, item);
-    const first = norm[0];
-    if (!byChar.has(first)) byChar.set(first, []);
-    byChar.get(first).push(item);
+    addToChar(item);
   }
   for (const list of byChar.values()) list.sort((a, b) => b.len - a.len); // 最长优先
   return { byChar, byNorm, ambiguous };
@@ -356,18 +362,20 @@ export function extractLinks(text, autoIndex, opts = {}) {
         // 与跳过区重叠：换更短词条再试（可能止于跳过区之前）
         if (skipI < skips.length && j > skips[skipI][0]) continue;
         consumeTo = j;
-        const t = item.targets.find((t2) => t2.path !== selfPath); // 不链自身
-        if (t && !seen.has(item.norm)) {
-          seen.add(item.norm);
-          out.push({
-            from: i,
-            to: j,
-            term: text.slice(i, j),
-            norm: item.norm,
-            target: t,
-          });
+        if (!item.blocked) { // 屏蔽/歧义/通用长词：整体消费，不链也不再试内部短词
+          const t = item.targets.find((t2) => t2.path !== selfPath); // 不链自身
+          if (t && !seen.has(item.norm)) {
+            seen.add(item.norm);
+            out.push({
+              from: i,
+              to: j,
+              term: text.slice(i, j),
+              norm: item.norm,
+              target: t,
+            });
+          }
         }
-        break; // 桶内已按长度降序，首个可行命中即最长
+        break; // 桶内已按长度降序，首个可行命中即最长（含被消费的占位长词）
       }
       if (consumeTo) {
         i = consumeTo;

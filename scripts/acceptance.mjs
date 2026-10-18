@@ -108,7 +108,7 @@ check('冲突响应含磁盘当前内容', (r.body.current || '').includes('外�
 r = await put('/api/file', { path: target, content: newContent + '\n我的覆盖。\n', baseMtimeMs: r.body.currentMtimeMs, dsId: dsA });
 check('冲突后显式覆盖成功', r.body.ok === true);
 // 无效 JSON 不允许写入由前端校验；后端原子写检查备份存在
-const bakDir = path.join(ROOT, 'server', 'data', 'sources', dsA, 'backups', '笔记');
+const bakDir = path.join(dataDir(), 'sources', dsA, 'backups', '笔记');
 check('备份文件已生成', fs.existsSync(bakDir) && fs.readdirSync(bakDir).some(f => f.includes('第2章')), '');
 
 console.log('== 7. 数据源切换隔离 ==');
@@ -860,6 +860,34 @@ console.log('== 16. 自动内链与反向链接 ==');
       const d2 = await linksOf16('同题文档乙.md');
       check('唯一标题锚点 仁的定义 成链', d2.links.some((l) => l.term === '仁的定义' && l.target.path === '孔子.md' && l.target.heading === '仁的定义'));
     }
+
+    // (a2) 最长匹配的占位消费：自身/歧义/屏蔽/通用标题长词命中后整体消费，
+    //      绝不回退到其内部的短词条（孔子家语 内部的 孔子 不得成链）
+    {
+      const c = await contentOf16('孔子家语.md');
+      const d = await linksOf16('孔子家语.md');
+      const selfAt = c.indexOf('《孔子家语》');
+      check('自身长词整体消费：《孔子家语》区间内无链接起点',
+        selfAt >= 0 && !d.links.some((l) => l.from >= selfAt + 1 && l.from < selfAt + 5),
+        JSON.stringify(d.links.filter((l) => l.from >= selfAt && l.from < selfAt + 6)));
+      const hAt = c.indexOf('## 仲尼之言');
+      check('通用标题长词整体消费：标题行内 仲尼 不成链',
+        hAt >= 0 && !d.links.some((l) => l.from > hAt && l.from < hAt + '## 仲尼之言'.length) && !d.links.some((l) => l.term === '仲尼'),
+        JSON.stringify(d.links.filter((l) => l.term === '仲尼')));
+    }
+    {
+      const c = await contentOf16('同题文档乙.md');
+      const d = await linksOf16('同题文档乙.md');
+      const ambAt = c.indexOf('仲尼考与仲尼之言');
+      const soloAt = c.indexOf('内部的仲尼') + 3;
+      const zhong = d.links.filter((l) => l.term === '仲尼');
+      check('歧义别名与通用标题长词整体消费（[仲尼考],[仲尼之言] 内无链接）',
+        ambAt >= 0 && !d.links.some((l) => l.from >= ambAt && l.from < ambAt + 8),
+        JSON.stringify(zhong));
+      check('其后的独立 仲尼 精确成链（同节首次，偏移准确）',
+        zhong.length === 1 && zhong[0].from === soloAt && zhong[0].to === soloAt + 2,
+        JSON.stringify(zhong));
+    }
     {
       const d = await linksOf16('儒家概念表.json');
       check('JSON 文档作为链接来源', d.links.some((l) => l.term === '孔子' && l.target.path === '孔子.md') && d.links.some((l) => l.term === '论语讲稿'));
@@ -893,6 +921,27 @@ console.log('== 16. 自动内链与反向链接 ==');
       check('片段偏移指向真实提及（auto 精确 / wikilink 落在区间内）',
         lyj.snippets.every((s) => c.slice(s.offset, s.offset + s.term.length) === s.term ||
           c.slice(s.offset, s.offset + 80).includes(s.term)), JSON.stringify(lyj.snippets));
+      // 高亮区间由链接精确 from/to 拼出，绝不能用文本搜索（否则 孔子家语 内部的 孔子 会被误标）
+      const s0 = lyj.snippets[0];
+      check('首片段恰为 都提到 后的 孔子（原文偏移精确）',
+        s0.term === '孔子' && s0.offset === c.indexOf('都提到孔子') + 3, JSON.stringify(s0));
+      check('高亮用精确区间而非文本首现（首现 孔子 在 孔子家语 内部）',
+        lyj.snippets.every((s) => Number.isInteger(s.hiFrom) && Number.isInteger(s.hiTo) && s.text.slice(s.hiFrom, s.hiTo) === s.term) &&
+        s0.text.includes('孔子家语') && s0.text.indexOf('孔子') < s0.hiFrom && s0.text.slice(s0.hiFrom - 3, s0.hiFrom) === '都提到',
+        JSON.stringify(s0));
+      const wsnip = lyj.snippets.find((s) => s.term === '孔夫子');
+      check('wikilink 片段高亮显示文字且语法已解包',
+        !!wsnip && wsnip.offset === c.indexOf('[[孔子|孔夫子]]') && wsnip.text.slice(wsnip.hiFrom, wsnip.hiTo) === '孔夫子' && !wsnip.text.includes('[['),
+        JSON.stringify(wsnip));
+      check('全部片段为纯文本（无行首标题记号/代码/链接/wikilink 语法残留）',
+        bl.backlinks.every((b) => b.snippets.every((s) => !/(^|\s)#{1,6}(\s|$)|[`#]\s|\]\]|\]\(|\[\[|\*\*/.test(s.text))),
+        JSON.stringify(bl.backlinks.flatMap((b) => b.snippets.map((s) => s.text)).filter((t) => /(^|\s)#{1,6}(\s|$)|[`#]\s|\]\]|\]\(|\[\[|\*\*/.test(t))));
+      const kjyBl = bl.backlinks.find((b) => b.path === '孔子家语.md');
+      const c2 = await contentOf16('孔子家语.md');
+      const snip2 = kjyBl?.snippets.find((s) => s.offset === c2.indexOf('孔子在新的一节'));
+      check('片段剥除行首 Markdown 记号（## 第二节 → 第二节）且高亮精确',
+        !!snip2 && snip2.text.includes('第二节') && !snip2.text.includes('##') && snip2.text.slice(snip2.hiFrom, snip2.hiTo) === '孔子',
+        JSON.stringify(snip2));
       check('无提及文档反向链接为空', (await backOf16('编码与链接.md')).backlinks.length === 0);
       const old = await j16('/api/backlinks?path=' + encodeURIComponent('孔子.md'));
       check('旧 /api/backlinks 兼容（文件清单形状）', old.body.backlinks?.length === bl.backlinks.length && old.body.backlinks.every((f) => f.path && f.name && f.ext), JSON.stringify(old.body.backlinks?.slice(0, 2)));
@@ -937,6 +986,25 @@ console.log('== 16. 自动内链与反向链接 ==');
       check('屏蔽词状态存数据源之外', fs.existsSync(path.join(dataDir16, 'sources', ds16, 'linkBlocklist.json')));
       await put16('/api/links/blocklist', { terms: [] });
       check('清空屏蔽词表后恢复', (await linksOf16('论语讲稿.md')).links.some((l) => l.term === '仲尼' && l.kind === 'auto'));
+      // 屏蔽长词同样整体消费：屏蔽 孔子家语 后，其内部的 孔子 不得回退成链
+      {
+        const c = await contentOf16('论语讲稿.md');
+        const wantKzjy = c.indexOf('孔子家语与论语都提到孔子');
+        await put16('/api/links/blocklist', { terms: ['孔子家语'] });
+        const d = await linksOf16('论语讲稿.md');
+        check('屏蔽长词整体消费：孔子家语 区间内无链接且自身不成链',
+          wantKzjy >= 0 && !d.links.some((l) => l.kind === 'auto' && l.term === '孔子家语') &&
+          !d.links.some((l) => l.kind === 'auto' && l.from >= wantKzjy && l.from < wantKzjy + 4) &&
+          d.links.some((l) => l.kind === 'wiki' && l.term === '孔子家语'),
+          JSON.stringify(d.links.filter((l) => l.term === '孔子' || l.term === '孔子家语')));
+        check('屏蔽长词之外的独立 孔子 仍精确成链',
+          d.links.some((l) => l.term === '孔子' && l.from === c.indexOf('都提到孔子') + 3 && l.to === l.from + 2));
+        await put16('/api/links/blocklist', { terms: [] });
+        const d2 = await linksOf16('论语讲稿.md');
+        check('清空后最长匹配恢复（孔子家语 重新胜出）',
+          d2.links.some((l) => l.term === '孔子家语' && l.from === wantKzjy) &&
+          !d2.links.some((l) => l.term === '孔子' && l.from >= wantKzjy && l.from < wantKzjy + 4));
+      }
     }
 
     // (f) 只读操作后语料字节不变
