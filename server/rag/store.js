@@ -54,6 +54,15 @@ export class RagStore {
     `);
     this._vecCache = null; // { gen, ids: Int32Array, mat: Float32Array }
     this._gen = 0;
+    this.ftsError = null; // 最近一次 FTS 查询失败（静默降级防线：暴露给 status/界面）
+    this.ftsErrorAt = 0;
+  }
+
+  /** FTS 查询失败留痕：绝不静默——检索会退化但必须可观测可归因 */
+  _ftsFail(msg) {
+    this.ftsError = msg;
+    this.ftsErrorAt = Date.now();
+    console.error('[rag] FTS 查询失败（检索将退化为仅语义路）:', msg);
   }
 
   close() {
@@ -88,7 +97,8 @@ export class RagStore {
     return { toAdd, toDel };
   }
 
-  /** 替换一个文件的全部切块（不含向量；向量由 writeVecs 补） */
+  /** 替换一个文件的全部切块（不含向量；向量由 writeVecs 补）。
+   * textSOf(chunk) 由调用方提供（统一走 chunk.js 的 embedTextOf + t2s + bigram） */
   replaceChunks(filePath, contentHash, chunks, kind, textSOf) {
     const txn = this.db.transaction((chs) => {
       this.db.prepare('DELETE FROM vecs WHERE chunk_id IN (SELECT id FROM chunks WHERE path=?)').run(filePath);
@@ -100,8 +110,7 @@ export class RagStore {
       );
       const insFts = this.db.prepare('INSERT INTO chunks_fts(rowid, text_s) VALUES(?,?)');
       chs.forEach((c, i) => {
-        const embedText = c.headingPath ? `${c.headingPath}\n\n${c.text}` : c.text;
-        const textS = textSOf(embedText);
+        const textS = textSOf(c);
         const r = insChunk.run(filePath, c.headingPath || '', i, kind, c.text, textS, prefixHash(c.text));
         insFts.run(Number(r.lastInsertRowid), textS);
       });
@@ -177,7 +186,8 @@ export class RagStore {
       return this.db.prepare(
         `SELECT f.rowid AS id, bm25(chunks_fts) AS score FROM chunks_fts f WHERE chunks_fts MATCH ? ORDER BY score LIMIT ?`
       ).all(q, limit);
-    } catch {
+    } catch (e) {
+      this._ftsFail(String(e.message || e));
       return [];
     }
   }
@@ -200,7 +210,8 @@ export class RagStore {
            ) WHERE rnk <= ? ORDER BY rnk, s, id`
         )
         .all(q, perFile);
-    } catch {
+    } catch (e) {
+      this._ftsFail(String(e.message || e));
       return [];
     }
   }

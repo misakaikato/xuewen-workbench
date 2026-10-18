@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { RagStore, tokenizeFts, ftsIndexText } from './store.js';
 import { chunkFile, embedTextOf } from './chunk.js';
+// embedTextOf 统一拼装 [文件名\n标题路径\n\n正文]，FTS 与向量共用
 import { EmbedService, t2s, DIM } from './embed.js';
 import { loadRagConfig, saveRagConfig, indexConfigFingerprint, DEFAULT_RAG_CONFIG } from './config.js';
 
@@ -67,6 +68,7 @@ class RagIndex {
       updatedAt: this._updatedAt || null,
       error: this.error,
       configChanged,
+      ftsError: store.ftsError && Date.now() - store.ftsErrorAt < 3600_000 ? store.ftsError : null,
     };
   }
 
@@ -108,12 +110,13 @@ class RagIndex {
           continue;
         }
         const chunks = chunkFile(f.ext || '.md', text, this.cfg.chunk);
-        store.replaceChunks(f.path, f.contentHash, chunks, kindOf(f.ext), (t) => ftsIndexText(t2s(t)));
+        const eOpts = { headingContext: this.cfg.chunk.headingContext, fileName: f.name };
+        store.replaceChunks(f.path, f.contentHash, chunks, kindOf(f.ext), (c) => ftsIndexText(t2s(embedTextOf(c, eOpts))));
         // 立即嵌入该文件全部块（文件级完成粒度）
         this.phase = '嵌入';
         if (chunks.length) {
           const ids = store.db.prepare('SELECT id FROM chunks WHERE path=? ORDER BY ordinal').all(f.path).map((r) => r.id);
-          const vecs = await this.embed.embed(chunks.map((c) => embedTextOf(c, this.cfg.chunk.headingContext)), { maxLength: this.cfg.embed.maxLength });
+          const vecs = await this.embed.embed(chunks.map((c) => embedTextOf(c, eOpts)), { maxLength: this.cfg.embed.maxLength });
           store.writeVecs(ids.map((id, i) => ({ id, vec: vecs[i] })));
         }
         store.markFileDone(f.path);
@@ -256,12 +259,13 @@ export class RagManager {
     // ③ RRF 融合（bm25 名次升序、cos 名次降序）
     const rrf = new Map();
     const rrfK = cfg.search.rrfK;
+    const wSem = cfg.search.semanticWeight ?? 1; // 语义路权重（>1：语义相对词面更有话语权）
     fts.forEach((r, i) => {
       const s = 1 / (rrfK + i + 1);
       rrf.set(r.id, (rrf.get(r.id) || 0) + s);
     });
     cos.slice(0, cfg.search.topN).forEach((r, i) => {
-      const s = 1 / (rrfK + i + 1);
+      const s = wSem / (rrfK + i + 1);
       rrf.set(r.id, (rrf.get(r.id) || 0) + s);
     });
     // 只被一路命中的弱结果过滤：融合分 < 阈值（约等于另一路 60 名开外）

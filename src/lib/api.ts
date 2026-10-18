@@ -241,9 +241,9 @@ export const api = {
 };
 
 export interface RagConfig {
-  chunk: { maxChars: number; jsonValueLimit: number; headingContext: boolean; hardSplitOversize: boolean };
+  chunk: { maxChars: number; jsonValueLimit: number; headingContext: boolean; fileNameContext: boolean; hardSplitOversize: boolean };
   embed: { maxLength: number };
-  search: { topN: number; rrfK: number; rrfMin: number; cosFloor: number; cosSigma: number };
+  search: { topN: number; rrfK: number; rrfMin: number; cosFloor: number; cosSigma: number; semanticWeight: number };
 }
 
 export interface RagModelStatus {
@@ -269,6 +269,7 @@ export interface RagIndexStatus {
   updatedAt: number | null;
   error: string | null;
   configChanged?: boolean;
+  ftsError?: string | null;
 }
 
 export interface RagStatus {

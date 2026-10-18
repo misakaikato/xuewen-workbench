@@ -8,6 +8,7 @@ export const DEFAULT_RAG_CONFIG = {
     maxChars: 600, // 目标块上限（CJK 字符）；超长节按段落聚合二次分组
     jsonValueLimit: 1500, // json 单值截断字符数
     headingContext: true, // 标题路径拼入嵌入文本（提供语境）
+    fileNameContext: true, // 文件名拼入块文本（文件名含查询词但正文没有的文件也能被智能检索命中）
     hardSplitOversize: false, // 超长单元硬切（默认独立成块不切）
   },
   embed: {
@@ -19,6 +20,7 @@ export const DEFAULT_RAG_CONFIG = {
     rrfMin: 0.0105, // 最低融合分（低于此不出现 = 诚实空结果阈值）
     cosFloor: 0.25, // 余弦绝对下限
     cosSigma: 2.0, // 余弦统计阈值倍数（均值 + cosSigma × 标准差）
+    semanticWeight: 1.2, // RRF 语义路权重（>1 提升语义相对词面的话语权；1 = 等权）
   },
 };
 

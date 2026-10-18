@@ -164,7 +164,10 @@ export function chunkFile(ext, text, cfg = DEFAULT_RAG_CONFIG.chunk) {
   return chunkPlainText(text, cfg); // .txt / .doc / .docx 提取文本
 }
 
-// 块的嵌入文本：标题路径 + 正文（给向量与 FTS 提供语境；headingContext=false 时仅正文）
-export function embedTextOf(chunk, headingContext = true) {
-  return headingContext && chunk.headingPath ? `${chunk.headingPath}\n\n${chunk.text}` : chunk.text;
+// 块的嵌入文本（向量与 FTS 共用，唯一实现处）：[文件名]\n[标题路径]\n\n正文。
+// 文件名/标题路径提供语境与检索面——文件名含查询词但正文没有的文件也能命中。
+export function embedTextOf(chunk, opts = {}) {
+  const { headingContext = true, fileName = '' } = opts;
+  const head = [fileName, headingContext ? chunk.headingPath || '' : ''].filter(Boolean).join('\n');
+  return head ? head + '\n\n' + chunk.text : chunk.text;
 }

@@ -187,6 +187,12 @@ export default function RagManage() {
           </div>
         )}
         {ix?.error && <div className="text-xs text-red-600 mb-3">{ix.error}</div>}
+        {ix?.ftsError && (
+          <div className="text-xs border border-red-300 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 rounded p-2 mb-3 flex items-center gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            关键词索引查询失败（检索退化为仅语义路）：{ix.ftsError}
+          </div>
+        )}
         {ix?.configChanged && (
           <div className="text-xs border border-amber-400 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 rounded p-2 mb-3 flex items-center gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
@@ -239,6 +245,7 @@ export default function RagManage() {
                 ['embed.maxLength', '嵌入截断（token）', 60], ['search.topN', '每路 Top-N', 10],
                 ['search.rrfK', 'RRF k', 10], ['search.rrfMin', '最低融合分', 0.001],
                 ['search.cosFloor', '余弦下限', 0.01], ['search.cosSigma', '余弦 σ 倍数', 0.1],
+                ['search.semanticWeight', 'RRF 语义权重', 0.1],
               ] as const).map(([key, label, step]) => {
                 const [sec, k] = key.split('.') as [keyof RagConfig, string];
                 return (
@@ -257,6 +264,7 @@ export default function RagManage() {
               {([
                 ['chunk.headingContext', '标题路径拼入嵌入文本（提供语境）'],
                 ['chunk.hardSplitOversize', '超长单元硬切（默认独立成块）'],
+                ['chunk.fileNameContext', '文件名拼入块文本（仅文件名含词也能被智能命中）'],
               ] as const).map(([key, label]) => {
                 const [sec, k] = key.split('.') as [keyof RagConfig, string];
                 return (
@@ -286,7 +294,7 @@ export default function RagManage() {
                 className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent"
                 disabled={busy !== null}
                 onClick={async () => {
-                  const r = await api.ragConfigSave({ chunk: { maxChars: 600, jsonValueLimit: 1500, headingContext: true, hardSplitOversize: false }, embed: { maxLength: 1024 }, search: { topN: 30, rrfK: 60, rrfMin: 0.0105, cosFloor: 0.25, cosSigma: 2.0 } });
+                  const r = await api.ragConfigSave({ chunk: { maxChars: 600, jsonValueLimit: 1500, headingContext: true, fileNameContext: true, hardSplitOversize: false }, embed: { maxLength: 1024 }, search: { topN: 30, rrfK: 60, rrfMin: 0.0105, cosFloor: 0.25, cosSigma: 2.0, semanticWeight: 1.2 } });
                   setCfg(r.config);
                   setCfgSaved('已恢复默认');
                   await poll();

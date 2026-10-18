@@ -39,13 +39,14 @@ const api = {
 const exact = (q, params = {}) => api.get('/api/search?' + new URLSearchParams({ q, ...params }));
 const smart = (q, limit = 50) => api.post('/api/rag/search', { q, limit });
 
-// ---------- 真值扫描（直读语料文件） ----------
+// ---------- 真值扫描（txt/md/json 直读；Word 走 /api/file 提取管道取文本） ----------
 async function scanCorpus() {
   const cfg = await api.get('/api/config');
   if (!cfg.configured) throw new Error('资料库未配置');
   const lib = (cfg.libraries || []).find((l) => l.id === cfg.activeId) || { baseDir: cfg.baseDir };
   const dir = lib.baseDir;
-  const files = []; // { rel, text }（txt/md/json 直接读；word 无法字面扫描，不计入真值）
+  const files = []; // { rel, text }
+  const wordQueue = []; // Word 文件走服务端提取（与检索索引同一提取管道，真值天然一致）
   const walk = (d, rel) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       if (e.name.startsWith('.') || e.name === '.trash') continue;
@@ -56,13 +57,31 @@ async function scanCorpus() {
         try {
           files.push({ rel: r, text: fs.readFileSync(abs, 'utf8') });
         } catch { /* 读不了的文件不入真值 */ }
+      } else if (/\.(docx?|)$/i.test(e.name)) {
+        wordQueue.push(r);
       }
     }
   };
   walk(dir, '');
+  let wordOk = 0;
+  for (const rel of wordQueue) {
+    try {
+      const f = await api.get('/api/file?path=' + encodeURIComponent(rel));
+      if (f && typeof f.text === 'string' && f.text) {
+        files.push({ rel, text: f.text });
+        wordOk++;
+      }
+    } catch { /* 提取失败不入真值（与索引侧行为一致：提不出的文本两侧都没有） */ }
+  }
+  if (wordQueue.length) console.log(`真值含 Word 提取：${wordOk}/${wordQueue.length} 个 doc/docx`);
   return { dir, files };
 }
-const filesWith = (corpus, term) => new Set(corpus.files.filter((f) => f.text.includes(term)).map((f) => f.rel));
+// 真值口径：content = 仅正文（智能检索的索引面，fileNameContext 后含文件名）；
+// any = 正文∪文件名∪路径（精确检索的 name/path/content 三字段联合）
+const filesContentWith = (corpus, term) => new Set(corpus.files.filter((f) => f.text.includes(term)).map((f) => f.rel));
+const filesAnyWith = (corpus, term) =>
+  new Set(corpus.files.filter((f) => f.text.includes(term) || f.rel.includes(term)).map((f) => f.rel));
+const filesWith = filesContentWith;
 
 // ---------- 性能测量 ----------
 async function p95(fn, n) {
@@ -81,10 +100,39 @@ const corpus = await scanCorpus();
 console.log(`目标: ${URL_BASE} · 语料 ${corpus.files.length} 个可扫描文件（${corpus.dir}）`);
 if (corpus.files.length < 3) { console.error('可扫描文件过少，套件失去意义'); process.exit(2); }
 
-// 词选取：真值驱动（按文件覆盖数分档），候选含通用词与金融词，非金融库自动退化
+// 词选取：真值驱动（按文件覆盖数分档）。领域候选优先；不够则从语料 bigram 自举——
+// 任何中文语料都能自动选出可用测试词，不依赖人工词表
 const CANDIDATES = ['可转债', '止损', '对冲基金', '市盈率', '安全边际', '凯利公式', '复利', '债券', '现金流', '风险', '投资'];
-const freq = CANDIDATES.map((t) => ({ t, n: filesWith(corpus, t).size })).filter((x) => x.n > 0).sort((a, b) => a.n - b.n);
-if (freq.length < 2) { console.error('语料中候选词命中过少'); process.exit(2); }
+const CJK = (ch) => /[\u4e00-\u9fff]/.test(ch);
+function autoTerms(corpus, need) {
+  // 每文件抽前 8000 字统计二字词频（跳过标点/数字边界），取高频候选后按文件覆盖数排序
+  const cnt = new Map();
+  for (const f of corpus.files) {
+    const seen = new Set();
+    const t = f.text.slice(0, 8000);
+    for (let i = 0; i + 2 <= t.length; i++) {
+      if (!CJK(t[i]) || !CJK(t[i + 1])) continue;
+      const g = t.slice(i, i + 2);
+      if (!seen.has(g)) {
+        seen.add(g);
+        cnt.set(g, (cnt.get(g) || 0) + 1);
+      }
+    }
+  }
+  return [...cnt.entries()]
+    .filter(([g, n]) => n >= 2 && !/^[一二三四五六七八九十零]$/.test(g))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 300)
+    .map(([g]) => ({ t: g, n: filesAnyWith(corpus, g).size }))
+    .sort((a, b) => a.n - b.n);
+}
+let freq = CANDIDATES.map((t) => ({ t, n: filesAnyWith(corpus, t).size })).filter((x) => x.n > 0).sort((a, b) => a.n - b.n);
+if (freq.length < 3) {
+  const auto = autoTerms(corpus);
+  if (auto.length < 2) { console.error('语料规模过小，无法自举测试词'); process.exit(2); }
+  freq = auto;
+  console.log('测试词自动自举（bigram 文件覆盖分档）');
+}
 const rare = freq.find((x) => x.n >= 1 && x.n <= 5) || freq[0];
 const mid = freq[Math.floor(freq.length / 2)];
 const common = freq[freq.length - 1];
@@ -94,21 +142,24 @@ console.log(`测试词（真值分档）：低频「${rare.t}」${rare.n} 文件
 section('A. 精确检索（真值 = 直扫语料）');
 for (const { t, n } of [rare, mid, common]) {
   const r = await exact(t);
-  check(`A1 单词「${t}」全量枚举`, r.total === n, `API ${r.total} vs 真值 ${n}`);
+  check(`A1 单词「${t}」全量枚举（名/径/文）`, r.total === n, `API ${r.total} vs 真值 ${n}`);
 }
 {
   // A2 多词 AND = 交集
   const [a, b] = [mid.t, rare.t === mid.t ? common.t : rare.t];
-  const truth = new Set([...filesWith(corpus, a)].filter((f) => corpus.files.find((x) => x.rel === f).text.includes(b)));
+  const truth = new Set([...filesAnyWith(corpus, a)].filter((f) => [...filesAnyWith(corpus, b)].includes(f)));
   const r = await exact(a + ' ' + b);
   check(`A2 多词 AND「${a} ${b}」`, r.total === truth.size, `API ${r.total} vs 真值 ${truth.size}`);
 }
 {
-  // A3 引号短语：结果文件正文均含连续短语
-  const PH = '安全边际';
-  const r = await exact('"' + PH + '"');
-  const truth = filesWith(corpus, PH);
-  check('A3 短语「安全边际」命中的文件正文真含短语', r.results.every((x) => truth.has(x.file.path)) && r.total > 0, `API ${r.total}`);
+  // A3 引号短语：短语候选自举（领域词优先，退化用测试词），正文口径
+  const PH_CANDS = ['安全边际', '风险控制', '止损', '基本面', '投资策略', '市场监管', rare.t, mid.t];
+  const PH = PH_CANDS.find((t) => filesContentWith(corpus, t).size > 0);
+  if (PH) {
+    const r = await exact('"' + PH + '"');
+    const truth = filesContentWith(corpus, PH);
+    check(`A3 短语「${PH}」命中文件正文真含`, r.results.every((x) => truth.has(x.file.path)) && r.total > 0, `API ${r.total}`);
+  } else { skip++; console.log('  - A3 跳过（无可用短语样例）'); }
 }
 {
   // A4 文件名命中：取某文件名独有词（数字前缀），验证该文件在结果中
@@ -124,7 +175,7 @@ for (const { t, n } of [rare, mid, common]) {
 {
   // A5 类型筛选
   const r = await exact(mid.t, { types: '.txt' });
-  const truth = new Set([...filesWith(corpus, mid.t)].filter((f) => f.endsWith('.txt')));
+  const truth = new Set([...filesAnyWith(corpus, mid.t)].filter((f) => f.endsWith('.txt')));
   check(`A5 类型筛选 type=.txt「${mid.t}」`, r.total === truth.size, `API ${r.total} vs 真值 ${truth.size}`);
 }
 {
@@ -141,14 +192,15 @@ for (const { t, n } of [rare, mid, common]) {
   const r = await exact(mid.t);
   const truth = filesWith(corpus, mid.t);
   const sample = r.results.slice(0, 5);
-  check('A7 结果抽查（前 5 条均在真值集）', sample.every((x) => truth.has(x.file.path)), `抽查 ${sample.length} 条`);
+  const anyTruth = filesAnyWith(corpus, mid.t);
+  check('A7 结果抽查（前 5 条均在真值集）', sample.every((x) => anyTruth.has(x.file.path)), `抽查 ${sample.length} 条`);
 }
 
 // ============ B. 智能检索：字面完备性 ============
 section('B. 智能检索·字面完备（补位 + 覆盖）');
 for (const { t, n } of [rare, mid, common]) {
   const r = await smart(t, 500);
-  const truth = filesWith(corpus, t);
+  const truth = new Set([...filesContentWith(corpus, t), ...corpus.files.filter((f) => path.basename(f.rel).includes(t)).map((f) => f.rel)]);
   const covered = new Set(r.hits.map((h) => h.path));
   const ratio = truth.size ? [...truth].filter((f) => covered.has(f)).length / truth.size : 1;
   check(`B1 补位覆盖「${t}」≥90%`, ratio >= 0.9, `覆盖 ${Math.round(ratio * 100)}%（${r.total} 段 / 真值 ${n} 文件）`);
@@ -174,7 +226,7 @@ for (const { t, n } of [rare, mid, common]) {
 }
 {
   // B6 繁简互通（智能模式 t2s 归一后查询）
-  const pairs = [['债券', '債券'], ['风险', '風險'], ['投资', '投資']];
+  const pairs = [['债券', '債券'], ['风险', '風險'], ['投资', '投資'], ['复利', '復利'], ['市场', '市場']];
   let ok = 0, total = 0;
   for (const [s, t] of pairs) {
     const rs = await smart(s, 1), rt = await smart(t, 1);
@@ -183,7 +235,8 @@ for (const { t, n } of [rare, mid, common]) {
       if (Math.abs((rs.total ?? 0) - (rt.total ?? 0)) <= Math.max(5, rs.total * 0.1)) ok++;
     }
   }
-  check('B6 繁简互通（繁体查询命中数≈简体）', total > 0 && ok === total, `${ok}/${total} 对一致`);
+  if (total === 0) { skip++; console.log('  - B6 跳过（语料无繁简对候选词）'); }
+  else check('B6 繁简互通（繁体查询命中数≈简体）', ok === total, `${ok}/${total} 对一致`);
 }
 
 // ============ C. 语义有效性（curated 题集） ============
@@ -211,10 +264,11 @@ section('D. 跨模式一致性不变量');
 for (const { t } of [rare, mid, common]) {
   const e = await exact(t);
   const s = await smart(t, 500);
-  const efiles = new Set(e.results.map((x) => x.file.path));
+  // 不变量限定在智能检索的索引面（正文∪文件名）：路径-only 命中是精确检索特有能力，不计入
+  const efiles = new Set(e.results.map((x) => x.file.path).filter((f) => corpus.files.some((c) => c.rel === f && (c.text.includes(t) || path.basename(f).includes(t)))));
   const sfiles = new Set(s.hits.map((h) => h.path));
   const cov = [...efiles].filter((f) => sfiles.has(f)).length;
-  check(`D1 「${t}」智能(limit500) 覆盖精确文件 ≥90%`, cov / Math.max(1, efiles.size) >= 0.9, `${cov}/${efiles.size}`);
+  check(`D1 「${t}」智能(limit500) 覆盖精确文件 ≥90%`, efiles.size === 0 || cov / efiles.size >= 0.9, `${cov}/${efiles.size}`);
   check(`D2 「${t}」精确有结果 ⇒ 智能非空`, e.total === 0 || (s.total ?? 0) > 0);
 }
 
