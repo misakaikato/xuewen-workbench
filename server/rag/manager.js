@@ -219,7 +219,7 @@ export class RagManager {
   }
 
   /** 混合检索：RRF 融合 BM25 与余弦 */
-  async search(dsId, q, limit = 20) {
+  async search(dsId, q, limit = 50) {
     const t0 = Date.now();
     const ix = this.index(dsId);
     const store = ix._ensureStore();
@@ -231,6 +231,7 @@ export class RagManager {
 
     // ① FTS5
     const tokens = tokenizeFts(qs);
+    // 融合用 FTS 前 topN 名（语义精华）
     const fts = store.searchFts(tokens, cfg.search.topN); // [{id, score}] score=bm25（小好）
 
     // ② 余弦 + 统计阈值（诚实空结果：无关查询的余弦分布无离群点，整体压掉）
@@ -268,7 +269,25 @@ export class RagManager {
       .map(([id, score]) => ({ id, score: Math.round(score * 1e4) / 1e4 }))
       .filter((x) => x.score >= cfg.search.rrfMin)
       .sort((a, b) => (b.score - a.score) || (a.id - b.id)); // 量化后稳定排序
-    const top = fused.slice(0, limit);
+    // 字面补位：FTS 确凿命中但被融合阈值滤掉的，跟在融合段后。
+    // 补位序 = 文件轮转（每文件先出一段，再出第二段……）——大文件的高频块
+    // 不霸榜，limit 内覆盖尽可能多的文件；文件内仍按 BM25 名次
+    const fusedIds = new Set(fused.map((x) => x.id));
+    // 补位池：每文件 BM25 最优 3 块（SQL 窗口函数保证文件多样性），轮转排序——
+    // 第一轮所有命中文件各出一块，第二轮再各出一块……大文件不霸榜，覆盖完备
+    const byFile = store.searchFtsByFile(tokens, 3).filter((r) => !fusedIds.has(r.id));
+    const rounds = new Map(); // rnk -> [ids]
+    for (const r of byFile) {
+      if (!rounds.has(r.rnk)) rounds.set(r.rnk, []);
+      rounds.get(r.rnk).push(r.id);
+    }
+    const filler = [];
+    for (const rnk of [...rounds.keys()].sort((a, b) => a - b)) {
+      for (const id of rounds.get(rnk)) filler.push({ id, score: 0 }); // 0 = 未过融合线
+    }
+    // total 如实反映融合命中 + 可用补位（受 FTS 候选池限制）
+    const total = fused.length + filler.length;
+    const top = [...fused, ...filler].slice(0, limit);
     const chunks = store.getChunksByIds(top.map((x) => x.id));
     const bm25Ids = new Map(fts.map((r) => [r.id, r.score]));
     const cosIds = new Map(cos.map((r) => [r.id, r.score]));
@@ -289,7 +308,7 @@ export class RagManager {
         };
       })
       .filter(Boolean);
-    return { hits, took: Date.now() - t0, backend: this.embed.backend };
+    return { hits, total, took: Date.now() - t0, backend: this.embed.backend };
   }
 
   async llmTest() {

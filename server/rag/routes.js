@@ -63,7 +63,8 @@ export function mountRag(manager, resolveLib) {
     const q = String((req.body && req.body.q) || '').trim();
     if (!q) return res.json({ hits: [], took: 0, backend: manager.embed.backend });
     try {
-      const r = await manager.search(lib.id, q, Number(req.body.limit) || 20);
+      const limit = Math.min(500, Math.max(1, Number(req.body.limit) || 50));
+      const r = await manager.search(lib.id, q, limit);
       res.json({ dsId: lib.id, ...r });
     } catch (e) {
       res.status(409).json({ error: String(e.message || e) });

@@ -232,7 +232,7 @@ export const api = {
   ragModelImport: (dir: string) => req<{ ok: boolean; error?: string; kind?: string }>('/api/rag/model/import', json('POST', { dir })),
   ragIndexBuild: (rebuild: boolean) => req<{ ok: boolean }>('/api/rag/index/build', json('POST', { rebuild })),
   ragIndexPause: () => req<{ ok: boolean }>('/api/rag/index/pause', json('POST', {})),
-  ragSearch: (q: string, limit = 20) => req<RagSearchResponse>('/api/rag/search', json('POST', { q, limit })),
+  ragSearch: (q: string, limit = 50) => req<RagSearchResponse>('/api/rag/search', json('POST', { q, limit })),
   ragConfigGet: () => req<{ dsId: string; config: RagConfig }>('/api/rag/config'),
   ragConfigSave: (patch: Partial<RagConfig>) => req<{ ok: boolean; config: RagConfig }>('/api/rag/config', json('PUT', patch)),
   ragLlmGet: () => req<RagLlmConfig>('/api/rag/llm'),
@@ -298,6 +298,7 @@ export interface RagSearchResponse {
     bm25: boolean;
     cos: number | null;
   }[];
+  total?: number; // 融合命中总数（截断显示前）
   took: number;
   backend?: string;
 }

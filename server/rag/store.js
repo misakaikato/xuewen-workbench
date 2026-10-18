@@ -182,6 +182,29 @@ export class RagStore {
     }
   }
 
+  /** FTS 按文件配额：每个文件取 BM25 最优的 perFile 块（窗口函数），
+   * 供智能检索的字面补位做文件轮转——覆盖全部命中文件不受候选池截断 */
+  searchFtsByFile(queryTokens, perFile = 3) {
+    if (!queryTokens.length) return [];
+    const q = queryTokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(' OR ');
+    try {
+      // bm25() 不能直接进窗口 ORDER BY（FTS5 辅助函数上下文限制）——先投影成普通列再开窗
+      return this.db
+        .prepare(
+          `SELECT id, path, rnk FROM (
+             SELECT id, path, s, ROW_NUMBER() OVER (PARTITION BY path ORDER BY s, id) AS rnk FROM (
+               SELECT c.id AS id, c.path AS path, bm25(chunks_fts) AS s
+               FROM chunks_fts f JOIN chunks c ON c.id = f.rowid
+               WHERE chunks_fts MATCH ?
+             )
+           ) WHERE rnk <= ? ORDER BY rnk, s, id`
+        )
+        .all(q, perFile);
+    } catch {
+      return [];
+    }
+  }
+
   /** 全量向量矩阵（惰性缓存；写操作后失效） */
   vecMatrix() {
     if (this._vecCache && this._vecCache.gen === this._gen) return this._vecCache;

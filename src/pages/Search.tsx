@@ -51,6 +51,7 @@ export default function Search() {
   const [dir, setDir] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [smart, setSmart] = useState<RagSearchResponse | null>(null);
+  const [smartLimit, setSmartLimit] = useState(50);
   const [smartErr, setSmartErr] = useState<string | null>(null);
   const [terms, setTerms] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
@@ -74,7 +75,7 @@ export default function Search() {
       setSmartErr(null);
       try {
         if (m === 'smart') {
-          const r = await api.ragSearch(query);
+          const r = await api.ragSearch(query, smartLimit);
           if (seq !== seqRef.current) return;
           setSmart(r);
           setTotal(r.hits.length);
@@ -109,7 +110,7 @@ export default function Search() {
     }, mode === 'smart' ? 500 : 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, types, dir, dsId, mode]);
+  }, [input, types, dir, dsId, mode, smartLimit]);
 
   useEffect(() => setInput(q), [q]);
 
@@ -172,8 +173,14 @@ export default function Search() {
       </div>
       )}
       {mode === 'smart' && (
-        <div className="flex items-center gap-2 mb-4 text-xs text-muted-foreground">
-          {smart && q && <span>耗时 {smart.took}ms · 后端 {smart.backend}</span>}
+        <div className="flex items-center gap-2 mb-4 text-xs text-muted-foreground flex-wrap">
+          {smart && q && (
+            <span>
+              共 <span className="stat-num">{smart.total ?? smart.hits.length}</span> 段命中
+              {(smart.total ?? 0) > smart.hits.length && <span className="text-muted-foreground">（显示前 {smart.hits.length}）</span>}
+              · 耗时 {smart.took}ms · 后端 {smart.backend}
+            </span>
+          )}
           <span className="flex-1" />
           <Link to="/rag" className="text-primary underline">RAG 管理</Link>
         </div>
@@ -250,6 +257,14 @@ export default function Search() {
             </li>
           ))}
         </ul>
+      )}
+      {mode === 'smart' && smart && (smart.total ?? smart.hits.length) > smart.hits.length && (
+        <button
+          className="mt-3 w-full text-xs px-3 py-2 rounded border border-border hover:bg-accent text-muted-foreground"
+          onClick={() => setSmartLimit((n) => Math.min(500, n * 2))}
+        >
+          显示更多（还有 {(smart.total ?? 0) - smart.hits.length} 段）
+        </button>
       )}
 
       {mode === 'exact' && (

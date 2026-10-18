@@ -88,7 +88,7 @@ export default function RagManage() {
   const doSmart = async () => {
     if (!q.trim()) return;
     try {
-      setSmart(await api.ragSearch(q));
+      setSmart(await api.ragSearch(q, 100));
     } catch (e) {
       setSmart({ dsId: '', hits: [], took: 0, backend: '' } as Awaited<ReturnType<typeof api.ragSearch>>);
       setErr((e as Error).message);
@@ -313,7 +313,7 @@ export default function RagManage() {
         </div>
         {smart && (
           <div className="space-y-2">
-            <div className="text-[11px] text-muted-foreground">{smart.hits.length} 个段落 · {smart.took}ms · {BACKEND_LABEL[smart.backend || ''] || smart.backend}
+            <div className="text-[11px] text-muted-foreground">共 {smart.total ?? smart.hits.length} 段（显示 {smart.hits.length}）· {smart.took}ms · {BACKEND_LABEL[smart.backend || ''] || smart.backend}
               <Link to={'/search?q=' + encodeURIComponent(q) + '&mode=smart'} className="ml-2 text-primary underline">去检索页</Link>
             </div>
             {smart.hits.map((h, i) => (
