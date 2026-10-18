@@ -116,8 +116,8 @@
     "productName": "Xuewen Workbench",
     "publish": {
       "provider": "github",
-      "owner": "OWNER",
-      "repo": "REPO"
+      "owner": "misakaikato",
+      "repo": "xuewen-workbench"
     },
     "directories": {
       "output": "release"
