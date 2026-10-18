@@ -1,14 +1,14 @@
-// 目录树：动态来自扫描结果，可折叠，支持同名文件（以路径区分）。
-// 展开状态按资料库持久化（localStorage），跟随当前阅读/浏览位置自动展开父链并滚动定位（reveal）；
-// 过滤时切换为平铺结果模式（命中高亮 + 转全文检索）；支持键盘导航（↑↓←→/Enter/Home/End/F2/Delete/首字母跳转）；
-// 右键菜单含复制文件名/相对路径/集合引用与在系统中显示；行内徽标提示本地草稿与元数据问题。
+// 目录树（虚拟滚动版）：行数据先行——先把可见行摊平成数组，再按 28px 定高窗口化渲染。
+// 三种视图：物理目录树 / 逻辑集合分组 / 过滤平铺；跟随导航 reveal、展开集与选项按库持久化。
+// 键盘：↑↓←→/Home/End/Enter/F2/Delete/首字母，Ctrl+C/X/V 剪贴板语义（剪切=移动，复制=duplicate）。
+// 行内徽标：草稿/元数据问题/近期修改/只读 Word（可开关）；被引用数（可开关）。
+// 文件行可拖拽：拖进编辑器落成完整文件名引用（见 Edit 页 drop 处理）。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import type { TreeNode, FileEntry, Collection } from '@/lib/types';
 import {
   ChevronRight, ChevronDown, Folder, FolderOpen, FilePlus, FolderPlus,
-  Pencil, FolderInput, Trash2, ChevronsDownUp, ChevronsUpDown,
-  Copy, Quote, ExternalLink, PenLine, AlertTriangle,
+  ChevronsDownUp, ChevronsUpDown, Boxes, Eye, EyeOff, Link2, Lock, PenLine, AlertTriangle,
 } from 'lucide-react';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { EntryActionDialogs, type EntryAction } from './EntryActionDialogs';
@@ -17,12 +17,15 @@ import { useApp } from '@/store/app';
 import { CreateEntryDialog, type CreateKind, type CreateTarget } from './CreateEntryDialog';
 import { extIcon } from '@/lib/extIcon';
 import { api, type MetaIssue } from '@/lib/api';
+import { runEntryAction } from '@/lib/entryOps';
+import { ActionItems, type Entry } from './EntryMenu';
 
 type OnCreate = (dir: string, kind: CreateKind) => void;
 type OnAction = (a: EntryAction) => void;
-type Entry = Omit<EntryAction, 'type'>; // { path, name, isDir }
 
-// ---- 路径与展开集工具 ----
+const ROW_H = 28; // 统一行高（h-7）；虚拟滚动与键盘定位都依赖它
+
+// ---- 路径工具 ----
 
 function allDirPaths(n: TreeNode, out: string[] = []): string[] {
   for (const d of n.dirs) {
@@ -41,8 +44,6 @@ function dirOf(p: string): string {
   return i < 0 ? '' : p.slice(0, i);
 }
 
-const nameOf = (p: string) => p.split('/').pop() || p;
-
 // 'a/b/c' -> ['a', 'a/b']（不含自身）
 function ancestorDirs(p: string): string[] {
   const segs = p.split('/');
@@ -51,27 +52,134 @@ function ancestorDirs(p: string): string[] {
   return out;
 }
 
-const openKey = (id: string) => `wb.filetree.open.${id}`;
+const fmtKB = (n: number) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB');
+
+// 文件夹聚合统计（悬浮提示用）：目录 -> { files, dirs, size }
+function computeStats(n: TreeNode, map: Map<string, { files: number; dirs: number; size: number }>) {
+  let files = n.files.length;
+  let dirs = n.dirs.length;
+  let size = n.files.reduce((s, f) => s + f.size, 0);
+  for (const d of n.dirs) {
+    const st = computeStats(d, map);
+    files += st.files;
+    dirs += st.dirs;
+    size += st.size;
+  }
+  map.set(n.path, { files, dirs, size });
+  return { files, dirs, size };
+}
+
+function collectFiles(n: TreeNode, out: FileEntry[] = []): FileEntry[] {
+  out.push(...n.files);
+  for (const d of n.dirs) collectFiles(d, out);
+  return out;
+}
+
+// ---- 按库持久化的小存取 ----
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJson(key: string, v: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(v));
+  } catch { /* 隐私模式/配额：忽略，当次会话内仍有效 */ }
+}
 
 function loadOpen(id: string): Set<string> | null {
-  try {
-    const raw = localStorage.getItem(openKey(id));
-    if (!raw) return null;
-    const arr: unknown = JSON.parse(raw);
-    if (!Array.isArray(arr)) return null;
-    return new Set(arr.filter((x): x is string => typeof x === 'string'));
-  } catch {
-    return null;
+  const arr = loadJson<string[] | null>(`wb.filetree.open.${id}`, null);
+  return Array.isArray(arr) ? new Set(arr) : null;
+}
+
+const RECENT_MS = 7 * 24 * 3600 * 1000; // 「近期修改」徽标阈值：7 天
+let recentCutoff = 0; // 惰性计算：首次调用时定一次基线（天级粒度，无需逐渲染取时钟）
+const isRecent = (mtimeMs: number) => {
+  if (!recentCutoff) recentCutoff = Date.now() - RECENT_MS;
+  return mtimeMs > recentCutoff;
+};
+
+// ---- 行模型：三种视图都摊平为 Row[]，虚拟滚动与键盘导航共用 ----
+
+interface Row {
+  key: string;
+  kind: 'dir' | 'file' | 'head'; // head = 集合视图分组头（含「未归入集合」）
+  path: string; // data-tpath；head 为 'col:<名称>' / 'uncat'
+  name: string;
+  depth: number;
+  isDir: boolean;
+  open?: boolean; // dir/head 的展开态（键盘 ←→ 用）
+  file?: FileEntry;
+  entry?: Entry; // 右键菜单动作目标
+  dirLabel?: string; // 平铺/集合视图的相对目录副文本
+  title?: string; // 悬浮提示（目录统计 / 集合计数）
+  count?: number; // head 成员数
+}
+
+function buildTreeRows(node: TreeNode, depth: number, openSet: Set<string>, stats: Map<string, { files: number; dirs: number; size: number }>, out: Row[]) {
+  for (const d of node.dirs) {
+    const st = stats.get(d.path) ?? { files: 0, dirs: 0, size: 0 };
+    const open = openSet.has(d.path);
+    out.push({
+      key: d.path, kind: 'dir', path: d.path, name: d.name, depth, isDir: true, open,
+      entry: { path: d.path, name: d.name, isDir: true },
+      title: `${st.files} 个文件 · ${st.dirs} 个子目录 · ${fmtKB(st.size)}`,
+    });
+    if (open) buildTreeRows(d, depth + 1, openSet, stats, out);
+  }
+  for (const f of node.files) {
+    out.push({
+      key: f.path, kind: 'file', path: f.path, name: f.name, depth, isDir: false, file: f,
+      entry: { path: f.path, name: f.name, isDir: false },
+    });
   }
 }
 
-function saveOpen(id: string, set: Set<string>) {
-  try {
-    localStorage.setItem(openKey(id), JSON.stringify([...set]));
-  } catch {
-    /* 隐私模式/配额问题：忽略，当次会话内仍有效 */
-  }
+function buildFlatRows(files: FileEntry[]): Row[] {
+  return files.map((f) => ({
+    key: f.path, kind: 'file' as const, path: f.path, name: f.name, depth: 0, isDir: false, file: f,
+    entry: { path: f.path, name: f.name, isDir: false }, dirLabel: f.dir,
+  }));
 }
+
+// 集合视图：按集合分组平铺成员（文件可属多个集合时归第一个）；未归入任何集合的收进「未归入集合」
+function buildCollectionRows(collections: Collection[], allFiles: FileEntry[], closed: Set<string>): Row[] {
+  const claimed = new Map<string, string>(); // path -> 第一个认领它的集合名
+  const groups: { name: string; files: FileEntry[] }[] = [];
+  for (const c of collections) {
+    const members = allFiles.filter((f) => c.dirs.some((d) => f.dir === d || f.dir.startsWith(d + '/')));
+    for (const f of members) if (!claimed.has(f.path)) claimed.set(f.path, c.name);
+    groups.push({ name: c.name, files: members });
+  }
+  const uncat = allFiles.filter((f) => !claimed.has(f.path));
+  const out: Row[] = [];
+  const pushHead = (key: string, name: string, files: FileEntry[], depth: number) => {
+    const open = !closed.has(key);
+    out.push({
+      key, kind: 'head', path: key, name, depth, isDir: true, open,
+      title: `${files.length} 个文档`, count: files.length,
+    });
+    if (open) {
+      for (const f of files) {
+        out.push({
+          key: key + '/' + f.path, kind: 'file', path: f.path, name: f.name, depth: depth + 1, isDir: false,
+          file: f, entry: { path: f.path, name: f.name, isDir: false }, dirLabel: f.dir,
+        });
+      }
+    }
+  };
+  for (const g of groups) pushHead('col:' + g.name, g.name, g.files, 0);
+  pushHead('uncat', '未归入集合', uncat, 0);
+  return out;
+}
+
+// ---- 行内小组件 ----
 
 // 过滤命中片段高亮（大小写不敏感，取名称中的第一处）
 function Highlight({ text, q }: { text: string; q: string }) {
@@ -86,244 +194,161 @@ function Highlight({ text, q }: { text: string; q: string }) {
   );
 }
 
-// 行内徽标：本地草稿（琥珀色笔）/ 元数据旁注问题（红色警告）
-function RowBadges({ path, drafts, metaMsgs }: { path: string; drafts: Set<string>; metaMsgs: Map<string, string[]> }) {
-  const msgs = metaMsgs.get(path);
-  if (!drafts.has(path) && !msgs) return null;
-  return (
-    <span className="flex items-center gap-0.5 shrink-0">
-      {drafts.has(path) && (
-        <span title="存在本地草稿（上次未完成的编辑）">
-          <PenLine className="w-3 h-3 text-amber-600" />
-        </span>
-      )}
-      {msgs && (
-        <span title={msgs.join('\n')}>
-          <AlertTriangle className="w-3 h-3 text-red-500" />
-        </span>
-      )}
-    </span>
-  );
-}
-
-// 复制到剪贴板（http://127.0.0.1 为安全上下文，clipboard API 可用；失败静默）
-const copyText = (t: string) => navigator.clipboard.writeText(t).catch(() => {});
-
-function ActionItems({ entry, onAction, colRef }: { entry: Entry; onAction: OnAction; colRef?: string | null }) {
-  const fire = (type: EntryAction['type']) => setTimeout(() => onAction({ ...entry, type }), 0);
-  return (
-    <>
-      <ContextMenuItem onSelect={() => fire('rename')}><Pencil />重命名</ContextMenuItem>
-      <ContextMenuItem onSelect={() => fire('move')}><FolderInput />移动到…</ContextMenuItem>
-      <ContextMenuSeparator />
-      <ContextMenuItem onSelect={() => copyText(entry.name)}><Copy />复制文件名</ContextMenuItem>
-      <ContextMenuItem onSelect={() => copyText(entry.path)}><Copy />复制相对路径</ContextMenuItem>
-      {colRef && (
-        <ContextMenuItem onSelect={() => copyText(colRef)}><Quote />复制集合引用「{colRef.split('|')[0]}」</ContextMenuItem>
-      )}
-      <ContextMenuItem onSelect={() => { api.revealInSystem(entry.path).catch(() => {}); }}>
-        <ExternalLink />在系统中显示
-      </ContextMenuItem>
-      <ContextMenuSeparator />
-      <ContextMenuItem variant="destructive" onSelect={() => fire('delete')}><Trash2 />删除</ContextMenuItem>
-    </>
-  );
-}
-
-function Node({
-  node,
-  depth,
-  currentPath,
-  currentDir,
-  isOpen,
-  onToggleDir,
-  onEnsureOpen,
-  onCreate,
-  onAction,
-  colRefOf,
-  drafts,
-  metaMsgs,
-}: {
-  node: TreeNode;
-  depth: number;
-  currentPath?: string;
-  currentDir: string | null;
-  isOpen: (p: string) => boolean;
-  onToggleDir: (p: string) => void;
-  onEnsureOpen: (p: string) => void;
+interface RowCtx {
+  activeFile?: string;
+  activeDir: string | null;
+  q: string;
+  opts: { badges: boolean; refs: boolean };
+  drafts: Set<string>;
+  metaMsgs: Map<string, string[]>;
+  linkCounts: Record<string, number>;
+  cutPath: string | null;
+  onOpenFile: (row: Row) => void;
+  onToggle: (row: Row) => void;
   onCreate: OnCreate;
   onAction: OnAction;
-  colRefOf: (p: string) => string | null;
-  drafts: Set<string>;
-  metaMsgs: Map<string, string[]>;
-}) {
-  const navigate = useNavigate();
-  // 从菜单打开对话框时延后一帧，避免菜单关闭与对话框焦点管理冲突
-  const create = (kind: CreateKind) => { onEnsureOpen(node.path); setTimeout(() => onCreate(node.path, kind), 0); };
-  const open = node.path === '' || isOpen(node.path);
-  const active = currentDir !== null && currentDir === node.path;
-  const childDepth = depth + (node.path === '' ? 0 : 1);
+  dsId: string | null;
+  onDuplicated: (path: string) => void;
+}
 
-  return (
-    <div>
-      {node.path !== '' && (
-        <ContextMenu>
-        <ContextMenuTrigger asChild>
-        <div
-          data-tpath={node.path} data-name={node.name} data-kind="dir" data-open={open ? '1' : '0'}
-          tabIndex={-1}
-          className={`group flex items-center gap-1 py-1 px-1.5 rounded cursor-pointer hover:bg-sidebar-accent text-sm select-none focus:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
-            active ? 'bg-sidebar-accent' : ''
-          }`}
-          style={{ paddingLeft: depth * 14 + 4 }}
-          onClick={() => onToggleDir(node.path)}
-        >
-          {open ? <ChevronDown className="w-3.5 h-3.5 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0" />}
-          {open ? <FolderOpen className="w-4 h-4 shrink-0 text-amber-600" /> : <Folder className="w-4 h-4 shrink-0 text-amber-600" />}
-          <button
-            className={`truncate text-left flex-1 ${active ? 'text-primary font-medium' : ''}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              navigate('/browse?dir=' + encodeURIComponent(node.path));
-            }}
-            title={node.path}
-          >
-            {node.name}
-          </button>
-          <span className="hidden group-hover:flex group-focus-within:flex items-center gap-0.5 shrink-0">
-            <button
-              className="p-0.5 rounded hover:bg-background"
-              title="新建文档" aria-label="新建文档"
-              onClick={(e) => { e.stopPropagation(); create('md'); }}
-            >
-              <FilePlus className="w-3.5 h-3.5" />
-            </button>
-            <button
-              className="p-0.5 rounded hover:bg-background"
-              title="新建文件夹" aria-label="新建文件夹"
-              onClick={(e) => { e.stopPropagation(); create('folder'); }}
-            >
-              <FolderPlus className="w-3.5 h-3.5" />
-            </button>
+function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
+  const navigate = useNavigate();
+  const cut = ctx.cutPath === row.path;
+  const focusCls = 'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring';
+
+  // 行内徽标：只读 Word / 近期修改 / 草稿 / 元数据问题（badge 开关统一控制）；被引用数单独开关
+  const badges = () => {
+    const f = row.file;
+    if (!f || !ctx.opts.badges) {
+      return ctx.opts.refs && f && (ctx.linkCounts[row.path] ?? 0) > 0 ? refBadge(ctx.linkCounts[row.path]) : null;
+    }
+    const msgs = ctx.metaMsgs.get(row.path);
+    const recent = isRecent(f.mtimeMs);
+    const ro = f.ext === '.doc' || f.ext === '.docx';
+    const refs = ctx.opts.refs && (ctx.linkCounts[row.path] ?? 0) > 0;
+    if (!ro && !recent && !ctx.drafts.has(row.path) && !msgs && !refs) return null;
+    return (
+      <span className="flex items-center gap-0.5 shrink-0">
+        {ro && <span title="Word 文档（只读预览）"><Lock className="w-2.5 h-2.5 text-muted-foreground" /></span>}
+        {recent && <span title="7 天内修改过"><span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" /></span>}
+        {ctx.drafts.has(row.path) && (
+          <span title="存在本地草稿（上次未完成的编辑）"><PenLine className="w-3 h-3 text-amber-600" /></span>
+        )}
+        {msgs && <span title={msgs.join('\n')}><AlertTriangle className="w-3 h-3 text-red-500" /></span>}
+        {refs && refBadge(ctx.linkCounts[row.path])}
+      </span>
+    );
+  };
+  const refBadge = (n: number) => (
+    <span title={`被 ${n} 个文档引用`} className="flex items-center gap-0.5 text-muted-foreground">
+      <Link2 className="w-3 h-3" /><span className="text-[10px] tabular-nums">{n}</span>
+    </span>
+  );
+
+  if (row.kind === 'file') {
+    const active = ctx.activeFile === row.path;
+    return (
+      <ContextMenu>
+      <ContextMenuTrigger asChild>
+      <div
+        data-idx={idx} data-tpath={row.path} data-name={row.name} data-kind="file"
+        tabIndex={-1} draggable
+        className={`group h-7 flex items-center gap-1.5 pr-1.5 rounded cursor-default text-sm select-none hover:bg-sidebar-accent ${focusCls} ${
+          active ? 'bg-sidebar-accent font-medium text-primary' : ''
+        } ${cut ? 'opacity-50' : ''}`}
+        style={{ paddingLeft: row.depth * 14 + 22 }}
+        onClick={() => ctx.onOpenFile(row)}
+        onDragStart={(e) => {
+          e.dataTransfer.setData('text/plain', row.name);
+          e.dataTransfer.setData('application/x-wb-file', row.path);
+          e.dataTransfer.effectAllowed = 'copy';
+        }}
+        title={row.path}
+      >
+        {extIcon(row.file!.ext)}
+        <span className="truncate">{ctx.q ? <Highlight text={row.name} q={ctx.q} /> : row.name}</span>
+        {badges()}
+        <span className="flex-1" />
+        {row.dirLabel && (
+          <span className="shrink-0 max-w-[45%] truncate text-[11px] text-muted-foreground" title={row.dirLabel}>
+            {row.dirLabel}
           </span>
-        </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem onSelect={() => create('md')}><FilePlus />新建文档</ContextMenuItem>
-          <ContextMenuItem onSelect={() => create('folder')}><FolderPlus />新建文件夹</ContextMenuItem>
-          <ContextMenuSeparator />
-          <ActionItems entry={{ path: node.path, name: node.name, isDir: true }} onAction={onAction} colRef={null} />
-        </ContextMenuContent>
-        </ContextMenu>
+        )}
+      </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ActionItems entry={row.entry!} onAction={ctx.onAction} dsId={ctx.dsId} onDuplicated={ctx.onDuplicated} />
+      </ContextMenuContent>
+      </ContextMenu>
+    );
+  }
+
+  // 目录行（物理树）与分组头（集合视图）
+  const isHead = row.kind === 'head';
+  const active = !isHead && ctx.activeDir === row.path;
+  const quickCreate = (kind: CreateKind) => setTimeout(() => ctx.onCreate(row.path, kind), 0);
+  const dirRow = (
+    <div
+      data-idx={idx} data-tpath={row.path} data-name={row.name} data-kind="dir"
+      data-open={row.open ? '1' : '0'} tabIndex={-1}
+      title={row.title}
+      className={`group h-7 flex items-center gap-1 pr-1.5 rounded cursor-pointer select-none hover:bg-sidebar-accent ${focusCls} ${
+        active ? 'bg-sidebar-accent' : ''
+      }`}
+      style={{ paddingLeft: row.depth * 14 + 4 }}
+      onClick={() => ctx.onToggle(row)}
+    >
+      {row.open ? <ChevronDown className="w-3.5 h-3.5 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0" />}
+      {isHead ? (
+        <Boxes className="w-4 h-4 shrink-0 text-amber-600" />
+      ) : row.open ? (
+        <FolderOpen className="w-4 h-4 shrink-0 text-amber-600" />
+      ) : (
+        <Folder className="w-4 h-4 shrink-0 text-amber-600" />
       )}
-      {(node.path === '' || open) && (
-        <>
-          {node.dirs.map((d) => (
-            <Node key={d.path} node={d} depth={childDepth} currentPath={currentPath} currentDir={currentDir}
-              isOpen={isOpen} onToggleDir={onToggleDir} onEnsureOpen={onEnsureOpen} onCreate={onCreate} onAction={onAction}
-              colRefOf={colRefOf} drafts={drafts} metaMsgs={metaMsgs} />
-          ))}
-          {node.files.map((x) => (
-            <ContextMenu key={x.path}>
-            <ContextMenuTrigger asChild>
-            <button
-              data-tpath={x.path} data-name={x.name} data-kind="file"
-              className={`w-full flex items-center gap-1.5 py-1 px-1.5 rounded text-sm text-left hover:bg-sidebar-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
-                currentPath === x.path ? 'bg-sidebar-accent font-medium text-primary' : ''
-              }`}
-              style={{ paddingLeft: childDepth * 14 + 22 }}
-              onClick={() => navigate('/read/' + x.path.split('/').map(encodeURIComponent).join('/'))}
-              title={x.path}
-            >
-              {extIcon(x.ext)}
-              <span className="truncate">{x.name}</span>
-              <RowBadges path={x.path} drafts={drafts} metaMsgs={metaMsgs} />
-            </button>
-            </ContextMenuTrigger>
-            <ContextMenuContent>
-              <ActionItems entry={{ path: x.path, name: x.name, isDir: false }} onAction={onAction} colRef={colRefOf(x.path)} />
-            </ContextMenuContent>
-            </ContextMenu>
-          ))}
-        </>
+      <button
+        className={`truncate text-left flex-1 ${active ? 'text-primary font-medium' : ''}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          navigate('/browse?dir=' + encodeURIComponent(row.path));
+        }}
+      >
+        {row.name}
+      </button>
+      {row.count !== undefined && <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">{row.count}</span>}
+      {!isHead && (
+        <span className="hidden group-hover:flex group-focus-within:flex items-center gap-0.5 shrink-0">
+          <button
+            className="p-0.5 rounded hover:bg-background"
+            title="新建文档" aria-label="新建文档"
+            onClick={(e) => { e.stopPropagation(); quickCreate('md'); }}
+          >
+            <FilePlus className="w-3.5 h-3.5" />
+          </button>
+          <button
+            className="p-0.5 rounded hover:bg-background"
+            title="新建文件夹" aria-label="新建文件夹"
+            onClick={(e) => { e.stopPropagation(); quickCreate('folder'); }}
+          >
+            <FolderPlus className="w-3.5 h-3.5" />
+          </button>
+        </span>
       )}
     </div>
   );
-}
-
-// 平铺结果模式：过滤时不再展示层级，所有命中文件平铺、显示相对路径、高亮命中片段
-function collectFiles(n: TreeNode, out: FileEntry[] = []): FileEntry[] {
-  out.push(...n.files);
-  for (const d of n.dirs) collectFiles(d, out);
-  return out;
-}
-
-function FlatResults({
-  tree,
-  filter,
-  onAction,
-  onFilterChange,
-  colRefOf,
-  drafts,
-  metaMsgs,
-}: {
-  tree: TreeNode;
-  filter: string;
-  onAction: OnAction;
-  onFilterChange: (v: string) => void;
-  colRefOf: (p: string) => string | null;
-  drafts: Set<string>;
-  metaMsgs: Map<string, string[]>;
-}) {
-  const navigate = useNavigate();
-  const f = filter.trim().toLowerCase();
-  const open = (x: FileEntry) => {
-    // 打开后清空过滤，回到树视图并 reveal 到该文件
-    onFilterChange('');
-    navigate('/read/' + x.path.split('/').map(encodeURIComponent).join('/'));
-  };
-  const files = useMemo(() => {
-    const out = collectFiles(tree).filter((x) => x.name.toLowerCase().includes(f) || x.path.toLowerCase().includes(f));
-    out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-    return out;
-  }, [tree, f]);
-
+  if (isHead) return dirRow; // 分组头不提供条目级右键（集合不是文件系统对象）
   return (
-    <div>
-      <div className="flex items-center gap-2 px-1.5 py-1 text-[11px] text-muted-foreground">
-        <span className="stat-num">{files.length}</span> 个匹配文件
-        <span className="flex-1" />
-        <button className="hover:text-primary" onClick={() => navigate('/search?q=' + encodeURIComponent(filter.trim()))}>
-          转全文检索 →
-        </button>
-      </div>
-      {files.length === 0 ? (
-        <div className="text-xs text-muted-foreground p-3">没有文件名或路径匹配「{filter.trim()}」</div>
-      ) : (
-        files.map((x) => (
-          <ContextMenu key={x.path}>
-          <ContextMenuTrigger asChild>
-          <button
-            data-tpath={x.path} data-name={x.name} data-kind="file"
-            className="w-full flex items-center gap-1.5 py-1 px-1.5 rounded text-sm text-left hover:bg-sidebar-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            onClick={() => open(x)}
-            title={x.path}
-          >
-            {extIcon(x.ext)}
-            <span className="truncate"><Highlight text={x.name} q={f} /></span>
-            <RowBadges path={x.path} drafts={drafts} metaMsgs={metaMsgs} />
-            <span className="ml-auto pl-2 shrink-0 max-w-[45%] truncate text-[11px] text-muted-foreground" title={x.dir}>
-              {x.dir}
-            </span>
-          </button>
-          </ContextMenuTrigger>
-          <ContextMenuContent>
-            <ActionItems entry={{ path: x.path, name: x.name, isDir: false }} onAction={onAction} colRef={colRefOf(x.path)} />
-          </ContextMenuContent>
-          </ContextMenu>
-        ))
-      )}
-    </div>
+    <ContextMenu>
+    <ContextMenuTrigger asChild>
+    {dirRow}
+    </ContextMenuTrigger>
+    <ContextMenuContent>
+      <ContextMenuItem onSelect={() => quickCreate('md')}><FilePlus />新建文档</ContextMenuItem>
+      <ContextMenuItem onSelect={() => quickCreate('folder')}><FolderPlus />新建文件夹</ContextMenuItem>
+      <ContextMenuSeparator />
+      <ActionItems entry={row.entry!} onAction={ctx.onAction} dsId={ctx.dsId} onDuplicated={ctx.onDuplicated} />
+    </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -342,15 +367,11 @@ export function FileTree({
   const routeFile = /^\/(?:read|edit)\/(.+)$/.exec(location.pathname);
   const currentPath = routeFile ? decodeURIComponent(routeFile[1]) : undefined;
   const [searchParams] = useSearchParams();
-  // /browse 时跟随并高亮当前目录；/read、/edit 跟随当前文件
   const currentDir = location.pathname === '/browse' ? searchParams.get('dir') || '' : null;
   const navigate = useNavigate();
   const { refreshTree, dsId } = useApp();
   const [action, setAction] = useState<EntryAction | null>(null);
-  // 刷新树、迁移草稿、跟随导航均已由 runEntryAction（lib/entryOps）统一完成，这里只关闭对话框
-  const onActionDone = () => {
-    setAction(null);
-  };
+  const onActionDone = () => setAction(null);
   const [target, setTarget] = useState<CreateTarget | null>(null);
   const onCreate: OnCreate = (dir, kind) => setTarget({ dir, kind });
   const onCreated = async (p: string, kind: CreateKind) => {
@@ -359,14 +380,21 @@ export function FileTree({
     if (kind === 'md') navigate('/edit/' + p.split('/').map(encodeURIComponent).join('/'));
   };
 
-  // 元数据旁注问题（供头部徽标汇总与行内红点），集合配置（供「复制集合引用」）
+  // 外部数据：元数据问题（徽标汇总 + 行内红点）、集合配置（集合视图 + 集合引用）、被引用计数
+  //（链接索引异步构建，空结果时 2.5s 后补拉一次）
   const [metaIssues, setMetaIssues] = useState<MetaIssue[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [linkCounts, setLinkCounts] = useState<Record<string, number>>({});
   useEffect(() => {
     let dead = false;
-    api.metaIssues().then((r) => { if (!dead) setMetaIssues(r.issues); }).catch(() => {});
-    api.collections().then((r) => { if (!dead) setCollections(r.collections); }).catch(() => {});
-    return () => { dead = true; };
+    const pull = () => {
+      api.metaIssues().then((r) => { if (!dead) setMetaIssues(r.issues); }).catch(() => {});
+      api.collections().then((r) => { if (!dead) setCollections(r.collections); }).catch(() => {});
+      api.linkCounts().then((r) => { if (!dead) setLinkCounts(r.counts); }).catch(() => {});
+    };
+    pull();
+    const t = setTimeout(pull, 2500);
+    return () => { dead = true; clearTimeout(t); };
   }, [tree]);
   const metaMsgs = useMemo(() => {
     const m = new Map<string, string[]>();
@@ -382,7 +410,7 @@ export function FileTree({
     return m;
   }, [metaIssues]);
 
-  // 本地草稿集合（wb:draft:<dsId>:<path>）；导航/树刷新时重算
+  // 本地草稿集合；导航/树刷新/过滤时重算，让新写入的草稿及时反映为徽标
   const draftPaths = useMemo(() => {
     const s = new Set<string>();
     if (!dsId) return s;
@@ -394,28 +422,32 @@ export function FileTree({
       }
     } catch { /* 忽略 */ }
     return s;
-    // 依赖故意超出实际使用：导航/过滤/树刷新时重算，让新写入的草稿及时反映为徽标
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dsId, tree, currentPath, currentDir, filter]);
 
-  // 集合引用：文件目录落在某集合目录（或其子目录）内时给出「集合|文件名」
-  const colRefOf = (filePath: string): string | null => {
-    const dir = dirOf(filePath);
-    for (const c of collections) {
-      for (const d of c.dirs) {
-        if (dir === d || dir.startsWith(d + '/')) return `${c.name}|${nameOf(filePath)}`;
-      }
-    }
-    return null;
+  // 视图与选项（按库持久化）
+  const [view, setViewState] = useState<'tree' | 'cols'>('tree');
+  const [opts, setOpts] = useState<{ badges: boolean; refs: boolean }>({ badges: true, refs: true });
+  useEffect(() => {
+    if (!dsId) return;
+    setViewState(loadJson<'tree' | 'cols'>(`wb.filetree.view.${dsId}`, 'tree') === 'cols' ? 'cols' : 'tree');
+    setOpts(loadJson(`wb.filetree.opts.${dsId}`, { badges: true, refs: true }));
+  }, [dsId]);
+  const setView = (v: 'tree' | 'cols') => {
+    setViewState(v);
+    onFilterChange('');
+    if (dsId) saveJson(`wb.filetree.view.${dsId}`, v);
+  };
+  const toggleOpt = (k: 'badges' | 'refs') => {
+    setOpts((prev) => {
+      const next = { ...prev, [k]: !prev[k] };
+      if (dsId) saveJson(`wb.filetree.opts.${dsId}`, next);
+      return next;
+    });
   };
 
-  // 展开集随资料库整体替换，避免把 A 库的状态写到 B 库
+  // ---- 展开集（物理树，随库整体替换）----
   const [openState, setOpenState] = useState<{ dsId: string | null; set: Set<string> }>({ dsId: null, set: new Set() });
-  const containerRef = useRef<HTMLDivElement>(null);
-  const revealedRef = useRef<string | null>(null);
-  const [pendingScroll, setPendingScroll] = useState<string | null>(null);
-
-  // 新库初始化（无存档时默认展开第一层，与旧行为一致）；树刷新后清掉已消失的目录
   useEffect(() => {
     if (!tree || !dsId) return;
     const existing = new Set(allDirPaths(tree));
@@ -430,20 +462,16 @@ export function FileTree({
     for (const p of openState.set) if (!existing.has(p)) { stale = true; break; }
     if (stale) setOpenState({ dsId, set: new Set([...openState.set].filter((p) => existing.has(p))) });
   }, [tree, dsId, openState]);
-
-  // 持久化展开集
   useEffect(() => {
     if (!dsId || openState.dsId !== dsId) return;
-    saveOpen(dsId, openState.set);
+    saveJson(`wb.filetree.open.${dsId}`, [...openState.set]);
   }, [openState, dsId]);
-
   const applyOpen = (fn: (set: Set<string>) => Set<string>) =>
     setOpenState((prev) => {
       if (prev.dsId !== dsId) return prev;
       const next = fn(prev.set);
       return next === prev.set ? prev : { dsId: prev.dsId, set: next };
     });
-  const isOpen = (p: string) => openState.dsId === dsId && openState.set.has(p);
   const toggleDir = (p: string) =>
     applyOpen((s) => {
       const n = new Set(s);
@@ -451,16 +479,75 @@ export function FileTree({
       else n.add(p);
       return n;
     });
-  const ensureOpen = (p: string) => applyOpen((s) => (s.has(p) ? s : new Set(s).add(p)));
 
-  // 跟随当前文件/目录：展开父链后滚动定位；同一目标只处理一次，重扫刷新不打断
-  const revealKey =
-    currentPath !== undefined ? 'f:' + currentPath : currentDir ? 'd:' + currentDir : null;
+  // 集合分组头展开集（存「已折叠」的分组，默认全开）
+  const [closedCols, setClosedCols] = useState<{ dsId: string | null; set: Set<string> }>({ dsId: null, set: new Set() });
+  useEffect(() => {
+    if (!dsId) return;
+    const arr = loadJson<string[] | null>(`wb.filetree.closedcol.${dsId}`, null);
+    setClosedCols({ dsId, set: Array.isArray(arr) ? new Set(arr) : new Set() });
+  }, [dsId]);
+  useEffect(() => {
+    if (!dsId || closedCols.dsId !== dsId) return;
+    saveJson(`wb.filetree.closedcol.${dsId}`, [...closedCols.set]);
+  }, [closedCols, dsId]);
+  const toggleColHead = (key: string) =>
+    setClosedCols((prev) => {
+      if (prev.dsId !== dsId) return prev;
+      const n = new Set(prev.set);
+      if (n.has(key)) n.delete(key);
+      else n.add(key);
+      return { dsId: prev.dsId, set: n };
+    });
+
+  // ---- 行数据装配 ----
+  const q = filter.trim().toLowerCase();
+  const stats = useMemo(() => {
+    const m = new Map<string, { files: number; dirs: number; size: number }>();
+    computeStats(tree, m);
+    return m;
+  }, [tree]);
+  const allFiles = useMemo(() => collectFiles(tree), [tree]);
+  const rows = useMemo<Row[]>(() => {
+    if (q) {
+      const out = allFiles.filter((f) => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
+      out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+      return buildFlatRows(out);
+    }
+    if (view === 'cols') {
+      if (!collections.length) return [];
+      return buildCollectionRows(collections, allFiles, closedCols.dsId === dsId ? closedCols.set : new Set());
+    }
+    const openSet = openState.dsId === dsId ? openState.set : new Set(tree.dirs.map((d) => d.path));
+    const out: Row[] = [];
+    buildTreeRows(tree, 0, openSet, stats, out);
+    return out;
+  }, [tree, q, view, openState, closedCols, collections, allFiles, stats, dsId]);
+
+  // ---- 虚拟滚动 ----
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(640);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setViewportH(el.clientHeight));
+    ro.observe(el);
+    setViewportH(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - 8);
+  const end = Math.min(rows.length, Math.ceil((scrollTop + viewportH) / ROW_H) + 8);
+  const winRows = rows.slice(start, end);
+
+  // ---- reveal：跟随当前文件/目录展开父链并滚到可见 ----
+  const revealedRef = useRef<string | null>(null);
+  const [pendingScroll, setPendingScroll] = useState<string | null>(null);
+  const revealKey = currentPath !== undefined ? 'f:' + currentPath : currentDir ? 'd:' + currentDir : null;
   useEffect(() => {
     if (!tree || !revealKey || revealedRef.current === revealKey) return;
     revealedRef.current = revealKey;
     const targetPath = revealKey.slice(2);
-    // 文件 → 展开它所在目录的整条父链（含自身）；目录 → 展开它的父链（含自身）
     const dir = revealKey.startsWith('f:') ? dirOf(targetPath) : targetPath;
     const chain = dir ? [...ancestorDirs(dir), dir] : [];
     applyOpen((s) => {
@@ -472,71 +559,152 @@ export function FileTree({
       }
       return next ?? s;
     });
+    setViewState((v) => (v === 'cols' ? 'tree' : v)); // 集合视图无法表达父链，回到物理树（同时更新存档）
+    if (dsId) saveJson(`wb.filetree.view.${dsId}`, 'tree');
+    onFilterChange(''); // 退出平铺模式，否则看不到父链
     setPendingScroll(targetPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tree, revealKey]);
   useEffect(() => {
     if (!pendingScroll) return;
-    const el = containerRef.current?.querySelector(`[data-tpath="${CSS.escape(pendingScroll)}"]`);
-    el?.scrollIntoView({ block: 'nearest' });
-  }, [pendingScroll]);
+    const idx = rows.findIndex((r) => r.path === pendingScroll);
+    if (idx >= 0 && scrollRef.current) {
+      const vh = scrollRef.current.clientHeight;
+      const top = idx * ROW_H;
+      if (top < scrollTop || top + ROW_H > scrollTop + vh) {
+        const target = Math.max(0, top - vh / 2 + ROW_H);
+        scrollRef.current.scrollTop = target;
+        setScrollTop(target);
+      }
+    }
+    setPendingScroll(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingScroll, rows]);
 
-  // 键盘导航：DOM 顺序即视觉顺序；↑↓/Home/End 移动，→← 展开/折叠/回父级，Enter 打开，F2/Delete 操作，可打印字符首字母跳转
+  // 剪贴板语义（树内）：Ctrl+C 复制 / Ctrl+X 剪切（半透明标记）/ Ctrl+V 粘贴（剪切=移动，复制=副本）
+  const [clip, setClip] = useState<{ op: 'copy' | 'cut'; entry: Entry } | null>(null);
+  const doPaste = async (targetDir: string) => {
+    if (!clip) return;
+    if (clip.op === 'cut') {
+      if (dirOf(clip.entry.path) === targetDir) { setClip(null); return; }
+      try {
+        await runEntryAction({ ...clip.entry, type: 'move', targetDir });
+        setClip(null);
+      } catch (e) {
+        alert((e as Error).message);
+      }
+    } else {
+      try {
+        await api.duplicateEntry({ dsId, path: clip.entry.path, targetDir });
+        await refreshTree().catch(() => {});
+        // 复制源保留，可连续粘贴
+      } catch (e) {
+        alert((e as Error).message);
+      }
+    }
+  };
+  const onDuplicated = async () => {
+    await refreshTree().catch(() => {});
+  };
+
+  // 全部展开/折叠
+  const collapseAll = () => setOpenState((prev) => (prev.dsId === dsId ? { dsId, set: new Set() } : prev));
+  const expandAll = () => {
+    if (countFiles(tree) > 3000 && !window.confirm('这个资料库文件较多，全部展开可能让页面卡顿。仍要继续吗？')) return;
+    setOpenState((prev) => (prev.dsId === dsId ? { dsId, set: new Set(allDirPaths(tree)) } : prev));
+  };
+
+  // ---- 键盘导航：以 rows[] 为准；未渲染的行先滚再聚焦 ----
   const typeBufRef = useRef('');
   const typeAtRef = useRef(0);
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const cont = containerRef.current;
+  // 目标行尚未进入渲染窗口时：先滚动，窗口更新后由 effect 兑现聚焦
+  //（不用 rAF：隐藏窗口会暂停帧回调，effect 在提交后必达）
+  const [pendingFocus, setPendingFocus] = useState<number | null>(null);
+  useEffect(() => {
+    if (pendingFocus == null) return;
+    const el = scrollRef.current?.querySelector<HTMLElement>(`[data-idx="${pendingFocus}"]`);
+    if (el) {
+      el.focus();
+      el.scrollIntoView({ block: 'nearest' });
+      setPendingFocus(null);
+    }
+  }, [pendingFocus, start, end]);
+  const focusIdx = (i: number) => {
+    const clamped = Math.max(0, Math.min(rows.length - 1, i));
+    const cont = scrollRef.current;
     if (!cont) return;
-    const all = Array.from(cont.querySelectorAll<HTMLElement>('[data-tpath]'));
-    if (!all.length) return;
+    const el = cont.querySelector<HTMLElement>(`[data-idx="${clamped}"]`);
+    if (el) {
+      el.focus();
+      el.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    const target = Math.max(0, clamped * ROW_H - cont.clientHeight / 2 + ROW_H);
+    cont.scrollTop = target;
+    setScrollTop(target);
+    setPendingFocus(clamped);
+  };
+  const toggleRow = (row: Row) => {
+    if (row.kind === 'head') toggleColHead(row.path);
+    else if (row.kind === 'dir') toggleDir(row.path);
+  };
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const cont = scrollRef.current;
+    if (!cont || !rows.length) return;
     const activeEl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const row = activeEl?.closest('[data-tpath]');
-    const cur = row && cont.contains(row) ? (row as HTMLElement) : null;
-    const idx = cur ? all.indexOf(cur) : -1;
-    const focusAt = (i: number) => {
-      const el = all[Math.max(0, Math.min(all.length - 1, i))];
-      el?.focus();
-      el?.scrollIntoView({ block: 'nearest' });
-    };
-    if (e.key === 'ArrowDown') { e.preventDefault(); focusAt(idx + 1); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); focusAt(idx - 1); return; }
-    if (e.key === 'Home') { e.preventDefault(); focusAt(0); return; }
-    if (e.key === 'End') { e.preventDefault(); focusAt(all.length - 1); return; }
-    if (!cur) return;
-    const entryPath = cur.getAttribute('data-tpath') || '';
-    const name = cur.getAttribute('data-name') || nameOf(entryPath);
-    const isDir = cur.getAttribute('data-kind') === 'dir';
-    const open = cur.getAttribute('data-open') === '1';
+    const rowEl = activeEl?.closest('[data-idx]');
+    const idx = rowEl && cont.contains(rowEl) ? Number(rowEl.getAttribute('data-idx')) : -1;
+    const row = idx >= 0 ? rows[idx] : undefined;
+
+    // 剪贴板语义
+    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+      const k = e.key.toLowerCase();
+      if (k === 'c' && row?.entry) { setClip({ op: 'copy', entry: row.entry }); e.preventDefault(); return; }
+      if (k === 'x' && row?.entry) { setClip({ op: 'cut', entry: row.entry }); e.preventDefault(); return; }
+      if (k === 'v' && clip) {
+        const targetDir = !row ? '' : row.isDir ? row.path : dirOf(row.path);
+        doPaste(targetDir);
+        e.preventDefault();
+        return;
+      }
+      return; // 其余 Ctrl 组合不拦截
+    }
+    if (e.key === 'Escape') { if (clip) { setClip(null); e.preventDefault(); } return; }
+
+    if (e.key === 'ArrowDown') { e.preventDefault(); focusIdx(idx + 1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx(idx - 1); return; }
+    if (e.key === 'Home') { e.preventDefault(); focusIdx(0); return; }
+    if (e.key === 'End') { e.preventDefault(); focusIdx(rows.length - 1); return; }
+    if (!row) return;
     if (e.key === 'ArrowRight') {
       e.preventDefault();
-      if (isDir && !open) toggleDir(entryPath);
-      else focusAt(idx + 1);
+      if (row.isDir && !row.open) toggleRow(row);
+      else focusIdx(idx + 1);
       return;
     }
     if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      if (isDir && open) toggleDir(entryPath);
-      else {
-        const parent = cont.querySelector<HTMLElement>(`[data-tpath="${CSS.escape(dirOf(entryPath))}"]`);
-        parent?.focus();
-        parent?.scrollIntoView({ block: 'nearest' });
+      if (row.isDir && row.open) toggleRow(row);
+      else if (row.kind === 'dir') {
+        const parent = rows.findIndex((r) => r.kind === 'dir' && r.path === dirOf(row.path));
+        if (parent >= 0) focusIdx(parent);
       }
       return;
     }
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (isDir) toggleDir(entryPath);
-      else navigate('/read/' + entryPath.split('/').map(encodeURIComponent).join('/'));
+      if (row.kind === 'file') ctxOpenFile(row);
+      else toggleRow(row);
       return;
     }
     if (e.key === 'F2') {
       e.preventDefault();
-      setTimeout(() => setAction({ type: 'rename', path: entryPath, name, isDir }), 0);
+      if (row.entry) setTimeout(() => setAction({ ...row.entry!, type: 'rename' }), 0);
       return;
     }
     if (e.key === 'Delete') {
       e.preventDefault();
-      setTimeout(() => setAction({ type: 'delete', path: entryPath, name, isDir }), 0);
+      if (row.entry) setTimeout(() => setAction({ ...row.entry!, type: 'delete' }), 0);
       return;
     }
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -544,69 +712,148 @@ export function FileTree({
       typeBufRef.current = now - typeAtRef.current > 800 ? e.key : typeBufRef.current + e.key;
       typeAtRef.current = now;
       const buf = typeBufRef.current.toLowerCase();
-      for (let k = 1; k <= all.length; k++) {
-        const i = ((idx >= 0 ? idx : 0) + k) % all.length;
-        const n = (all[i].getAttribute('data-name') || '').toLowerCase();
-        if (n.startsWith(buf)) { focusAt(i); break; }
+      for (let k = 1; k <= rows.length; k++) {
+        const i = ((idx >= 0 ? idx : 0) + k) % rows.length;
+        if (rows[i].name.toLowerCase().startsWith(buf)) { focusIdx(i); break; }
       }
       e.preventDefault();
     }
   };
 
-  const collapseAll = () => setOpenState((prev) => (prev.dsId === dsId ? { dsId, set: new Set() } : prev));
-  const expandAll = () => {
-    if (countFiles(tree) > 3000 && !window.confirm('这个资料库文件较多，全部展开可能让页面卡顿。仍要继续吗？')) return;
-    setOpenState((prev) => (prev.dsId === dsId ? { dsId, set: new Set(allDirPaths(tree)) } : prev));
+  const ctxOpenFile = (row: Row) => {
+    if (q) onFilterChange('');
+    navigate('/read/' + row.path.split('/').map(encodeURIComponent).join('/'));
   };
-  const filtering = !!filter.trim();
+
+  const ctx: RowCtx = {
+    activeFile: currentPath,
+    activeDir: currentDir,
+    q,
+    opts,
+    drafts: draftPaths,
+    metaMsgs,
+    linkCounts,
+    cutPath: clip?.op === 'cut' ? clip.entry.path : null,
+    onOpenFile: ctxOpenFile,
+    onToggle: toggleRow,
+    onCreate,
+    onAction: setAction,
+    dsId,
+    onDuplicated,
+  };
+  const filtering = !!q;
+  const emptyTree = tree.files.length === 0 && tree.dirs.length === 0;
+
+  const tabBtn = (v: 'tree' | 'cols', label: string, icon: React.ReactNode, title: string) => (
+    <button
+      className={`flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent ${view === v && !filtering ? 'bg-sidebar-accent text-primary font-medium' : 'text-muted-foreground'}`}
+      onClick={() => setView(v)}
+      title={title}
+    >
+      {icon}{label}
+    </button>
+  );
 
   return (
-    <div className="text-sidebar-foreground outline-none" ref={containerRef} tabIndex={0} onKeyDown={onKeyDown}>
-      <div className="flex items-center gap-1 px-1 pb-1 mb-1 border-b border-sidebar-border">
-        <button
-          className="flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent"
-          onClick={() => onCreate('', 'md')}
-          title="在资料库根目录新建文档"
-        >
-          <FilePlus className="w-3.5 h-3.5" />新建文档
-        </button>
-        <button
-          className="flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent"
-          onClick={() => onCreate('', 'folder')}
-          title="在资料库根目录新建文件夹"
-        >
-          <FolderPlus className="w-3.5 h-3.5" />新建文件夹
-        </button>
-        <span className="ml-auto flex items-center gap-0.5">
+    <div className="h-full flex flex-col text-sidebar-foreground">
+      <div className="shrink-0 px-1 pt-1 pb-1 space-y-1 border-b border-sidebar-border">
+        <div className="flex items-center gap-1">
+          {tabBtn('tree', '目录', <Folder className="w-3.5 h-3.5" />, '物理目录视图')}
+          {tabBtn('cols', '集合', <Boxes className="w-3.5 h-3.5" />, '逻辑集合分组视图（设置 → 逻辑集合）')}
+          <span className="ml-auto flex items-center gap-0.5">
+            <button
+              className={`p-1 rounded hover:bg-sidebar-accent ${opts.badges ? 'text-primary' : 'text-muted-foreground'}`}
+              title={opts.badges ? '隐藏行内徽标（草稿/问题/近期/只读）' : '显示行内徽标'}
+              onClick={() => toggleOpt('badges')}
+            >
+              {opts.badges ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            </button>
+            <button
+              className={`p-1 rounded hover:bg-sidebar-accent ${opts.refs ? 'text-primary' : 'text-muted-foreground'}`}
+              title={opts.refs ? '隐藏被引用数' : '显示被引用数'}
+              onClick={() => toggleOpt('refs')}
+            >
+              <Link2 className="w-3.5 h-3.5" />
+            </button>
+            <MetaIssuesBadge issues={metaIssues} />
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
           <button
-            className="p-1 rounded hover:bg-sidebar-accent text-muted-foreground"
-            title="全部展开" aria-label="全部展开"
-            onClick={expandAll}
+            className="flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent"
+            onClick={() => onCreate('', 'md')}
+            title="在资料库根目录新建文档"
           >
-            <ChevronsUpDown className="w-3.5 h-3.5" />
+            <FilePlus className="w-3.5 h-3.5" />新建文档
           </button>
           <button
-            className="p-1 rounded hover:bg-sidebar-accent text-muted-foreground"
-            title="全部折叠" aria-label="全部折叠"
-            onClick={collapseAll}
+            className="flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent"
+            onClick={() => onCreate('', 'folder')}
+            title="在资料库根目录新建文件夹"
           >
-            <ChevronsDownUp className="w-3.5 h-3.5" />
+            <FolderPlus className="w-3.5 h-3.5" />新建文件夹
           </button>
-          <MetaIssuesBadge issues={metaIssues} />
-        </span>
+          <span className="ml-auto flex items-center gap-0.5">
+            {view === 'tree' && !filtering && (
+              <>
+                <button
+                  className="p-1 rounded hover:bg-sidebar-accent text-muted-foreground"
+                  title="全部展开" aria-label="全部展开"
+                  onClick={expandAll}
+                >
+                  <ChevronsUpDown className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  className="p-1 rounded hover:bg-sidebar-accent text-muted-foreground"
+                  title="全部折叠" aria-label="全部折叠"
+                  onClick={collapseAll}
+                >
+                  <ChevronsDownUp className="w-3.5 h-3.5" />
+                </button>
+              </>
+            )}
+          </span>
+        </div>
       </div>
-      {filtering ? (
-        <FlatResults tree={tree} filter={filter} onAction={setAction} onFilterChange={onFilterChange} colRefOf={colRefOf} drafts={draftPaths} metaMsgs={metaMsgs} />
-      ) : (
-        <Node node={tree} depth={0} currentPath={currentPath} currentDir={currentDir} isOpen={isOpen}
-          onToggleDir={toggleDir} onEnsureOpen={ensureOpen} onCreate={onCreate} onAction={setAction}
-          colRefOf={colRefOf} drafts={draftPaths} metaMsgs={metaMsgs} />
+      {filtering && (
+        <div className="shrink-0 flex items-center gap-2 px-1.5 py-1 text-[11px] text-muted-foreground border-b border-sidebar-border">
+          <span className="stat-num">{rows.length}</span> 个匹配文件
+          <span className="flex-1" />
+          <button className="hover:text-primary" onClick={() => navigate('/search?q=' + encodeURIComponent(filter.trim()))}>
+            转全文检索 →
+          </button>
+        </div>
       )}
+      <div
+        ref={scrollRef}
+        tabIndex={0}
+        onKeyDown={onKeyDown}
+        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+        className="flex-1 min-h-0 overflow-auto p-1 outline-none"
+      >
+        {rows.length === 0 ? (
+          filtering ? (
+            <div className="text-xs text-muted-foreground p-3">没有文件名或路径匹配「{filter.trim()}」</div>
+          ) : view === 'cols' && !collections.length ? (
+            <div className="text-xs text-muted-foreground p-3">
+              尚未配置逻辑集合。
+              <button className="text-primary hover:underline" onClick={() => navigate('/settings')}>去设置 →</button>
+            </div>
+          ) : emptyTree ? (
+            <div className="text-xs text-muted-foreground p-3">资料库中没有可支持的文件（.md / .json / .doc / .docx）</div>
+          ) : null
+        ) : (
+          <div style={{ height: rows.length * ROW_H }} className="relative">
+            <div style={{ transform: `translateY(${start * ROW_H}px)` }}>
+              {winRows.map((r, i) => (
+                <RowView key={r.key} row={r} idx={start + i} ctx={ctx} />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
       <EntryActionDialogs action={action} tree={tree} onClose={() => setAction(null)} onDone={onActionDone} />
       <CreateEntryDialog target={target} onClose={() => setTarget(null)} onCreated={onCreated} />
-      {tree.files.length === 0 && tree.dirs.length === 0 && (
-        <div className="text-xs text-muted-foreground p-3">资料库中没有可支持的文件（.md / .json / .doc / .docx）</div>
-      )}
     </div>
   );
 }
