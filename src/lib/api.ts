@@ -224,7 +224,74 @@ export const api = {
       '/api/topics'),
   wordCapability: () =>
     req<{ docx: { supported: boolean }; doc: { supported: boolean; limitation?: string } }>('/api/word-capability'),
+
+  // ---- RAG ----
+  ragStatus: () =>
+    req<RagStatus>('/api/rag/status'),
+  ragModelDownload: () => req<{ ok: boolean; error?: string }>('/api/rag/model/download', json('POST', {})),
+  ragModelImport: (dir: string) => req<{ ok: boolean; error?: string; kind?: string }>('/api/rag/model/import', json('POST', { dir })),
+  ragIndexBuild: (rebuild: boolean) => req<{ ok: boolean }>('/api/rag/index/build', json('POST', { rebuild })),
+  ragIndexPause: () => req<{ ok: boolean }>('/api/rag/index/pause', json('POST', {})),
+  ragSearch: (q: string, limit = 20) => req<RagSearchResponse>('/api/rag/search', json('POST', { q, limit })),
+  ragLlmGet: () => req<RagLlmConfig>('/api/rag/llm'),
+  ragLlmSave: (cfg: Partial<RagLlmConfig>) => req<{ ok: boolean }>('/api/rag/llm', json('PUT', cfg)),
+  ragLlmTest: () => req<{ ok: boolean; models?: string[]; error?: string }>('/api/rag/llm/test', json('POST', {})),
 };
+
+export interface RagModelStatus {
+  state: 'missing' | 'downloading' | 'ready' | 'error';
+  backend: 'mock' | 'onnx' | 'mlx' | string;
+  id: string;
+  dim: number;
+  sha: string | null;
+  progress: { file: string; bytes: number; total: number; done: number; files: number } | null;
+  error: string | null;
+}
+
+export interface RagIndexStatus {
+  state: 'none' | 'building' | 'paused' | 'ready' | 'error';
+  phase: string;
+  done: number;
+  total: number;
+  files: number;
+  filesDone: number;
+  chunks: number;
+  vecs: number;
+  dbBytes: number;
+  updatedAt: number | null;
+  error: string | null;
+}
+
+export interface RagStatus {
+  dsId: string;
+  model: RagModelStatus;
+  index: RagIndexStatus;
+  llm: RagLlmConfig;
+}
+
+export interface RagLlmConfig {
+  enabled: boolean;
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+}
+
+export interface RagSearchResponse {
+  dsId: string;
+  hits: {
+    path: string;
+    name: string;
+    headingPath: string;
+    ordinal: number;
+    kind: string;
+    snippet: string;
+    score: number;
+    bm25: boolean;
+    cos: number | null;
+  }[];
+  took: number;
+  backend?: string;
+}
 
 export function rawFileUrl(path: string) {
   return withDs('/api/file/raw?path=' + encodeURIComponent(path));

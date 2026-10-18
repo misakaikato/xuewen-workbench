@@ -5,11 +5,13 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import express from 'express';
-import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings } from './store.js';
+import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir } from './store.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
 import { planImport, applyImport, contentHash } from './meta.js';
 import { getTrashHandler } from './trash.js';
 import { mountUpdateRoutes, getUpdateBridge, disabledUpdateState } from './update.js';
+import { RagManager } from './rag/manager.js';
+import { mountRag } from './rag/routes.js';
 import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
 import { LinkIndex } from './links.js';
@@ -39,6 +41,8 @@ class Lib {
         } catch (e) {
           console.error(`[${this.name}] 索引构建失败:`, e.message);
         }
+        // 已有 RAG 索引的库自动增量（从未建过的不自动）
+        ragManager.onScanComplete(this.id);
       })();
     });
   }
@@ -65,6 +69,22 @@ class Lib {
 }
 
 const libs = new Map(); // id -> Lib（已打开的资料库）
+
+// RAG 管理器：全局共享嵌入服务，按库隔离索引（sources/<dsId>/rag.db）
+const ragManager = new RagManager({
+  dataDir: dataDir(),
+  sourcesDir: path.join(dataDir(), 'sources'),
+  getLib: (dsId) => {
+    const lib = libs.get(dsId);
+    if (!lib) return null;
+    return {
+      snapshot: lib.scanner.snapshot,
+      getText: (p) => lib.indexer.texts.get(p) ?? null,
+      whenIndexed: () => lib.indexing,
+    };
+  },
+});
+app.use('/api/rag', mountRag(ragManager, resolveLib));
 let activeId = null;
 let libVersion = 0; // 增/删/激活变化计数，进入 config.generation 复合值
 
@@ -244,6 +264,7 @@ app.post('/api/library/remove', async (req, res) => {
     lib.stop();
   } catch { /* ignore */ }
   libs.delete(id);
+  ragManager.remove(id);
   const { activeId: nextActive } = removeLibFromStore(id);
   if (activeId === id) activeId = nextActive;
   libVersion++;

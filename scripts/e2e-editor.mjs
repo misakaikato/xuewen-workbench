@@ -132,6 +132,7 @@ async function main() {
       WORKBENCH_HOST: '127.0.0.1',
       WORKBENCH_DATA_DIR: tmpData,
       WORKBENCH_STATIC_DIR: path.join(ROOT, 'dist'),
+      WORKBENCH_RAG_EMBED: 'mock',
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -617,6 +618,49 @@ async function main() {
   check('CRLF 原位保存字节一致（BOM/换行保留）', crlfDisk.replace(/^\uFEFF/, '') === crlfBuf && crlfDisk.endsWith('X') && crlfDisk.slice(1).includes('\r\n'));
 
   // ---------- F. 自动内链与反向链接（ds-links） ----------
+  // ---------- E5. RAG：mock 后端全链路（建索引 → 混合检索 → 繁简 → 空结果 → 管理页） ----------
+  console.log('== E5. RAG 智能检索（mock） ==');
+  {
+    await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-a') });
+    await sleep(1200);
+    let mst = await j('/api/rag/status');
+    check('RAG 状态端点（model=mock ready）', mst.body?.model?.state === 'ready' && mst.body?.model?.backend === 'mock', JSON.stringify(mst.body?.model));
+    const br = await post('/api/rag/index/build', {});
+    check('触发索引构建', br.body?.ok === true);
+    let ready = false;
+    for (let i = 0; i < 40; i++) {
+      await sleep(200);
+      mst = await j('/api/rag/status');
+      if (mst.body?.index?.state === 'ready') { ready = true; break; }
+    }
+    check('索引构建完成', ready, JSON.stringify(mst.body?.index));
+    check('块与向量数一致（chunks=vecs>0）', mst.body.index.chunks > 0 && mst.body.index.chunks === mst.body.index.vecs, `chunks=${mst.body.index?.chunks} vecs=${mst.body.index?.vecs}`);
+    const search = async (q) => (await post('/api/rag/search', { q })).body;
+    // 注：C 段已把「第1章 入门.md」改名移动为「资料库/改名后.md」，断言按内容而非路径
+    const r1 = await search('基本概念');
+    check('简体检索命中入门章内容', r1.hits?.length > 0 && r1.hits.some((h) => h.snippet.includes('基本概念')), JSON.stringify(r1.hits?.map((h) => h.path)));
+    check('结果带出处与摘要', r1.hits[0].headingPath !== undefined && r1.hits[0].snippet.length > 0);
+    const r2 = await search('基本概念入門');
+    check('繁体检索命中简体语料（繁简互通）', r2.hits?.length > 0 && r2.hits.some((h) => h.snippet.includes('基本概念')));
+    const r3 = await search('量子物理黑洞熵');
+    check('无关查询诚实空结果', (r3.hits?.length || 0) === 0, JSON.stringify(r3.hits?.map((h) => h.path)));
+    // 管理页与检索页智能 tab（UI 冒烟）
+    await win.loadURL(BASE + '/rag');
+    await sleep(800);
+    check('RAG 管理页渲染（四区）', await exec(`!!document.querySelector('input[placeholder^="手动导入模型目录路径"]') && !!document.body.textContent.includes('检索测试台') && !!document.body.textContent.includes('语义索引') && !!document.body.textContent.includes('生成端点')`));
+    check('管理页显示索引就绪统计', await exec(`document.body.textContent.includes('就绪') && document.body.textContent.includes('块')`));
+    await win.loadURL(BASE + '/search?mode=smart&q=' + encodeURIComponent('基本概念'));
+    await sleep(1500);
+    check('检索页智能 tab 出结果卡', await exec(`!!document.querySelector('mark') && !!document.body.textContent.includes('第1章')`));
+    await win.loadURL(BASE + '/search?mode=smart&q=' + encodeURIComponent('量子物理黑洞熵'));
+    let emptyShown = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(300);
+      if (await exec(`document.body.textContent.includes('没有找到与')`).catch(() => false)) { emptyShown = true; break; }
+    }
+    check('无关词显示「没有找到相关内容」', emptyShown);
+  }
+
   console.log('== F. 自动内链与反向链接 ==');
   await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-links') });
 

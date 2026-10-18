@@ -291,7 +291,7 @@ flowchart TB
 
 #### 5.2.1 向量模型的跨平台运行【已定未做，2026-10-17】
 - **运行方式**：在 Electron 内的 Node 进程里直接跑 ONNX 模型（transformers.js + onnxruntime-node）。官方预编译覆盖 macOS arm64 / x64、Windows x64，同一套代码；**不需要老师另装 Python、Ollama 或任何环境**（v1 检索不依赖 Ollama，v2 生成回答才可选）。
-- **硬件（2026-10-17 主人定）**：Windows 默认用独立显卡（主人机器 RTX 5070 8GB），走 DirectML（DX12 通用，无需装 CUDA；bge-m3 fp16 约 1–2GB 显存，8GB 足够），显卡不可用时才自动回退 CPU 并提示；macOS 用 CoreML / CPU（M 系列已够快）。onnxruntime-web（WASM）作最后兜底。若 DirectML 速度不达标，再评估 CUDA EP（5070 需 CUDA 12.8+）。
+- **硬件（2026-10-18 主人修订：win 用 CUDA，mac 用 MLX，模型定为 bge-m3）**：Windows 用 onnxruntime-node + **CUDA EP**（RTX 5070 需 CUDA 12.8+，Blackwell sm_120 为实测点，失败回退 CPU 并提示）；macOS 用 **MLX**（mlx-community/bge-m3-mlx-fp16 权重 + mlx-embeddings，经 Python sidecar 进程，uv 自动置备 venv；探测失败回退 onnx CPU）。两平台同为 fp16 权重；模型定为 **bge-m3**（1024 维，多语含中文繁简）。详见 specs/2026-10-18-rag.md。
 - **一致性**：两个平台锁定同一模型文件（同一 ONNX、同一量化、记录 sha256）和同一 onnxruntime 版本；稳定排序：相似度先量化到 1e-4，再按（量化分数降序、文档 id、段落位置）排序，保证跨平台、跨天顺序一致。结果验收：① 显卡模式应命中段落都命中；② CPU 模式自检两边 Top-10 顺序相同；③ 显卡模式抽 20 题，两边 Top-10 顺序一致，分数恰好落在量化边界上的个别例外可放过，但须在测试报告中列出。
 - **打包**：onnxruntime-node 原生模块用 electron-builder `asarUnpack`，Mac / Win 各自打包时带对应平台二进制。
 - **模型获取**：首次运行下载，下载源按顺序 Hugging Face → 国内镜像（如 hf-mirror / ModelScope）；校验 sha256；也支持“手动导入模型文件夹”。下载完成后完全离线可用。
@@ -299,7 +299,7 @@ flowchart TB
 - **Windows 测试方法**：在主人 Windows 电脑上 `npm run electron:build:win` 打包安装 → 用 test-data 合成语料建索引 → 跑固定问题集，导出 JSON 结果 → 与 Mac 上同一问题集结果自动比对（脚本给出差异）；同时记录建索引耗时与内存，确认 CPU 模式可用、断网后可用。
 
 ### 5.3 RAG v2：本地生成回答【已定未做，可选】
-通过 Ollama 调用本地大模型基于检索结果生成回答，作为可开关的第二步。具体模型在实测后选定。
+通过 **OpenAI 兼容端点**（baseURL/model/apiKey 可配，默认 `http://localhost:11434/v1`）调用本地大模型（Ollama / LM Studio 等）基于检索结果生成带引用的回答，作为可开关的第二步。具体模型在实测后选定。（2026-10-18 主人修订：原 Ollama 硬绑定改为 OpenAI 兼容端点。）
 
 ### 5.4 依赖与注意
 - 概念 / 别名扩展查询依赖 `.xuewen/` 字段映射完成后才能接入。
