@@ -27,6 +27,14 @@ def do_load(dir_):
     from transformers import AutoTokenizer
 
     mx.set_default_device(mx.gpu)  # M 系列 Metal；不可用时 mlx 自动回退 cpu
+    # 内存纪律（关键）：MLX 默认把释放的 buffer 留在 cache 不还给系统，上限约为
+    # 推荐工作集（128GB 机器 ≈ 107GB）——建库跑久了会吃掉上百 G 且建完不还。
+    # 收紧 cache 到 1GB（超限真释放），wired 内存上限 6GB（relaxed 超限时释放重试）。
+    try:
+        mx.metal.set_cache_limit(1 * 1024**3)
+        mx.metal.set_memory_limit(6 * 1024**3)
+    except Exception:
+        pass  # 非 Metal 设备无此 API
     here = os.path.dirname(os.path.abspath(__file__))
     if here not in sys.path:
         sys.path.insert(0, here)  # vendor 的 mlx_model 就在本目录
@@ -42,18 +50,25 @@ def do_load(dir_):
 def _embed(texts):
     import mlx.core as mx
 
-    enc = _tok(texts, padding=True, truncation=True, max_length=1024)
+    # padding 分桶到 128 的倍数：形状收敛 → buffer 高复用，避免 cache 碎片化膨胀
+    enc = _tok(texts, padding=True, truncation=True, max_length=1024, pad_to_multiple_of=128)
     out = _model(
         input_ids=mx.array(enc["input_ids"]),
         attention_mask=mx.array(enc["attention_mask"]),
     )
     cls = out.last_hidden_state[:, 0]  # bge-m3 官方 CLS 池化
-    return cls / mx.sqrt((cls * cls).sum(-1, keepdims=True) + 1e-12)
+    v = cls / mx.sqrt((cls * cls).sum(-1, keepdims=True) + 1e-12)
+    mx.eval(v)  # 立即求值，让中间张量可进 cache 复用
+    return v
 
 
 def do_embed(texts):
     v = _embed(texts)
-    return {"vectors": v.tolist()}
+    out = v.tolist()
+    # 每批后清 cache：单批工作集很小（~3GB 峰值），清掉可把 RSS 压到模型本身
+    import mlx.core as mx
+    mx.clear_cache()
+    return {"vectors": out}
 
 
 def main():
