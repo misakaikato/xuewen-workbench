@@ -337,6 +337,10 @@ async function main() {
   console.log('== 17. 侧栏宽度 ==');
   await win.loadURL(BASE + '/');
   await until(`!!document.querySelector('aside')`);
+  // 幂等：清掉历史持久化宽度（复用真实 userData 时上次跑完可能停在 480 上限）
+  await exec(`localStorage.removeItem('wb.sidebar.w'); true`);
+  await win.loadURL(BASE + '/');
+  await until(`!!document.querySelector('aside')`);
   const w0 = await exec(`document.querySelector('aside').getBoundingClientRect().width`);
   await exec(`(() => {
     const h = [...document.querySelectorAll('aside > div')].find((e) => e.className.includes('cursor-col-resize'));
