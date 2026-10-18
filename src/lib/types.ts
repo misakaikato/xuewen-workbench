@@ -28,6 +28,23 @@ export interface ScanStatus {
   fileErrors: { path: string; reason: string }[];
 }
 
+export interface UpdateProgress {
+  percent: number; // 0-100
+  transferred: number;
+  total: number;
+  bytesPerSecond: number;
+}
+
+// 应用更新快照（GET /api/update/state；也随 /api/status 返回），镜像 electron/updater.js 的状态机
+export interface UpdateState {
+  enabled: boolean;
+  status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'ready' | 'installing' | 'error';
+  currentVersion: string | null;
+  info: { version: string | null; releaseDate: string | null; notes: string | null } | null;
+  progress: UpdateProgress | null;
+  error: string | null;
+}
+
 export interface ConfigResponse {
   configured: boolean;
   baseDir: string | null;

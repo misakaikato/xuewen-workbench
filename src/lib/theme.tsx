@@ -56,7 +56,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyTheme(t);
     setThemeState(t);
     try { localStorage.setItem(STORAGE_KEY, t); } catch { /* ignore */ }
-    api.saveUiSettings(t).catch(() => { /* 保存失败不打断界面切换 */ });
+    api.saveUiSettings({ theme: t }).catch(() => { /* 保存失败不打断界面切换 */ });
   };
 
   return <Ctx.Provider value={{ theme, setTheme }}>{children}</Ctx.Provider>;

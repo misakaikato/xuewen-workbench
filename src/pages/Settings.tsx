@@ -4,7 +4,9 @@ import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { useReadingPrefs, DEFAULT_PREFS } from '@/lib/prefs';
 import type { Collection, MetadataMapping, TreeNode } from '@/lib/types';
-import { Plus, Trash2, Eye, ShieldBan } from 'lucide-react';
+import { Plus, Trash2, Eye, ShieldBan, RefreshCw } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
 import MetaImport from '@/components/MetaImport';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
@@ -30,7 +32,14 @@ const THEME_CARDS: { id: Theme; name: string; desc: string; side: string; paper:
 
 export default function Settings() {
   const { prefs, update, reset } = useReadingPrefs();
-  const { tree, dsId } = useApp();
+  const { tree, dsId, update: updateState, applyUpdate } = useApp();
+  const [autoUpdate, setAutoUpdate] = useState(true);
+  const [checking, setChecking] = useState(false);
+  const [checkMsg, setCheckMsg] = useState('');
+
+  useEffect(() => {
+    api.getUiSettings().then((s) => setAutoUpdate(s.autoUpdate)).catch(() => {});
+  }, []);
   const { theme, setTheme } = useTheme();
   const [collections, setCollections] = useState<Collection[]>([]);
   const [mappings, setMappings] = useState<MetadataMapping[]>([]);
@@ -119,6 +128,50 @@ export default function Settings() {
             );
           })}
         </RadioGroup>
+      </section>
+
+      {/* 关于与更新 */}
+      <section className="bg-card border border-border rounded-lg p-4">
+        <h2 className="font-medium text-sm mb-1">关于与更新</h2>
+        <p className="text-xs text-muted-foreground mb-3">
+          当前版本 v{updateState?.currentVersion ?? '—'}。更新包从 GitHub Releases 获取（Windows 支持差量下载）。
+        </p>
+        {!updateState?.enabled ? (
+          <p className="text-xs text-muted-foreground">开发模式不支持更新（仅打包版可用）。</p>
+        ) : (
+          <div className="flex items-center gap-3 text-sm">
+            <Button
+              size="sm" variant="outline" disabled={checking}
+              onClick={async () => {
+                setChecking(true);
+                setCheckMsg('');
+                try {
+                  const s = await api.updateCheck();
+                  applyUpdate(s);
+                  setCheckMsg(s.status === 'available' ? `发现新版本 v${s.info?.version}，点击页顶横幅更新` : s.status === 'error' ? `检查失败：${s.error}` : '已是最新版本');
+                } catch (e) {
+                  setCheckMsg(`检查失败：${e instanceof Error ? e.message : e}`);
+                } finally {
+                  setChecking(false);
+                }
+              }}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${checking ? 'animate-spin' : ''}`} />
+              检查更新
+            </Button>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Switch
+                checked={autoUpdate}
+                onCheckedChange={async (v) => {
+                  setAutoUpdate(v);
+                  try { await api.saveUiSettings({ autoUpdate: v }); } catch { setAutoUpdate(!v); }
+                }}
+              />
+              启动时自动检查更新
+            </label>
+            {checkMsg && <span className="text-xs text-muted-foreground">{checkMsg}</span>}
+          </div>
+        )}
       </section>
 
       {/* 阅读与外观 */}

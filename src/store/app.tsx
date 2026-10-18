@@ -2,7 +2,7 @@
 // 当前库由 activeId 决定；所有请求经 api 作用域携带 ds，切库后统一重取并丢弃旧库响应。
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, setApiScope } from '@/lib/api';
-import type { ConfigResponse, LibraryInfo, TreeNode } from '@/lib/types';
+import type { ConfigResponse, LibraryInfo, TreeNode, UpdateState } from '@/lib/types';
 
 interface AppState {
   config: ConfigResponse | null;
@@ -10,6 +10,8 @@ interface AppState {
   tree: TreeNode | null;
   loading: boolean;
   dsId: string | null;
+  update: UpdateState | null;
+  applyUpdate: (s: UpdateState) => void;
   refreshConfig: () => Promise<void>;
   refreshTree: () => Promise<void>;
   rescan: () => Promise<void>;
@@ -18,7 +20,8 @@ interface AppState {
 }
 
 const Ctx = createContext<AppState>({
-  config: null, libraries: [], tree: null, loading: true, dsId: null,
+  config: null, libraries: [], tree: null, loading: true, dsId: null, update: null,
+  applyUpdate: () => {},
   refreshConfig: async () => {}, refreshTree: async () => {}, rescan: async () => {},
   activateLib: async () => {}, removeLib: async () => {},
 });
@@ -27,6 +30,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [loading, setLoading] = useState(true);
+  const [update, setUpdate] = useState<UpdateState | null>(null);
   const genRef = useRef(0);
   const dsRef = useRef<string | null>(null);
 
@@ -88,6 +92,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const timer = setInterval(async () => {
       try {
         const st = await api.status();
+        setUpdate(st.update ?? null); // 更新状态搭同一班车（规格：不新增请求循环）
         const active = config?.dsId ? st.libs?.[config.dsId] : null;
         if (active?.scannedAt && config?.status.scannedAt && active.scannedAt !== config.status.scannedAt) {
           await refreshConfig();
@@ -101,6 +106,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={{
       config, libraries: config?.libraries ?? [], tree, loading, dsId: config?.dsId ?? null,
+      update, applyUpdate: setUpdate,
       refreshConfig, refreshTree, rescan, activateLib, removeLib,
     }}>
       {children}

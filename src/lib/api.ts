@@ -1,6 +1,6 @@
 // API 访问层：统一错误处理
 import type {
-  ConfigResponse, FilePayload, ScanStatus, TreeNode, StatsResponse,
+  ConfigResponse, FilePayload, ScanStatus, TreeNode, StatsResponse, UpdateState,
   SearchResult, RefResolution, Collection, MetadataMapping, TopicEntry, ConceptEntry, FileEntry, LibraryInfo,
 } from './types';
 import type { Theme } from './theme';
@@ -133,9 +133,9 @@ const json = (method: string, body?: unknown): RequestInit => ({
 });
 
 export const api = {
-  getUiSettings: () => req<{ theme: Theme }>('/api/ui-settings'),
-  saveUiSettings: (theme: Theme) =>
-    req<{ ok: boolean; theme: Theme }>('/api/ui-settings', json('PUT', { theme })),
+  getUiSettings: () => req<{ theme: Theme; autoUpdate: boolean }>('/api/ui-settings'),
+  saveUiSettings: (patch: { theme?: Theme; autoUpdate?: boolean }) =>
+    req<{ ok: boolean; theme: Theme; autoUpdate: boolean }>('/api/ui-settings', json('PUT', patch)),
   getConfig: () => req<ConfigResponse>('/api/config'),
   testDir: (baseDir: string) =>
     req<{ ok: boolean; error?: string; readable?: boolean; writable?: boolean }>(
@@ -148,7 +148,12 @@ export const api = {
   removeLibrary: (ds: string) =>
     req<{ ok: boolean; activeId: string | null; libraries: LibraryInfo[] }>('/api/library/remove', json('POST', { ds })),
   rescan: () => req<{ ok: boolean; status: ScanStatus }>('/api/rescan', json('POST')),
-  status: () => req<ScanStatus & { libs?: Record<string, { scanning: boolean; watching: boolean; scannedAt: string | null }> }>('/api/status'),
+  updateCheck: () => req<UpdateState>('/api/update/check', json('POST')),
+  updateDownload: () => req<UpdateState>('/api/update/download', json('POST')),
+  // install 会在安装时杀死应用，请求可能中途断开——调用方需吞错
+  updateInstall: () => req<{ ok: boolean }>('/api/update/install', json('POST')),
+  openReleasePage: () => req<{ ok: boolean }>('/api/update/open-release', json('POST')),
+  status: () => req<ScanStatus & { libs?: Record<string, { scanning: boolean; watching: boolean; scannedAt: string | null }> } & { update: UpdateState }>('/api/status'),
   tree: () => req<{ dsId: string; tree: TreeNode }>('/api/tree'),
   stats: () => req<StatsResponse>('/api/stats'),
   file: (path: string) => req<FilePayload>('/api/file?path=' + encodeURIComponent(path)),

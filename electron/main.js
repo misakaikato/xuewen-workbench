@@ -65,6 +65,15 @@ async function start() {
   const { setTrashHandler } = await import(pathToFileURL(path.join(ROOT, 'server', 'trash.js')).href);
   setTrashHandler((absPath) => shell.trashItem(absPath));
 
+  // 自动更新：仅打包模式注入桥接（dev / 独立 dev:server 时功能停用）。
+  // 必须在加载后端之前注入，路由挂载时才能拿到桥接。
+  if (app.isPackaged) {
+    const { createUpdaterBridge } = await import(pathToFileURL(path.join(ROOT, 'electron', 'updater.js')).href);
+    const { getUiSettings } = await import(pathToFileURL(path.join(ROOT, 'server', 'store.js')).href);
+    const { setUpdateBridge } = await import(pathToFileURL(path.join(ROOT, 'server', 'update.js')).href);
+    setUpdateBridge(await createUpdaterBridge({ getUiSettings }));
+  }
+
   // 进程内加载后端（随应用退出而结束）
   await import(pathToFileURL(path.join(ROOT, 'server', 'index.js')).href);
 

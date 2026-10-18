@@ -1,0 +1,32 @@
+# 发布流水线：打 tag 触发 mac + win 构建，产物上传为 draft release（人工核对后 Publish）
+# 注意：package.json 里 build.publish 的 owner/repo 占位符必须先替换为真实仓库
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # 允许 GITHUB_TOKEN 创建 release 并上传资产
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            script: release:mac
+          - os: windows-latest
+            script: release:win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run ${{ matrix.script }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

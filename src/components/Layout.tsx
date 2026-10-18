@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/store/app';
+import { UpdateBanner } from './UpdateBanner';
 import { FileTree } from './FileTree';
 import { setEntryContext } from '@/lib/entryOps';
 import {
@@ -129,6 +130,7 @@ export function Layout() {
 
   return (
     <div className="h-screen flex flex-col">
+      <UpdateBanner />
       {/* 顶栏用主题窗框色（B 主题下无分隔线，见 themes.css） */}
       <header className="h-12 shrink-0 border-b border-border wb-chrome flex items-center gap-2 px-3">
         <img src="/logo-32.png" alt="学问 Workbench" className="w-6 h-6 rounded-[5px] shrink-0 select-none" draggable={false} />

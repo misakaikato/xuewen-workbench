@@ -9,6 +9,7 @@ import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as s
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
 import { planImport, applyImport, contentHash } from './meta.js';
 import { getTrashHandler } from './trash.js';
+import { mountUpdateRoutes, getUpdateBridge, disabledUpdateState } from './update.js';
 import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
 import { LinkIndex } from './links.js';
@@ -285,6 +286,10 @@ app.post('/api/rescan', async (req, res) => {
   res.json({ ok: true, status: lib.scanner.status() });
 });
 
+// ---------- 应用更新（桥接由 Electron 主进程注入；无桥接时停用） ----------
+
+mountUpdateRoutes(app);
+
 // ---------- 界面设置（外观主题；不依赖数据源，未配置时也可用） ----------
 
 app.get('/api/ui-settings', (req, res) => {
@@ -292,12 +297,25 @@ app.get('/api/ui-settings', (req, res) => {
 });
 
 app.put('/api/ui-settings', (req, res) => {
-  const { theme } = req.body || {};
-  if (!['A', 'B', 'C'].includes(theme)) {
-    return res.status(400).json({ error: 'theme 必须是 A、B 或 C' });
+  const { theme, autoUpdate } = req.body || {};
+  const patch = {};
+  if (theme !== undefined) {
+    if (!['A', 'B', 'C'].includes(theme)) {
+      return res.status(400).json({ error: 'theme 必须是 A、B 或 C' });
+    }
+    patch.theme = theme;
   }
-  saveUiSettings({ theme });
-  res.json({ ok: true, theme });
+  if (autoUpdate !== undefined) {
+    if (typeof autoUpdate !== 'boolean') {
+      return res.status(400).json({ error: 'autoUpdate 必须是布尔值' });
+    }
+    patch.autoUpdate = autoUpdate;
+  }
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate）' });
+  }
+  const next = saveUiSettings(patch);
+  res.json({ ok: true, ...next });
 });
 
 app.get('/api/status', (req, res) => {
@@ -306,7 +324,11 @@ app.get('/api/status', (req, res) => {
   for (const [id, l] of libs) {
     libStatuses[id] = { scanning: l.scanner.scanning, watching: !!l.scanner.watcher, scannedAt: l.scanner.snapshot?.scannedAt || null };
   }
-  res.json({ dsId: activeId, ...(active ? active.scanner.status() : emptyStatus()), libs: libStatuses });
+  const bridge = getUpdateBridge();
+  res.json({
+    dsId: activeId, ...(active ? active.scanner.status() : emptyStatus()), libs: libStatuses,
+    update: bridge ? bridge.state() : disabledUpdateState(),
+  });
 });
 
 // ---------- 目录树与统计 ----------

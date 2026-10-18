@@ -119,11 +119,14 @@ export function saveConfig(baseDir) {
   return { baseDir: lib.baseDir, dsId: lib.id, savedAt: lib.addedAt };
 }
 
-// 界面设置：{ theme: 'A'|'B'|'C' }，缺省 A；文件损坏时回退默认值
+// 界面设置：{ theme: 'A'|'B'|'C', autoUpdate?: boolean }，theme 缺省 A、autoUpdate 缺省 true；文件损坏时回退默认值
 export function getUiSettings() {
   const s = readJson(UI_SETTINGS_FILE, null);
-  if (!s || typeof s !== 'object' || !UI_THEMES.includes(s.theme)) return { theme: 'A' };
-  return { theme: s.theme };
+  if (!s || typeof s !== 'object') return { theme: 'A', autoUpdate: true };
+  return {
+    theme: UI_THEMES.includes(s.theme) ? s.theme : 'A',
+    autoUpdate: typeof s.autoUpdate === 'boolean' ? s.autoUpdate : true,
+  };
 }
 
 export function saveUiSettings(patch) {
