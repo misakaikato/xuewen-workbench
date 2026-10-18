@@ -213,6 +213,7 @@ export default function Read() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 既有行为：切换文档时先清空
     setFile(null);
     setError(null);
+    setDocLinks([]); // 上一文档的链接区间对新文档是非法坐标，必须先清（否则 field 里 lineAt 越界）
     api.file(relPath)
       .then(async (f) => {
         if (dead) return;

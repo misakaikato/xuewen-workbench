@@ -662,6 +662,18 @@ async function main() {
   check('阅读页 wikilink 渲染为词条链接',
     (await exec(`[...document.querySelectorAll('.wb-wikilink')].some((a) => a.textContent === '孔夫子')`)));
 
+  // 后退到短文档：旧文档的链接坐标不得炸掉新文档（曾触发 lineAt/mapPos 越界）
+  await win.loadURL(BASE + '/read/' + encodeURIComponent('论语讲稿.md'));
+  await waitFor('!!document.querySelector(".ro-doc .cm-content")', '长文档（带词条链接）就绪');
+  await waitFor(`!!document.querySelector('.ro-doc .wb-autolink, .ro-doc .wb-wikilink')`, '词条链接已加载');
+  await win.loadURL(BASE + '/read/' + encodeURIComponent('天.md'));
+  await waitFor('!!document.querySelector(".ro-doc .cm-content")', '短文档就绪');
+  await sleep(500);
+  check('切换到短文档不越界报错（无错误边界）',
+    await exec(`!document.body.textContent.includes('Unexpected Application Error') && !!document.querySelector('.ro-doc .cm-content')`));
+  await win.loadURL(BASE + '/read/' + encodeURIComponent('论语讲稿.md'));
+  await waitFor(`!!document.querySelector('.ro-doc .wb-autolink, .ro-doc .wb-wikilink')`, '词条链接恢复');
+
   // F7 主题 C 下面板可读
   await put('/api/ui-settings', { theme: 'C' });
   await openEditor('文艺复兴.md');

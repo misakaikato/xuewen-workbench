@@ -71,7 +71,9 @@ export const alField = StateField.define<AlState>({
     let rebuild = false;
     for (const e of tr.effects) {
       if (e.is(setDocLinks)) {
-        links = e.value.links;
+        // 防御：区间必须落在当前文档内（宿主切换文档时应先清空再拉；
+        // 这里再拦一层，避免旧文档坐标直接炸 lineAt / mapPos）
+        links = e.value.links.filter((l) => l.from >= 0 && l.to <= tr.state.doc.length);
         seq = e.value.seq;
         rebuild = true;
       }
