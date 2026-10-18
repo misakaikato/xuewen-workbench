@@ -194,6 +194,7 @@ export const api = {
   pins: () => req<{ pins: { path: string; at: number; exists: boolean }[] }>('/api/pins'),
   pin: (path: string, action: 'add' | 'remove') => req('/api/pins', json('POST', { path, action })),
   collections: () => req<{ collections: Collection[] }>('/api/collections'),
+  revealInSystem: (path: string) => req<{ ok: boolean; revealed: string }>('/api/reveal', json('POST', { path })),
   saveCollections: (collections: Collection[]) =>
     req('/api/collections', json('PUT', { collections })),
   metadata: () => req<{ mappings: MetadataMapping[] }>('/api/metadata'),

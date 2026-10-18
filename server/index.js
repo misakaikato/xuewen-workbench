@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import express from 'express';
 import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings } from './store.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
@@ -418,6 +419,40 @@ app.get('/api/file/raw', (req, res) => {
   try {
     const abs = resolveWithin(lib, String(req.query.path || ''));
     res.download(abs);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// 在系统文件管理器中定位显示（Finder / 资源管理器 / xdg-open）；路径必须在当前资料库内且存在
+app.post('/api/reveal', (req, res) => {
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const rel = String(req.body?.path || '');
+  try {
+    const abs = resolveWithin(lib, rel);
+    let isDir = false;
+    try {
+      isDir = fs.statSync(abs).isDirectory();
+    } catch {
+      return res.status(404).json({ error: '路径不存在（可能已被移动或删除）' });
+    }
+    let cmd;
+    let args;
+    if (process.platform === 'win32') {
+      cmd = 'explorer.exe';
+      args = isDir ? [abs] : ['/select,' + abs];
+    } else if (process.platform === 'darwin') {
+      cmd = 'open';
+      args = isDir ? [abs] : ['-R', abs];
+    } else {
+      cmd = 'xdg-open';
+      args = [isDir ? abs : path.dirname(abs)];
+    }
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    child.on('error', () => {});
+    child.unref();
+    res.json({ ok: true, revealed: rel });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }

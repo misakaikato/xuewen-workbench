@@ -62,13 +62,19 @@ export function Layout() {
         <input
           value={treeFilter}
           onChange={(e) => setTreeFilter(e.target.value)}
-          placeholder="过滤目录与文件…"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setTreeFilter('');
+              if (!treeFilter) (e.target as HTMLInputElement).blur();
+            }
+          }}
+          placeholder="过滤目录与文件…（Esc 清空）"
           className="w-full text-xs px-2 py-1.5 rounded border border-input bg-background"
         />
       </div>
       <div className="flex-1 overflow-auto p-1">
         {tree ? (
-          <FileTree tree={tree} filter={treeFilter} />
+          <FileTree tree={tree} filter={treeFilter} onFilterChange={setTreeFilter} />
         ) : (
           <div className="text-xs text-muted-foreground p-3">
             {st?.scanning ? '正在扫描资料库…' : '暂无目录数据'}
