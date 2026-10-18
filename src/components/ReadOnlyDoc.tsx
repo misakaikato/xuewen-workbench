@@ -1,16 +1,19 @@
-// 只读文档渲染（方案 B 核心）：阅读页与编辑预览面板共用的只读 CodeMirror 实例。
-// 同一套 livePreview 扩展栈 + 语料引用 chip + 词条自动内链 + 代码高亮 + 复制转正文。
+// 文档渲染组件：同一个 CodeMirror 实例承载阅读态与原位编辑态。
+// editing 切换只走 StateEffect.reconfigure——文档、滚动、装饰、选区全部原地保留，
+// 阅读态与编辑态之间零跳变（这正是「点击编辑=页面不变，只是可改」的实现基础）。
 // 页面滚动由外层容器承担（height auto、全文渲染）；滚动定位统一走 coordsAtPos。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { StateEffect, StateField, EditorState } from '@codemirror/state';
+import { EditorState, StateEffect, StateField } from '@codemirror/state';
 import type { Extension, Range } from '@codemirror/state';
+import type { ViewUpdate } from '@codemirror/view';
 import { Decoration, EditorView, drawSelection } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import type { DocLink } from '@/lib/api';
 import type { CorpusRefNameEntry } from '@/lib/corpusRefMatch';
 import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
 import { livePreview } from '@/components/editor/livePreview';
+import { editorBaseExtensions } from '@/components/editor/setup';
 import { corpusRefsExtension, pushCorpusNames } from '@/components/editor/corpusRefs';
 import { linksExtensionFor, pushDocLinks } from '@/components/editor/autoLinks';
 import { copyAsRendered } from '@/components/editor/copyAsRendered';
@@ -61,16 +64,28 @@ export interface ReadOnlyDocProps {
   /** 搜索跳转携带的高亮词（backlinks 的 ?h=） */
   highlightTerm?: string;
   onReady?: (view: EditorView) => void;
+  /** 原位编辑态：切换只 reconfigure，实例与滚动不动 */
+  editing?: boolean;
+  /** 行分隔符（字节精确：创建与编辑都显式声明） */
+  lineSep?: '\r\n' | '\n';
+  /** 编辑态：文档变化回调（精确文本，含 CRLF） */
+  onDocChanged?: (exactText: string) => void;
+  /** 编辑态：选区/文档变化通知（工具栏刷新用） */
+  onViewUpdate?: (u: ViewUpdate) => void;
 }
 
-export function ReadOnlyDoc({ content, docPath, refNames, collections, links, highlightTerm, onReady }: ReadOnlyDocProps) {
+export function ReadOnlyDoc({
+  content, docPath, refNames, collections, links, highlightTerm, onReady,
+  editing = false, lineSep = '\n', onDocChanged, onViewUpdate,
+}: ReadOnlyDocProps) {
   const navigate = useNavigate();
   const viewRef = useRef<EditorView | null>(null);
   const [crReq, setCrReq] = useState<CorpusRefRequest | null>(null);
   const [candReq, setCandReq] = useState<PathListRequest | null>(null);
 
-  const docDirRef = useRef(docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '');
-  docDirRef.current = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
+  const docDir = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
+  const docDirRef = useRef(docDir);
+  docDirRef.current = docDir;
   const navRef = useRef(navigate);
   navRef.current = navigate;
 
@@ -95,7 +110,6 @@ export function ReadOnlyDoc({ content, docPath, refNames, collections, links, hi
     navRef.current(anchor ? nav + '#' + encodeURIComponent(anchor) : nav);
   }, []);
 
-  // 词条链接打开（含标题锚点）；歧义词条弹候选
   const openLinkTarget = useCallback((t: { path: string; heading?: string | null }) => {
     const nav = '/read/' + encPath(t.path);
     navRef.current(t.heading ? nav + '#' + encodeURIComponent(t.heading) : nav);
@@ -104,32 +118,52 @@ export function ReadOnlyDoc({ content, docPath, refNames, collections, links, hi
     setCandReq({ title: `「${term}」指向 ${candidates.length} 个文档，请选择：`, paths: candidates, ...at });
   }, []);
 
-  const extensions = useMemo<Extension[]>(
-    () => [
-      EditorView.editable.of(false),
-      EditorState.readOnly.of(true),
-      EditorView.lineWrapping,
-      drawSelection(),
-      ...livePreview({ docPath, openLink, readOnly: true }),
-      ...corpusRefsExtension({ names: [], collections: [], onOpen: (url, at) => setCrReq({ url, ...at }), readOnly: true }),
-      ...linksExtensionFor(docPath, { onOpen: openLinkTarget, onCandidates, readOnly: true }),
-      copyAsRendered(),
-      hlField,
-    ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [docPath]
+  // 回调走 ref：扩展数组不因回调身份变化而重建
+  const onDocChangedRef = useRef(onDocChanged);
+  onDocChangedRef.current = onDocChanged;
+  const onViewUpdateRef = useRef(onViewUpdate);
+  onViewUpdateRef.current = onViewUpdate;
+  const vuListenerRef = useRef(
+    EditorView.updateListener.of((u) => {
+      if (u.docChanged) onDocChangedRef.current?.(u.state.sliceDoc(0));
+      onViewUpdateRef.current?.(u);
+    })
   );
 
-  // content 变化（编辑预览逐键更新）：整缓冲区替换，只读实例无撤销历史负担
+  const extensions = useMemo<Extension[]>(() => {
+    const stack: Extension[] = [
+      EditorState.lineSeparator.of(lineSep),
+      EditorView.lineWrapping,
+      drawSelection(),
+      ...livePreview({ docPath, openLink, readOnly: !editing, geometry: 'card' }),
+      ...corpusRefsExtension({
+        names: [],
+        collections: [],
+        onOpen: (url, at) => setCrReq({ url, ...at }),
+        readOnly: !editing,
+      }),
+      ...linksExtensionFor(docPath, { onOpen: openLinkTarget, onCandidates, readOnly: !editing }),
+      hlField,
+    ];
+    if (editing) {
+      stack.push(...editorBaseExtensions({ lineNumbers: false, foldGutter: false }), vuListenerRef.current);
+    } else {
+      stack.push(EditorView.editable.of(false), EditorState.readOnly.of(true), copyAsRendered());
+    }
+    return stack;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docPath, editing, lineSep]);
+
+  // content 外部变化（换文档 / 保存后刷新）：编辑态绝不回写（缓冲区是唯一事实）
   useEffect(() => {
     const v = viewRef.current;
-    if (!v) return;
+    if (!v || editing) return;
     if (v.state.sliceDoc(0) !== content) {
       v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: content } });
     }
-  }, [content]);
+  }, [content, editing, onReady]);
 
-  // 数据注入：名称清单 / 词条链接 / 高亮词
+  // 数据注入：名称清单 / 词条链接 / 高亮词（reconfigure 不重建 StateField，注入跨态存活）
   useEffect(() => {
     pushCorpusNames(viewRef.current, refNames, collections);
   }, [refNames, collections]);
@@ -149,6 +183,7 @@ export function ReadOnlyDoc({ content, docPath, refNames, collections, links, hi
           viewRef.current = v;
           onReady?.(v);
         }}
+        onDocChanged={onDocChanged}
         height="auto"
         ariaLabel="文档阅读器"
       />

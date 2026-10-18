@@ -18,8 +18,11 @@ export interface LivePreviewOptions {
   docPath: string;
   /** Cmd/Ctrl+点击链接时交给上层：内部相对路径应用内导航，http(s) 外开 */
   openLink: (href: string) => void;
-  /** 只读实例（阅读视图）：选区不再揭示源码、表格恒渲染、链接单击即开 */
+  /** 只读实例（阅读视图）：无光标、链接单击即开 */
   readOnly?: boolean;
+  /** 版式几何：page=编辑页全幅（预留页边留白）；card=卡片/面板内（容器即排版列）。
+   *  与 readOnly 正交——阅读页原位编辑 = card + 可编辑 */
+  geometry?: 'page' | 'card';
 }
 
 // 文档路径以 facet 提供，构建装饰时读取
@@ -678,15 +681,16 @@ function makeLpPlugin(openLink: (href: string) => void) {
 // 编辑器主题：全部走应用 CSS 变量，A/B/C 三主题（含 C 深色）与阅读偏好即时生效。
 // 正文列宽：编辑页无卡片，100%-68px 复刻阅读页页边留白（减 28px 行内 padding 后与
 // 阅读页文字列对齐）；只读实例渲染在卡片/面板内，容器本身就是排版列，不再减。
-function makeLpTheme(readOnly: boolean) {
+function makeLpTheme(card: boolean) {
   return EditorView.theme({
     ...editorBaseThemeSpec,
-    ...(readOnly
+    ...(card
       ? {
-          '&': { color: 'hsl(var(--foreground))', backgroundColor: 'transparent', height: 'auto' },
+          '&': { backgroundColor: 'transparent', height: 'auto' },
           '.cm-scroller': { ...editorBaseThemeSpec['.cm-scroller'], overflow: 'visible' },
-          // 阅读态无行内槽：文字列 = min(--rd-width, 容器宽)，与旧 .reader 同语义
+          // 卡片内无行内槽：文字列 = min(--rd-width, 容器宽)，与旧 .reader 同语义
           '.cm-line': { padding: '0' },
+          '.cm-content': { paddingBottom: '12vh' },
         }
       : {}),
 
@@ -694,9 +698,7 @@ function makeLpTheme(readOnly: boolean) {
   // 同一上限（--rd-width）并居中；calc(100% - 96px) 对应阅读页容器的水平留白
   // （max-w-5xl 容器 px-4 共 32px + 正文卡片 p-8 共 64px），窄窗口下两列同宽收缩
   '.cm-content': {
-    caretColor: readOnly ? 'transparent' : 'hsl(var(--foreground))',
-    paddingBottom: readOnly ? '12vh' : '20vh',
-    maxWidth: readOnly
+    maxWidth: card
       ? 'min(var(--rd-width), 100%)'
       : 'min(calc(var(--rd-width) + 28px), calc(100% - 68px))',
     marginLeft: 'auto',
@@ -774,6 +776,6 @@ export function livePreview(opts: LivePreviewOptions) {
     lpReadOnly.of(!!opts.readOnly),
     lpTableField,
     makeLpPlugin(opts.openLink),
-    makeLpTheme(!!opts.readOnly),
+    makeLpTheme(opts.geometry === 'card'),
   ];
 }

@@ -460,16 +460,61 @@ async function main() {
   await waitFor('!!document.querySelector(".ro-doc .cm-content")', '锚点阅读页就绪');
   await sleep(600);
   check('#锚点 定位到标题', await exec(`(() => { const sc = document.querySelector('.wb-paper'); return !!sc && sc.scrollTop > 0; })()`));
+  // 原位编辑：点击编辑后不换页、零滚动跳变，直接可改
+  // 锚点口径：正文卡片的视口位置不变 = 零跳变（工具栏行高变化由补偿吸收，scrollTop 本身允许变）
+  const cardTop0 = await exec(`document.querySelector('[data-wb-content-card]').getBoundingClientRect().top`);
   await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.title === '进入编辑 (Ctrl+E)'); if (b) { b.click(); return true; } return false; })()`);
-  await waitFor('!!(window.__wb && __wb.editor())', '编辑器就绪');
-  await sleep(700);
-  check('阅读→编辑 滚动延续', await exec(`(() => { const sc = window.__wb.editor().scrollDOM; return sc.scrollTop > 20; })()`));
-  await exec(`(() => { const sc = window.__wb.editor().scrollDOM; sc.scrollTop = sc.scrollHeight; return true; })()`);
+  await waitFor('!!document.querySelector("[data-wb-inplace-bar]")', '原位编辑条出现');
+  await sleep(400);
+  check('进入编辑不换页（仍为 /read）', await exec(`window.location.pathname.startsWith('/read/')`));
+  check('进入编辑正文零跳变', Math.abs(Number(await exec(`document.querySelector('[data-wb-content-card]').getBoundingClientRect().top`)) - Number(cardTop0)) <= 1);
+  check('正文转为可编辑', await exec(`(() => { const el = document.querySelector('.ro-doc .cm-content'); return !!el && el.getAttribute('contenteditable') === 'true'; })()`));
+  check('格式工具栏随编辑态出现', await exec(`!!document.querySelector('[data-wb-fmtbar]')`));
+  // 原位输入 + 保存：磁盘字节与缓冲区一致
+  await exec(`window.__wbr.editor().dispatch({ selection: { anchor: window.__wbr.editor().state.doc.length } })`);
+  await exec(`window.__wbr.editor().dispatch({ changes: { from: window.__wbr.editor().state.doc.length, insert: '\\n原位编辑验收行' } })`);
+  await sleep(150);
+  check('输入后状态为未保存', await exec(`(() => { const bar = document.querySelector('[data-wb-inplace-bar]'); return !!bar && bar.textContent.includes('未保存'); })()`));
+  const bufText = await exec(`window.__wbr.buffer()`);
+  check('保存前磁盘未变', (await fs.promises.readFile(path.join(tmpCorpus, 'ds-fmt', 'rich.md'), 'utf8')).endsWith('原位编辑验收行') === false);
+  const savedOk = await exec(`window.__wbr.save()`);
+  await sleep(500);
+  check('原位保存成功', savedOk === true || savedOk === undefined);
+  const diskText = await fs.promises.readFile(path.join(tmpCorpus, 'ds-fmt', 'rich.md'), 'utf8');
+  check('保存后磁盘字节与缓冲区一致', diskText === bufText, `disk=${diskText.length} buf=${bufText.length}`);
+  // 完成编辑：回到阅读态，仍不换页、滚动不动
+  const cardTop1 = await exec(`document.querySelector('[data-wb-content-card]').getBoundingClientRect().top`);
+  await exec(`window.__wbr.finish()`);
+  await sleep(400);
+  check('完成编辑回到阅读态（不换页）', await exec(`window.location.pathname.startsWith('/read/') && !document.querySelector('[data-wb-inplace-bar]')`));
+  check('完成编辑正文零跳变', Math.abs(Number(await exec(`document.querySelector('[data-wb-content-card]').getBoundingClientRect().top`)) - Number(cardTop1)) <= 1);
+  check('完成编辑后正文只读', await exec(`(() => { const el = document.querySelector('.ro-doc .cm-content'); return !!el && el.getAttribute('contenteditable') !== 'true'; })()`));
+  // 完整编辑器入口仍可用（跨路由滚动延续）
+  await exec(`window.__wbr.enter()`);
+  await waitFor('!!document.querySelector("[data-wb-inplace-bar]")', '再次进入原位编辑');
+  await exec(`(() => { const sc = document.querySelector('.wb-paper'); sc.scrollTop = sc.scrollHeight; return true; })()`);
   await sleep(200);
+  await exec(`(() => { const b = [...document.querySelectorAll('[data-wb-inplace-bar] button')].find((x) => x.title.includes('完整编辑器')); if (b) { b.click(); return true; } return false; })()`);
+  await waitFor('!!(window.__wb && __wb.editor())', '完整编辑器就绪');
+  await sleep(700);
+  check('原位→完整编辑器 滚动延续', await exec(`(() => { const sc = window.__wb.editor().scrollDOM; return sc.scrollTop > 20; })()`));
   await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === '返回阅读'); if (b) { b.click(); return true; } return false; })()`);
   await waitFor('!!document.querySelector(".ro-doc .cm-content")', '返回阅读就绪');
   await sleep(800);
-  check('编辑→阅读 滚动延续（近底部）', await exec(`(() => { const sc = document.querySelector('.wb-paper'); const max = sc.scrollHeight - sc.clientHeight; return max > 0 && sc.scrollTop > max * 0.6; })()`));
+  check('完整编辑器→阅读 滚动延续（近底部）', await exec(`(() => { const sc = document.querySelector('.wb-paper'); const max = sc.scrollHeight - sc.clientHeight; return max > 0 && sc.scrollTop > max * 0.6; })()`));
+
+  // CRLF 原位往返：插入字符保存后字节精确（BOM / \r\n 保留）
+  await win.loadURL(BASE + '/read/' + encodeURIComponent('bom-crlf.md'));
+  await waitFor('!!document.querySelector(".ro-doc .cm-content")', 'CRLF 阅读就绪');
+  await sleep(500);
+  await exec(`window.__wbr.enter()`);
+  await waitFor('!!document.querySelector("[data-wb-inplace-bar]")', 'CRLF 原位编辑');
+  await exec(`(() => { const v = window.__wbr.editor(); v.dispatch({ selection: { anchor: v.state.doc.length }, changes: { from: v.state.doc.length, insert: 'X' } }); return true; })()`);
+  const crlfBuf = await exec(`window.__wbr.buffer()`);
+  await exec(`window.__wbr.save()`);
+  await sleep(500);
+  const crlfDisk = await fs.promises.readFile(path.join(tmpCorpus, 'ds-fmt', 'bom-crlf.md'), 'utf8');
+  check('CRLF 原位保存字节一致（BOM/换行保留）', crlfDisk.replace(/^\uFEFF/, '') === crlfBuf && crlfDisk.endsWith('X') && crlfDisk.slice(1).includes('\r\n'));
 
   // ---------- F. 自动内链与反向链接（ds-links） ----------
   console.log('== F. 自动内链与反向链接 ==');
