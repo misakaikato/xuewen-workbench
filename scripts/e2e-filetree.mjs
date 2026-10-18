@@ -30,6 +30,10 @@ fs.mkdirSync(path.join(corpus, 'notes'), { recursive: true });
 fs.writeFileSync(path.join(corpus, 'docs/level2/level3/deep.md'), '# deep\n');
 fs.writeFileSync(path.join(corpus, 'top.md'), '# top\n');
 fs.writeFileSync(path.join(corpus, 'notes/x.md'), '# x\n');
+// 引用计数语料：ly.md 词条为「论语」，note.md 提及它
+fs.writeFileSync(path.join(corpus, 'ly.md'), '# 论语\n正文\n');
+fs.writeFileSync(path.join(corpus, 'ly.md.meta.json'), JSON.stringify({ id: 'doc_ly', title: '论语', type: '文章' }) + '\n');
+fs.writeFileSync(path.join(corpus, 'note.md'), '读论语有感。\n');
 for (let i = 0; i < 60; i++) fs.writeFileSync(path.join(corpus, `f${String(i).padStart(2, '0')}.md`), '# f\n');
 
 const j = async (url, init) => (await fetch(BASE + url, init)).json();
@@ -84,6 +88,7 @@ async function main() {
   // ---------- 1. 直接深链打开：reveal ----------
   console.log('== 1. 深链 reveal ==');
   await win.loadURL(urlOf(DEEP));
+  await exec("localStorage.setItem('wb:e2e','1'); true");
   check('深链后深层文件行已渲染（父链自动展开）',
     await until(`!!document.querySelector('[data-tpath="${DEEP}"]')`));
   check('当前文件行高亮', await until(`(() => {
@@ -228,6 +233,142 @@ async function main() {
   await exec(`(() => { const c = document.querySelector('aside .overflow-auto'); if (c) c.scrollTop = 0; return true; })()`);
   await sleep(250);
   check('元数据问题徽标出现在文件行', await until(`!!document.querySelector('[data-tpath="f00.md"] svg.text-red-500')`, 20000));
+
+  // ---------- 11. 虚拟滚动 ----------
+  console.log('== 11. 虚拟滚动 ==');
+  const spacerH = await exec(`Number.parseFloat(document.querySelector('aside .overflow-auto > div')?.style.height || '0')`);
+  const rendered = await exec(`document.querySelectorAll('aside .overflow-auto [data-tpath]').length`);
+  const totalRows = Math.round(spacerH / 28);
+  check('总行数按 28px 摊铺（>60 行）', totalRows >= 64, `spacer=${spacerH} rows=${totalRows}`);
+  check('渲染行数远小于总行数', rendered > 0 && rendered < totalRows - 15, `rendered=${rendered} total=${totalRows}`);
+  await exec(`document.querySelector('[data-tpath="docs"]').focus(); true`);
+  await exec(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })); true`);
+  check('End 跳到最后一行（含滚动后聚焦）', await until(`document.activeElement?.getAttribute('data-idx') === String(${totalRows} - 1)`), 'idx=' + (await exec(`document.activeElement?.getAttribute('data-idx')`)));
+
+  // ---------- 12. 集合视图 ----------
+  console.log('== 12. 集合视图 ==');
+  await j('/api/collections?x=1').catch(() => {});
+  const saveCol = await fetch(BASE + '/api/collections', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ collections: [{ name: '文辑', dirs: ['docs'] }] }) });
+  check('保存逻辑集合', saveCol.ok);
+  await win.loadURL(BASE + '/');
+  await until(`!![...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '集合')`);
+  await exec(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '集合').click(); true`);
+  await sleep(250);
+  check('集合分组头出现', await until(`!!document.querySelector('[data-tpath="col:文辑"]')`));
+  check('集合成员可见（含目录副文本）', await until(`!!document.querySelector('[data-tpath="${DEEP}"] [title="docs/level2/level3"]')`));
+  check('未归入集合兜底分组存在', await exec(`!!document.querySelector('[data-tpath="uncat"]')`));
+  await exec(`document.querySelector('[data-tpath="col:文辑"]').click(); true`);
+  await sleep(200);
+  check('分组头可折叠', await exec(`!document.querySelector('[data-tpath="${DEEP}"]')`));
+  await exec(`document.querySelector('[data-tpath="col:文辑"]').click(); true`);
+  await sleep(200);
+  await exec(`document.querySelector('[data-tpath="${DEEP}"]').click(); true`);
+  check('点开成员后跳转阅读并切回目录视图', await until(`location.pathname.includes('/read/${DEEP}') && !!document.querySelector('[data-kind="dir"][data-tpath="docs"]')`));
+  check('视图切换已持久化', await exec(`JSON.parse(localStorage.getItem('wb.filetree.view.${dsId}') || '"cols"') === 'tree'`));
+
+  // ---------- 13. 被引用数徽标 ----------
+  console.log('== 13. 被引用数徽标 ==');
+  await exec(`(() => { const c = document.querySelector('aside .overflow-auto'); if (c) c.scrollTop = 1e9; return true; })()`);
+  await sleep(300);
+  console.log('    (诊断) ly.md 行存在:', await exec(`!!document.querySelector('[data-tpath="ly.md"]')`));
+  console.log('    (诊断) ly.md 徽标存在:', await exec(`!!document.querySelector('[data-tpath="ly.md"] [title^="被 "]')`));
+  check('引用计数徽标出现（ly.md 被 note.md 引用）', await until(`!!document.querySelector('[data-tpath="ly.md"] [title="被 1 个文档引用"]')`, 15000));
+  await exec(`[...document.querySelectorAll('button')].find((b) => b.title.includes('隐藏被引用数')).click(); true`);
+  await sleep(200);
+  check('引用数开关隐藏徽标', await exec(`!document.querySelector('[data-tpath="ly.md"] [title^="被 "]')`));
+  check('开关状态已持久化', await exec(`JSON.parse(localStorage.getItem('wb.filetree.opts.${dsId}') || '{}').refs === false`));
+  await exec(`[...document.querySelectorAll('button')].find((b) => b.title.includes('显示被引用数')).click(); true`);
+
+  // ---------- 14. 拖拽插入引用 ----------
+  console.log('== 14. 拖入编辑器插引用 ==');
+  await win.loadURL(BASE + '/edit/' + encodeURIComponent('note.md'));
+  await until(`!!document.querySelector('.cm-editor') && !!window.__wb?.editor()`);
+  await sleep(400);
+  const dropRes = await exec(`(() => {
+    const view = window.__wb?.editor?.();
+    if (!view || !view.dom) return 'no-editor';
+    const r = view.dom.getBoundingClientRect();
+    const dt = new DataTransfer();
+    dt.setData('application/x-wb-file', 'ly.md');
+    // Chromium 的 DragEvent 构造器不携带 dataTransfer，用 defineProperty 注入；
+    // 分栏下第一个 .cm-editor 是预览面板，必须直接派发到可编辑视图的 dom
+    const ev = new MouseEvent('drop', { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + Math.min(r.height / 2, 200) });
+    Object.defineProperty(ev, 'dataTransfer', { value: dt });
+    view.contentDOM.dispatchEvent(ev);
+    return JSON.stringify({ res: view.state.sliceDoc(0).includes('ly.md') ? 'ok' : 'miss', doc: view.state.sliceDoc(0).slice(0, 60) });
+  })()`);
+  check('拖入编辑器落成文件名引用', (() => { try { return JSON.parse(dropRes).res === 'ok'; } catch { return false; } })(), dropRes);
+  await exec(`window.__wb.save(); true`); // 保存落盘，清掉脏态与草稿，避免整页导航被拦截
+  await sleep(400);
+
+  // ---------- 15. 剪贴板与副本 ----------
+  console.log('== 15. 剪贴板与副本 ==');
+  await win.loadURL(BASE + '/');
+  await until(`!!document.querySelector('[data-tpath="docs"]')`);
+  await exec(`(() => { const c = document.querySelector('aside .overflow-auto'); if (c) c.scrollTop = 1e9; return true; })()`);
+  await sleep(250);
+  await exec(`document.querySelector('[data-tpath="top.md"]').scrollIntoView(); true`);
+  await sleep(150);
+  await exec(`document.querySelector('[data-tpath="top.md"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); true`);
+  await until(`[...document.querySelectorAll('[role="menuitem"]')].some((e) => e.textContent.includes('创建副本'))`);
+  await exec(`[...document.querySelectorAll('[role="menuitem"]')].find((e) => e.textContent.includes('创建副本')).click(); true`);
+  check('创建副本生成「top - 副本.md」', await until(`!!document.querySelector('[data-tpath="top - 副本.md"]')`, 10000));
+  await exec(`document.querySelector('[data-tpath="top - 副本.md"]').focus(); true`);
+  await exec(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', ctrlKey: true, bubbles: true })); true`);
+  await sleep(150);
+  check('剪切行半透明标记', await exec(`document.querySelector('[data-tpath="top - 副本.md"]')?.className.includes('opacity-50')`));
+  await exec(`(() => { const c = document.querySelector('aside .overflow-auto'); if (c) c.scrollTop = 0; return true; })()`);
+  await sleep(250);
+  await exec(`document.querySelector('[data-tpath="docs"]').focus(); true`);
+  await exec(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true })); true`);
+  check('粘贴=移动到目标目录', await until(`!!document.querySelector('[data-tpath="docs/top - 副本.md"]')`));
+  check('原位置行已消失', await exec(`!document.querySelector('[data-tpath="top - 副本.md"]')`));
+
+  // ---------- 16. Browse 共享菜单 ----------
+  console.log('== 16. Browse 右键 ==');
+  await win.loadURL(BASE + '/browse');
+  await until(`!!document.querySelector('ul button')`);
+  await exec(`document.querySelector('ul button').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); true`);
+  check('浏览页右键共享菜单（含重命名/创建副本）',
+    await until(`[...document.querySelectorAll('[role="menuitem"]')].some((e) => e.textContent.includes('重命名')) && [...document.querySelectorAll('[role="menuitem"]')].some((e) => e.textContent.includes('创建副本'))`));
+  await exec(`document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+
+  // ---------- 17. 侧栏宽度 ----------
+  console.log('== 17. 侧栏宽度 ==');
+  await win.loadURL(BASE + '/');
+  await until(`!!document.querySelector('aside')`);
+  const w0 = await exec(`document.querySelector('aside').getBoundingClientRect().width`);
+  await exec(`(() => {
+    const h = [...document.querySelectorAll('aside > div')].find((e) => e.className.includes('cursor-col-resize'));
+    if (!h) return false;
+    h.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: Math.round(${w0}) }));
+    window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: Math.round(${w0} + 80) }));
+    return true;
+  })()`);
+  await sleep(400); // 防抖落盘窗口
+  await exec(`window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); true`);
+  await sleep(150);
+  const w1 = await exec(`document.querySelector('aside').getBoundingClientRect().width`);
+  check('拖拽调整侧栏宽度（+80px）', Math.abs(w1 - (w0 + 80)) < 4, `w0=${w0} w1=${w1}`);
+  check('宽度已持久化', await exec(`Math.abs(Number(localStorage.getItem('wb.sidebar.w')) - ${w0 + 80}) < 4`),
+    'stored=' + (await exec(`localStorage.getItem('wb.sidebar.w')`)));
+
+  // ---------- 18. 前缀语法 ----------
+  console.log('== 18. 前缀语法 ==');
+  await exec(setFilter('>论语'));
+  await sleep(150);
+  await exec(`(() => { const i = document.querySelector('input[placeholder^="过滤目录与文件"]'); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true; })()`);
+  check('Enter 直达全文检索', await until(`location.pathname === '/search' && location.search.includes('%E8%AE%BA%E8%AF%AD') || location.search.includes('q=')`));
+
+  // ---------- 19. 新建模板（服务端口径） ----------
+  console.log('== 19. 新建模板 ==');
+  const tplB = await post('/api/file/create', { dsId, dir: '', kind: 'md', name: 'tpl-blank.md', title: 'TplB', bodyTemplate: 'blank' });
+  const tplD = await post('/api/file/create', { dsId, dir: '', kind: 'md', name: 'tpl-date.md', title: 'TplD', bodyTemplate: 'title-date' });
+  const cb = await j('/api/file?path=' + encodeURIComponent('tpl-blank.md'));
+  const cd = await j('/api/file?path=' + encodeURIComponent('tpl-date.md'));
+  check('空白模板内容为空', tplB.ok && cb.content === '', JSON.stringify(cb.content));
+  check('标题+日期模板含日期行', tplD.ok && cd.content.startsWith('# TplD') && cd.content.includes('日期：'), JSON.stringify(cd.content));
+
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
   server?.kill();
   app.exit(fail > 0 ? 1 : 0);

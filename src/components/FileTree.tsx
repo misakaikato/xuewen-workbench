@@ -628,7 +628,6 @@ export function FileTree({
       el.scrollIntoView({ block: 'nearest' });
       setPendingFocus(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingFocus, start, end]);
   const focusIdx = (i: number) => {
     const clamped = Math.max(0, Math.min(rows.length - 1, i));

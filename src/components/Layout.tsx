@@ -73,11 +73,17 @@ export function Layout() {
     const up = () => {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
-      try { localStorage.setItem('wb.sidebar.w', String(Math.round(sideWRef.current))); } catch { /* 忽略 */ }
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
   };
+  // 宽度防抖持久化：拖完 200ms 无变化后落盘，避免依赖 up 回调的渲染时序
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try { localStorage.setItem('wb.sidebar.w', String(Math.round(sideW))); } catch { /* 忽略 */ }
+    }, 200);
+    return () => clearTimeout(t);
+  }, [sideW]);
 
   const sidebarContent = (
     <div className="flex flex-col h-full">
