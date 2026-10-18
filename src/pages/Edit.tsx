@@ -22,6 +22,7 @@ import { livePreview } from '@/components/editor/livePreview';
 import { mdLang } from '@/components/editor/mdLanguage';
 import { linksExtensionFor, pushDocLinks } from '@/components/editor/autoLinks';
 import { corpusRefsExtension, pushCorpusNames } from '@/components/editor/corpusRefs';
+import { FormatToolbar } from '@/components/editor/FormatToolbar';
 import { CorpusRefPopover, type CorpusRefRequest } from '@/components/CorpusRefPopover';
 import { detectLineSeparator } from '@/components/editor/lineSeparator';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
@@ -97,6 +98,13 @@ export default function Edit() {
   const [showBacklinks, setShowBacklinks] = useState(false);
   const splitPreviewRef = useRef<HTMLDivElement | null>(null);
   const syncLockRef = useRef(0);
+  // 工具栏重渲染触发：选区/文档变化时递增版本（扩展身份稳定，随 reconfigure 复用）
+  const [fmtVer, setFmtVer] = useState(0);
+  const fmtListenerRef = useRef(
+    EditorView.updateListener.of((u) => {
+      if (u.docChanged || u.selectionSet) setFmtVer((v) => v + 1);
+    })
+  );
 
   const isJson = file?.type === 'json';
   const effMode: 'source' | 'preview' | 'split' | 'live' = isJson ? 'source' : mode;
@@ -451,6 +459,7 @@ export default function Edit() {
   const extensions = useMemo<Extension[]>(() => {
     const list: Extension[] = [
       EditorState.lineSeparator.of(lineSep),
+      fmtListenerRef.current,
       ...editorBaseExtensions({ lineNumbers: !isLive, foldGutter: !isLive }),
     ];
     if (isJson) {
@@ -507,6 +516,7 @@ export default function Edit() {
       extensions={extensions}
       onCreate={(v) => {
         viewRef.current = v;
+        setFmtVer((x) => x + 1);
       }}
       onDocChanged={onDocChanged}
     />
@@ -615,35 +625,38 @@ export default function Edit() {
       )}
 
       {/* 编辑区 */}
-      <div className="flex-1 min-h-0 flex">
-        {effMode !== 'preview' && (
-          <div className={`min-w-0 ${effMode === 'split' ? 'w-1/2 border-r border-border' : 'flex-1'}`}>{editorEl}</div>
-        )}
-        {(effMode === 'preview' || effMode === 'split') && (
-          <div
-            ref={splitPreviewRef}
-            className={`min-w-0 overflow-auto p-6 ${effMode === 'split' ? 'w-1/2' : 'flex-1'}`}
-          >
-            <ReadOnlyDoc
-              key={relPath + (effMode === 'split' ? ':split' : ':preview')}
-              content={content}
-              docPath={relPath}
-              refNames={refNames}
-              collections={collections}
-              links={docLinks}
-            />
-          </div>
-        )}
-        {showBacklinks && !isJson && (
-          <aside data-wb-backlinks className="hidden lg:block w-64 shrink-0 border-l border-border overflow-x-hidden overflow-y-auto p-3">
-            <BacklinksPanel
-              path={relPath}
-              dsId={dsId}
-              onOpen={(src, term) => navigate('/read/' + encPath(src) + '?h=' + encodeURIComponent(term))}
-              onClose={() => setShowBacklinks(false)}
-            />
-          </aside>
-        )}
+      <div className="flex-1 min-h-0 flex flex-col">
+        {isLive && <FormatToolbar view={viewRef.current} version={fmtVer} />}
+        <div className="flex-1 min-h-0 flex">
+          {effMode !== 'preview' && (
+            <div className={`min-w-0 ${effMode === 'split' ? 'w-1/2 border-r border-border' : 'flex-1'}`}>{editorEl}</div>
+          )}
+          {(effMode === 'preview' || effMode === 'split') && (
+            <div
+              ref={splitPreviewRef}
+              className={`min-w-0 overflow-auto p-6 ${effMode === 'split' ? 'w-1/2' : 'flex-1'}`}
+            >
+              <ReadOnlyDoc
+                key={relPath + (effMode === 'split' ? ':split' : ':preview')}
+                content={content}
+                docPath={relPath}
+                refNames={refNames}
+                collections={collections}
+                links={docLinks}
+              />
+            </div>
+          )}
+          {showBacklinks && !isJson && (
+            <aside data-wb-backlinks className="hidden lg:block w-64 shrink-0 border-l border-border overflow-x-hidden overflow-y-auto p-3">
+              <BacklinksPanel
+                path={relPath}
+                dsId={dsId}
+                onOpen={(src, term) => navigate('/read/' + encPath(src) + '?h=' + encodeURIComponent(term))}
+                onClose={() => setShowBacklinks(false)}
+              />
+            </aside>
+          )}
+        </div>
       </div>
 
       {/* 语料引用解析弹层 */}
