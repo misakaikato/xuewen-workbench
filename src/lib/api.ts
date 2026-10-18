@@ -146,7 +146,7 @@ export const api = {
     req<{ ok: boolean; mtimeMs: number }>('/api/file', json('PUT', { path, content, baseMtimeMs, dsId })),
   saveAs: (path: string, content: string, dsId: string) =>
     req<{ ok: boolean }>('/api/file/save-as', json('POST', { path, content, dsId })),
-  createEntry: (body: { dsId: string | null; dir: string; kind: 'md' | 'folder'; name: string; title?: string; docType?: DocType }) =>
+  createEntry: (body: { dsId: string | null; dir: string; kind: 'md' | 'folder'; name: string; title?: string; docType?: DocType; bodyTemplate?: 'blank' | 'title' | 'title-date' }) =>
     req<{ ok: boolean; kind: 'md' | 'folder'; path: string }>('/api/file/create', json('POST', body)),
   renameEntry: (body: { dsId: string | null; path: string; newName: string }) =>
     req<EntryResult & { titleUpdated: boolean }>('/api/file/rename', json('POST', body)),

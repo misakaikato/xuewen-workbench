@@ -173,6 +173,9 @@ async function main() {
   check('首字母跳转到 top.md', (await exec(`document.activeElement?.getAttribute('data-tpath')`)) === 'top.md');
   await exec(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); true`);
   check('Enter 打开文件', await until(`location.pathname.includes('/read/top.md')`));
+  // 滚回顶部让 notes 行进入渲染窗口（虚拟滚动：未渲染的行不在 DOM 里）
+  await exec(`(() => { const c = document.querySelector('aside .overflow-auto'); if (c) c.scrollTop = 0; return true; })()`);
+  await sleep(250);
   await exec(`document.querySelector('[data-tpath="notes"]').focus(); true`);
   await exec(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true })); true`);
   check('F2 弹出重命名对话框', await until(`!!document.querySelector('[role="dialog"]') && document.querySelector('[role="dialog"]').textContent.includes('重命名')`));
@@ -183,6 +186,10 @@ async function main() {
   console.log('== 8. 复制与在系统中显示 ==');
   win.webContents.focus();
   if (!(await exec('document.hasFocus()'))) { win.show(); await sleep(300); win.webContents.focus(); }
+  await exec(`(() => { const c = document.querySelector('aside .overflow-auto'); if (c) c.scrollTop = 0; return true; })()`);
+  await sleep(250);
+  await exec(`document.querySelector('[data-tpath="${DEEP}"]').scrollIntoView(); true`);
+  await sleep(150);
   await exec(`document.querySelector('[data-tpath="${DEEP}"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); true`);
   check('右键菜单含「在系统中显示」',
     await until(`[...document.querySelectorAll('[role="menuitem"]')].some((e) => e.textContent.includes('在系统中显示'))`));
@@ -218,6 +225,8 @@ async function main() {
   await until(`!!document.querySelector('[data-tpath="top.md"]')`);
   check('草稿徽标出现在文件行', await until(`!!document.querySelector('[data-tpath="top.md"] svg.text-amber-600')`));
   fs.writeFileSync(path.join(corpus, 'f00.md.meta.json'), '{bad json');
+  await exec(`(() => { const c = document.querySelector('aside .overflow-auto'); if (c) c.scrollTop = 0; return true; })()`);
+  await sleep(250);
   check('元数据问题徽标出现在文件行', await until(`!!document.querySelector('[data-tpath="f00.md"] svg.text-red-500')`, 20000));
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
   server?.kill();

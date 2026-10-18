@@ -455,11 +455,34 @@ export default function Edit() {
   const openLinkTargetRef = useRef(openLinkTarget);
   openLinkTargetRef.current = openLinkTarget;
 
+  // 目录树拖入插入引用：文件名落在鼠标位置；无自定义 payload 的拖放保持 CM 原生行为
+  const dropInsertExtRef = useRef(
+    EditorView.domEventHandlers({
+      dragover: (event) => {
+        if (event.dataTransfer && Array.from(event.dataTransfer.types).includes('application/x-wb-file')) {
+          event.preventDefault();
+        }
+        return false;
+      },
+      drop: (event, view) => {
+        const p = event.dataTransfer?.getData('application/x-wb-file');
+        if (!p) return false;
+        event.preventDefault();
+        const name = p.split('/').pop() || p;
+        const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+        const at = pos ?? view.state.selection.main.head;
+        view.dispatch({ changes: { from: at, insert: name }, selection: { anchor: at + name.length } });
+        return true;
+      },
+    })
+  );
+
   // 编辑器扩展：显式行分隔符保证字节精确；实时预览/源码按模式切换（重配置不重建）
   const extensions = useMemo<Extension[]>(() => {
     const list: Extension[] = [
       EditorState.lineSeparator.of(lineSep),
       fmtListenerRef.current,
+      dropInsertExtRef.current,
       ...editorBaseExtensions({ lineNumbers: !isLive, foldGutter: !isLive }),
     ];
     if (isJson) {

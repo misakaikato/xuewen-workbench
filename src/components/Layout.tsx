@@ -56,6 +56,29 @@ export function Layout() {
     ? (libraries.find((l) => l.id === dsId)?.name ?? config.baseDir)
     : '未打开资料库';
 
+  // 侧栏宽度：可拖拽调整并持久化（仅桌面侧栏；抽屉固定宽）
+  const [sideW, setSideW] = useState(() => {
+    const n = Number(localStorage.getItem('wb.sidebar.w'));
+    return Number.isFinite(n) && n >= 200 && n <= 480 ? n : 256;
+  });
+  const sideWRef = useRef(sideW);
+  sideWRef.current = sideW;
+  const onResizeDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const start = e.clientX;
+    const w0 = sideWRef.current;
+    const move = (ev: MouseEvent) => {
+      setSideW(Math.max(200, Math.min(480, w0 + (ev.clientX - start))));
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      try { localStorage.setItem('wb.sidebar.w', String(Math.round(sideWRef.current))); } catch { /* 忽略 */ }
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
+
   const sidebarContent = (
     <div className="flex flex-col h-full">
       <div className="p-2 border-b border-sidebar-border">
@@ -67,18 +90,32 @@ export function Layout() {
               setTreeFilter('');
               if (!treeFilter) (e.target as HTMLInputElement).blur();
             }
+            // 前缀语法：>关键词 回车直达全文检索
+            if (e.key === 'Enter') {
+              const v = treeFilter.trim();
+              if (v.startsWith('>')) {
+                const qs = v.slice(1).trim();
+                if (qs) navigate('/search?q=' + encodeURIComponent(qs));
+              }
+            }
           }}
-          placeholder="过滤目录与文件…（Esc 清空）"
+          placeholder="过滤目录与文件…（Esc 清空，> 转全文）"
           className="w-full text-xs px-2 py-1.5 rounded border border-input bg-background"
         />
       </div>
-      <div className="flex-1 overflow-auto p-1">
+      <div className="flex-1 min-h-0">
         {tree ? (
           <FileTree tree={tree} filter={treeFilter} onFilterChange={setTreeFilter} />
-        ) : (
-          <div className="text-xs text-muted-foreground p-3">
-            {st?.scanning ? '正在扫描资料库…' : '暂无目录数据'}
+        ) : st?.scanning ? (
+          // 扫描中骨架屏：代替干巴巴的一行字
+          <div className="p-2 space-y-1.5" aria-label="正在扫描资料库">
+            <div className="h-6 rounded bg-sidebar-accent/70 animate-pulse w-3/5" />
+            {Array.from({ length: 9 }, (_, i) => (
+              <div key={i} className="h-7 rounded bg-sidebar-accent/60 animate-pulse" style={{ width: `${92 - (i % 4) * 14}%` }} />
+            ))}
           </div>
+        ) : (
+          <div className="text-xs text-muted-foreground p-3">暂无目录数据</div>
         )}
       </div>
     </div>
@@ -200,8 +237,17 @@ export function Layout() {
 
       <div className="flex-1 flex min-h-0">
         {!collapsed && (
-          <aside className="hidden md:block w-64 shrink-0 border-r border-sidebar-border bg-sidebar overflow-hidden">
+          <aside
+            className="hidden md:block shrink-0 border-r border-sidebar-border bg-sidebar overflow-hidden relative"
+            style={{ width: sideW }}
+          >
             {sidebarContent}
+            <div
+              onMouseDown={onResizeDown}
+              className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-border z-10"
+              title="拖拽调整侧栏宽度"
+              aria-hidden
+            />
           </aside>
         )}
         {drawer && (

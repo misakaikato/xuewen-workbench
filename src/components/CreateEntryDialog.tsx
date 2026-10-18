@@ -43,12 +43,13 @@ export function CreateEntryDialog({
   const [title, setTitle] = useState('');
   const [fileName, setFileName] = useState('');
   const [docType, setDocType] = useState<DocType>('文章');
+  const [bodyTemplate, setBodyTemplate] = useState<'blank' | 'title' | 'title-date'>('title');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (target) {
-      setTitle(''); setFileName(''); setDocType('文章'); setError(null); setBusy(false);
+      setTitle(''); setFileName(''); setDocType('文章'); setBodyTemplate('title'); setError(null); setBusy(false);
     }
   }, [target]);
 
@@ -67,7 +68,7 @@ export function CreateEntryDialog({
     try {
       const r = await api.createEntry({
         dsId, dir: target.dir, kind: target.kind, name: rawName,
-        ...(isDoc ? { title: title.trim() || undefined, docType } : {}),
+        ...(isDoc ? { title: title.trim() || undefined, docType, bodyTemplate } : {}),
       });
       onCreated(r.path, target.kind);
     } catch (ex) {
@@ -105,6 +106,17 @@ export function CreateEntryDialog({
                     <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {DOC_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>初始内容</Label>
+                  <Select value={bodyTemplate} onValueChange={(v) => setBodyTemplate(v as typeof bodyTemplate)}>
+                    <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="title">标准（# 标题）</SelectItem>
+                      <SelectItem value="blank">空白</SelectItem>
+                      <SelectItem value="title-date">标题 + 日期</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

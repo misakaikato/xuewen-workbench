@@ -607,7 +607,12 @@ app.post('/api/file/create', async (req, res) => {
       return res.status(409).json({ error: pathTaken(abs) ? '同名文档已存在' : '同名元数据文件已存在（' + name + SIDECAR_SUFFIX + '）', exists: true, path: rel });
     }
     const now = new Date();
-    const body = '# ' + title + '\n';
+    // 初始内容模板：标准（# 标题）/ 空白 / 标题+日期；content_hash 始终与实际字节一致
+    const tpl = ['blank', 'title', 'title-date'].includes(b.bodyTemplate) ? b.bodyTemplate : 'title';
+    const body =
+      tpl === 'blank' ? '' :
+      tpl === 'title-date' ? '# ' + title + '\n\n- 日期：' + localDate(now) + '\n\n' :
+      '# ' + title + '\n';
     const meta = {
       id: 'doc_' + crypto.randomUUID(),
       title,

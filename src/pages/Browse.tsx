@@ -1,9 +1,12 @@
-// 文件列表浏览：按目录/类型筛选，面包屑，路径可辨认同名文件
+// 文件列表浏览：按目录/类型筛选，面包屑，路径可辨认同名文件；右键与目录树共享同一套条目操作
 import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useApp } from '@/store/app';
 import type { TreeNode, FileEntry } from '@/lib/types';
 import { extIcon } from '@/lib/extIcon';
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
+import { ActionItems } from '@/components/EntryMenu';
+import { EntryActionDialogs, type EntryAction } from '@/components/EntryActionDialogs';
 
 function collect(node: TreeNode, dirPrefix: string, out: FileEntry[]) {
   const inScope = (p: string) => !dirPrefix || p === dirPrefix || p.startsWith(dirPrefix + '/');
@@ -12,8 +15,9 @@ function collect(node: TreeNode, dirPrefix: string, out: FileEntry[]) {
 }
 
 export default function Browse() {
-  const { tree } = useApp();
+  const { tree, dsId, refreshTree } = useApp();
   const [params] = useSearchParams();
+  const [action, setAction] = useState<EntryAction | null>(null);
   const dir = params.get('dir') || '';
   const type = params.get('type') || '';
   const [localFilter, setLocalFilter] = useState('');
@@ -74,6 +78,8 @@ export default function Browse() {
         <ul className="bg-card border border-border rounded-lg divide-y divide-border">
           {files.map((f) => (
             <li key={f.path}>
+              <ContextMenu>
+              <ContextMenuTrigger asChild>
               <button
                 className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-accent/60 text-left"
                 onClick={() => navigate('/read/' + f.path.split('/').map(encodeURIComponent).join('/'))}
@@ -85,9 +91,22 @@ export default function Browse() {
                   {(f.size / 1024).toFixed(1)} KB
                 </span>
               </button>
+              </ContextMenuTrigger>
+              <ContextMenuContent>
+                <ActionItems
+                  entry={{ path: f.path, name: f.name, isDir: false }}
+                  onAction={setAction}
+                  dsId={dsId}
+                  onDuplicated={() => { refreshTree().catch(() => {}); }}
+                />
+              </ContextMenuContent>
+              </ContextMenu>
             </li>
           ))}
         </ul>
+      )}
+      {tree && (
+        <EntryActionDialogs action={action} tree={tree} onClose={() => setAction(null)} onDone={() => setAction(null)} />
       )}
     </div>
   );
