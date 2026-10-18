@@ -696,6 +696,64 @@ async function main() {
   }
 
   // ---------- E7. RAG 参数配置 ----------
+  // ---------- E6.5 搜索会话：结果打开定位到命中处 + 返回恢复结果与滚动位置 ----------
+  console.log('== E6.5 搜索会话恢复 ==');
+  {
+    // 造一个多段落长文档（含标记词），chokidar 增量后智能检索出足够长的列表可滚动
+    const LONG = '笔记/长文滚动测试.md';
+    // 每段 >600 字：超出切块聚合上限，每段独立成块（90 段 → 90 块 → 长列表可滚）
+    const paras = Array.from({ length: 90 }, (_, i) =>
+      `长文文件段落 ${i + 1}：` + '滚动恢复验证专用填充文本，超过单块聚合上限以确保独立成块。'.repeat(22));
+    fs.writeFileSync(path.join(tmpCorpus, 'ds-a', '笔记', '长文滚动测试.md'), '# 长文滚动测试\n\n' + paras.join('\n\n') + '\n');
+    await sleep(3500); // chokidar 防抖 + 增量重建 + mock 嵌入
+    await win.loadURL(BASE + '/search?mode=smart&q=' + encodeURIComponent('长文文件'));
+    await waitFor('document.querySelectorAll("li").length >= 30', '智能结果出现（≥30 段）');
+    // 滚到非顶部非底部位置并记录
+    const scrolled = await exec(`(() => {
+      const m = document.querySelector('main');
+      const max = m.scrollHeight - m.clientHeight;
+      m.scrollTop = Math.max(0, Math.min(max * 0.6, max - 20));
+      return JSON.stringify({ top: Math.round(m.scrollTop), max: Math.round(max) });
+    })()`);
+    const sc0 = JSON.parse(scrolled);
+    await sleep(400); // 让 scroll 事件被监听记录
+    check('搜索页可滚且滚到中部', sc0.max > 100 && sc0.top > 40, scrolled);
+    const scrolledTo = sc0.top;
+    // 点「长文滚动测试」的结果卡（其正文确含完整查询词，定位断言才有意义）
+    await exec(`(() => {
+      const li = [...document.querySelectorAll('li')].find((x) => x.textContent.includes('长文滚动测试'));
+      if (!li) return false;
+      li.querySelector('button').click();
+      return true;
+    })()`);
+    await sleep(1200);
+    // 文档打开：定位到首个命中（高亮在文档滚动容器的视口内即算定位成功）
+    const readState = await exec(`(() => {
+      const sc = document.querySelector('.wb-paper');
+      // md（CM）高亮是 span.cm-rd-hl，txt/word/json（DOM walker）是真 <mark>
+      const mk = document.querySelector('mark, .cm-rd-hl');
+      if (!sc) return JSON.stringify({ err: 'no-doc' });
+      const marks = document.querySelectorAll('mark, .cm-rd-hl').length;
+      if (!mk) return JSON.stringify({ top: Math.round(sc.scrollTop), inView: false, marks });
+      const r = mk.getBoundingClientRect();
+      const sr = sc.getBoundingClientRect();
+      return JSON.stringify({ top: Math.round(sc.scrollTop), inView: r.top >= sr.top - 8 && r.bottom <= sr.bottom + 8, marks });
+    })()`);
+    const rs = JSON.parse(readState);
+    check('文档打开定位到命中处（高亮在视口）', rs.inView === true, readState);
+    check('命中词高亮存在', rs.marks > 0, readState);
+    // 返回：结果恢复 + 滚动位置恢复
+    await exec('history.back(); true');
+    await sleep(1500);
+    const backState = await exec(`(() => {
+      const m = document.querySelector('main');
+      return JSON.stringify({ li: document.querySelectorAll('li').length, top: Math.round(m.scrollTop) });
+    })()`);
+    const bs = JSON.parse(backState);
+    check('返回后结果即时恢复（无重查闪烁）', bs.li > 0, backState);
+    check('返回后滚动位置恢复', Math.abs(bs.top - scrolledTo) < 30, `期望≈${scrolledTo} 实际 ${bs.top}`);
+  }
+
   console.log('== E7. RAG 参数配置 ==');
   {
     const c0 = await j('/api/rag/config');

@@ -314,6 +314,21 @@ export default function Read() {
     const sc = scrollRef.current;
     if (!sc) return;
     const apply = () => {
+      // 搜索命中定位优先：?h= 词落到首个命中处（高亮已由装饰/DOM walker 生成）
+      if (highlightTerm) {
+        if (file.type === 'markdown' && viewRef.current) {
+          const v = viewRef.current;
+          const doc = v.state.sliceDoc(0).toLowerCase();
+          const idx = doc.indexOf(highlightTerm.toLowerCase());
+          if (idx >= 0 && scrollDocToPos(v, idx, sc, Math.round(sc.clientHeight / 3))) return;
+        } else {
+          const mark = contentRef.current?.querySelector('mark');
+          if (mark) {
+            sc.scrollTop = Math.max(0, (mark as HTMLElement).offsetTop - sc.clientHeight / 3);
+            return;
+          }
+        }
+      }
       const anchor = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
       if (anchor) {
         if (file.type === 'markdown' && viewRef.current) {
@@ -345,7 +360,7 @@ export default function Read() {
     const timer = setTimeout(apply, 60);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file, viewReady, location.hash, dsId, relPath]);
+  }, [file, viewReady, location.hash, dsId, relPath, highlightTerm]);
 
   // 记录阅读位置
   useEffect(() => {

@@ -8,6 +8,22 @@ import type { SearchResult } from '@/lib/types';
 import { extIcon } from '@/lib/extIcon';
 import { SearchX, Loader2, Sparkles } from 'lucide-react';
 
+// 搜索会话缓存：路由离开 Search 后返回时恢复结果与滚动位置，免去重新检索。
+// key = dsId|mode|q；筛选与智能 limit 一并随缓存恢复（不在 URL 里的状态也不丢）
+interface SearchSession {
+  key: string;
+  input: string;
+  types: string[];
+  dir: string;
+  smartLimit: number;
+  results: SearchResult[];
+  smart: RagSearchResponse | null;
+  terms: string[];
+  total: number;
+  scrollTop: number;
+}
+let searchSession: SearchSession | null = null;
+
 const TYPE_OPTIONS = [
   { v: '.md', label: 'Markdown' },
   { v: '.txt', label: 'TXT' },
@@ -59,6 +75,67 @@ export default function Search() {
   const [err, setErr] = useState<string | null>(null);
   const navigate = useNavigate();
   const seqRef = useRef(0);
+  const hydratedRef = useRef(false);
+  // 最新状态镜像：供卸载时保存会话读取（cleanup 闭包捕获的是旧渲染值）
+  const latestRef = useRef({ input, types, dir, mode, smartLimit, results, smart, terms, total, scroll: 0 });
+  latestRef.current = { input, types, dir, mode, smartLimit, results, smart, terms, total, scroll: latestRef.current.scroll };
+
+  // 会话恢复：同一库同一查询返回时直接还原（跳过重新检索），并恢复滚动位置
+  useEffect(() => {
+    const q0 = new URLSearchParams(window.location.search).get('q') || '';
+    const m0 = new URLSearchParams(window.location.search).get('mode') === 'smart' ? 'smart' : 'exact';
+    const key = `${dsId}|${m0}|${q0}`;
+    // 空会话不恢复（StrictMode 双挂载首轮会保存空态；也避免空查询恢复无意义状态）
+    if (searchSession && searchSession.key === key && searchSession.input === q0 &&
+        (searchSession.results.length > 0 || searchSession.smart)) {
+      const c = searchSession;
+      setInput(c.input);
+      setTypes(c.types);
+      setDir(c.dir);
+      setSmartLimit(c.smartLimit);
+      setResults(c.results);
+      setSmart(c.smart);
+      setTerms(c.terms);
+      setTotal(c.total);
+      hydratedRef.current = true;
+      // 恢复滚动：等列表渲染出足够高度再落。不依赖 rAF（后台标签页会暂停帧回调），
+      // 用短间隔定时器轮询，设足即停
+      let tries = 0;
+      const restoreScroll = () => {
+        const main = document.querySelector('main');
+        if (!main) return;
+        main.scrollTop = c.scrollTop;
+        if (main.scrollTop < c.scrollTop - 2 && ++tries < 30) setTimeout(restoreScroll, 33);
+      };
+      setTimeout(restoreScroll, 0);
+    }
+    // 滚动位置持续记录到镜像：卸载时 React 已移除 DOM、main 高度塌缩、
+    // scrollTop 被钳为 0——cleanup 里读 DOM 拿到的永远是 0
+    const main = document.querySelector('main');
+    const onScroll = () => {
+      if (!main) return;
+      // 路由切换时内容塌缩会触发 scrollTop→0 的 scroll 事件——不覆盖已记录的
+      // 真实位置（塌缩态 scrollHeight 远小于正常列表高度）
+      if (main.scrollHeight - main.clientHeight < main.clientHeight) return;
+      latestRef.current.scroll = main.scrollTop;
+    };
+    main?.addEventListener('scroll', onScroll, { passive: true });
+    const save = () => {
+      const l = latestRef.current;
+      searchSession = {
+        key: `${dsId}|${l.mode}|${l.input.trim()}`,
+        input: l.input.trim(),
+        types: l.types, dir: l.dir, smartLimit: l.smartLimit,
+        results: l.results, smart: l.smart, terms: l.terms, total: l.total,
+        scrollTop: l.scroll,
+      };
+    };
+    return () => {
+      main?.removeEventListener('scroll', onScroll);
+      save(); // 组件卸载（路由切走）即保存
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const doSearch = useMemo(
     () => async (query: string, ty: string[], d: string, m: 'exact' | 'smart') => {
@@ -104,6 +181,10 @@ export default function Search() {
   useEffect(() => {
     const p: Record<string, string> = input.trim() ? { q: input.trim() } : {};
     if (mode === 'smart') p.mode = 'smart';
+    if (hydratedRef.current) {
+      hydratedRef.current = false; // 会话已恢复：本轮跳过重查，闪退即无
+      return;
+    }
     const t = setTimeout(() => {
       setParams(p, { replace: true });
       doSearch(input, types, dir, mode);
