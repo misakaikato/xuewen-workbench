@@ -154,6 +154,9 @@ export const api = {
     req<EntryResult>('/api/file/move', json('POST', body)),
   deleteEntry: (body: { dsId: string | null; path: string }) =>
     req<EntryResult & { trashedTo: 'os' | 'local'; trashPath: string | null }>('/api/file/delete', json('POST', body)),
+  duplicateEntry: (body: { dsId: string | null; path: string; targetDir?: string }) =>
+    req<{ ok: boolean; path: string; kind: string }>('/api/file/duplicate', json('POST', body)),
+  linkCounts: () => req<{ dsId: string; counts: Record<string, number> }>('/api/links/counts'),
   metaIssues: () => req<{ dsId: string; total: number; issues: MetaIssue[] }>('/api/meta/issues'),
   importMeta: (body: { dsId: string | null; jsonl: string; mode: 'preview' | 'apply'; overwrite?: boolean }) =>
     req<MetaImportResponse>('/api/meta/import', json('POST', body)),

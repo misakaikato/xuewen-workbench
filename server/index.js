@@ -634,7 +634,83 @@ app.post('/api/file/create', async (req, res) => {
   }
 });
 
-// ---------- 重命名 / 移动 / 删除（旁注随行） ----------
+// ---------- 复制 / 创建副本 ----------
+
+// 为副本生成不冲突的名称：名称.EXT -> 名称 - 副本.EXT（再冲突则 副本 2、3…）；目录同理
+function dupName(base, ext, taken) {
+  for (let i = 1; ; i++) {
+    const n = `${base} - 副本${i > 1 ? ' ' + i : ''}${ext}`;
+    if (!taken(n)) return n;
+  }
+}
+
+// 复制后重生成旁注 id，避免重复 id 问题；非法 JSON 的旁注原样复制（问题会照常提示）
+function copySidecarWithNewId(srcAbs, dstAbs) {
+  try {
+    const raw = fs.readFileSync(srcAbs, 'utf8');
+    try {
+      const meta = JSON.parse(raw);
+      if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
+        meta.id = 'doc_' + crypto.randomUUID();
+        return fs.writeFileSync(dstAbs, JSON.stringify(meta, null, 2) + '\n');
+      }
+    } catch { /* 非法 JSON：原样复制 */ }
+    fs.writeFileSync(dstAbs, raw);
+  } catch { /* 源旁注不存在：跳过 */ }
+}
+
+// 复制文档/文件夹（含旁注；目录递归，内部旁注一并重生成 id）。targetDir 缺省为源所在目录
+app.post('/api/file/duplicate', async (req, res) => {
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const b = req.body || {};
+  if (b.dsId && b.dsId !== lib.id) return res.status(409).json({ error: '数据源已切换，请刷新后重试', stale: true });
+  try {
+    const rel = validateEntryPath(String(b.path || ''));
+    const srcAbs = resolveWithin(lib, rel);
+    let st;
+    try { st = fs.statSync(srcAbs); } catch { return res.status(404).json({ error: '源路径不存在（可能已被移动或删除）', missing: true }); }
+    const isDir = st.isDirectory();
+    const srcDir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
+    const targetDir = b.targetDir != null ? validateRelDir(String(b.targetDir)) : srcDir;
+    const dstDirAbs = resolveWithin(lib, targetDir);
+    const dstDirStat = fs.statSync(dstDirAbs);
+    if (!dstDirStat.isDirectory()) throw badRequest('目标不是目录');
+    if (targetDir === rel || targetDir.startsWith(rel + '/')) throw badRequest('不能复制到自身内部');
+
+    const fileName = path.posix.basename(rel);
+    const ext = isDir ? '' : path.posix.extname(fileName);
+    const base = ext ? fileName.slice(0, -ext.length) : fileName;
+    const taken = (n) => pathTaken(path.join(dstDirAbs, n));
+    const newName = dupName(base, ext, taken);
+    const newRel = targetDir ? targetDir + '/' + newName : newName;
+    const dstAbs = path.join(dstDirAbs, newName);
+
+    if (isDir) {
+      fs.cpSync(srcAbs, dstAbs, { recursive: true });
+      // 目录内所有旁注重生成 id
+      const walk = (d) => {
+        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+          const f = path.join(d, e.name);
+          if (e.isDirectory()) walk(f);
+          else if (isSidecar(e.name)) {
+            const doc = f.slice(0, -SIDECAR_SUFFIX.length);
+            const tmp = f + '.wb-tmp-' + process.pid;
+            try { fs.renameSync(f, tmp); copySidecarWithNewId(tmp, f); } finally { try { fs.unlinkSync(tmp); } catch { /* ignore */ } }
+          }
+        }
+      };
+      walk(dstAbs);
+    } else {
+      fs.copyFileSync(srcAbs, dstAbs);
+      copySidecarWithNewId(srcAbs + SIDECAR_SUFFIX, dstAbs + SIDECAR_SUFFIX);
+    }
+    await lib.rescanAndIndex();
+    res.json({ ok: true, path: newRel, kind: isDir ? 'folder' : ext.replace('.', '') || 'file' });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
 
 // 被操作条目的相对路径：非根、不含 ..、不在 .trash 内、不是旁注本身
 function validateEntryPath(raw) {
@@ -1042,6 +1118,17 @@ app.get('/api/links/backlinks', (req, res) => {
   if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
   const p = String(req.query.path || '');
   res.json({ dsId: lib.id, path: p, ...lib.linkIndex.status(), backlinks: lib.linkIndex.backlinksOf(p) });
+});
+
+// 全库被引用计数：path -> 引用它的文档数（引用徽标用，一次请求返回全部）
+app.get('/api/links/counts', (req, res) => {
+  const lib = resolveLib(req);
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
+  const counts = {};
+  for (const [target, srcs] of lib.linkIndex.backlinks) {
+    if (srcs.size) counts[target] = srcs.size;
+  }
+  res.json({ dsId: lib.id, counts });
 });
 
 app.get('/api/links/terms', (req, res) => {
