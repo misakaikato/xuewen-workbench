@@ -11,7 +11,6 @@ import type { DocLink } from '@/lib/api';
 import type { CorpusRefNameEntry } from '@/lib/corpusRefMatch';
 import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
 import { livePreview } from '@/components/editor/livePreview';
-import { editorBaseThemeSpec } from '@/components/editor/setup';
 import { corpusRefsExtension, pushCorpusNames } from '@/components/editor/corpusRefs';
 import { linksExtensionFor, pushDocLinks } from '@/components/editor/autoLinks';
 import { copyAsRendered } from '@/components/editor/copyAsRendered';
@@ -51,14 +50,6 @@ const hlField = StateField.define<DecorationSet>({
     return Decoration.set(parts, true);
   },
   provide: (f) => EditorView.decorations.from(f),
-});
-
-// 只读主题：底色透明（卡片自带底色）、自动高度、scroller 不自滚
-const roTheme = EditorView.theme({
-  ...editorBaseThemeSpec,
-  '&': { color: 'hsl(var(--foreground))', backgroundColor: 'transparent', height: 'auto' },
-  '.cm-scroller': { ...editorBaseThemeSpec['.cm-scroller'], overflow: 'visible' },
-  '.cm-content': { caretColor: 'transparent', paddingBottom: '12vh' },
 });
 
 export interface ReadOnlyDocProps {
@@ -124,7 +115,6 @@ export function ReadOnlyDoc({ content, docPath, refNames, collections, links, hi
       ...linksExtensionFor(docPath, { onOpen: openLinkTarget, onCandidates, readOnly: true }),
       copyAsRendered(),
       hlField,
-      roTheme,
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [docPath]

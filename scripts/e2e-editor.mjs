@@ -316,7 +316,15 @@ async function main() {
     const cs = getComputedStyle(c);
     const m = document.querySelector('main');
     const mr = m ? m.getBoundingClientRect() : null;
-    return JSON.stringify({ width: r.width, fs: cs.fontSize, lh: cs.lineHeight,
+    // 文本列宽：减去 .cm-line 水平内距（编辑态 14px×2，阅读态 0）——
+    // 两边同引擎后这才是用户看到的文字列，盒宽受滚动条/槽位干扰
+    const ln = c.querySelector('.cm-line');
+    let pad = 0;
+    if (ln) {
+      const lcs = getComputedStyle(ln);
+      pad = parseFloat(lcs.paddingLeft || '0') + parseFloat(lcs.paddingRight || '0');
+    }
+    return JSON.stringify({ width: r.width - pad, fs: cs.fontSize, lh: cs.lineHeight,
       gapL: mr ? r.left - mr.left : null, gapR: mr ? mr.right - r.right : null });
   })()`;
 
@@ -345,9 +353,9 @@ async function main() {
     await sleep(400);
     const live = JSON.parse((await exec(colInfoOf('.cm-content'))) || 'null');
     await win.loadURL(BASE + '/read/' + encodeURIComponent('long-line.md'));
-    await waitFor('!!document.querySelector(".reader")', '阅读页就绪');
+    await waitFor('!!document.querySelector(".ro-doc .cm-content")', '阅读页就绪');
     await sleep(400);
-    const read = JSON.parse((await exec(colInfoOf('.reader'))) || 'null');
+    const read = JSON.parse((await exec(colInfoOf('.ro-doc .cm-content'))) || 'null');
     check(`live@${w} 正文列宽与阅读页一致（±40px）`, !!live && !!read && Math.abs(live.width - read.width) <= 40,
       `live=${live && live.width} read=${read && read.width}`);
     // 居中：列在其所在视区（main）内左右留白相等；阅读页带目录侧栏，不比对绝对中心
@@ -484,8 +492,8 @@ async function main() {
     !(await exec(`(function () { const els = window.__wb.editor().dom.querySelectorAll('[data-al-kind]'); return [...els].some((el) => el.closest('.cm-lp-code') || el.closest('.cm-lp-code-inline')); })()`)));
   check('标签间正文词条有标记', await exec(`!!window.__wb.editor().dom.querySelector('[data-al-term="孔子"]')`));
   await win.loadURL(BASE + '/read/' + encodeURIComponent('论语讲稿.md'));
-  await waitFor('!!document.querySelector(".reader")', '阅读页就绪');
-  await waitFor(`!!document.querySelector('.wb-autolink, .wb-wikilink')`, '阅读页词条链接');
+  await waitFor('!!document.querySelector(".ro-doc .cm-content")', '阅读页就绪');
+  await waitFor(`!!document.querySelector('.ro-doc .wb-autolink, .ro-doc .wb-wikilink')`, '阅读页词条链接');
   check('阅读页显示同源自动链接',
     (await exec(`[...document.querySelectorAll('.wb-autolink')].some((a) => a.textContent === '孔子家语')`)));
   check('阅读页 wikilink 渲染为词条链接',

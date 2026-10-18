@@ -43,6 +43,7 @@ function buildDecorations(links: DocLink[], state: EditorState): DecorationSet {
   for (const l of links) {
     if (l.ignored || l.to <= l.from) continue;
     const cls = l.kind === 'auto' ? 'wb-autolink' : l.kind === 'wiki' ? 'wb-wikilink' : 'wb-wikilink-missing';
+    let hidden = false;
     if (l.kind !== 'auto') {
       // wikilink：活动行显示源码（只读实例除外）
       const a = doc.lineAt(l.from).number;
@@ -50,10 +51,34 @@ function buildDecorations(links: DocLink[], state: EditorState): DecorationSet {
       let onActive = false;
       for (let n = a; n <= b; n++) if (active.has(n)) onActive = true;
       if (onActive) continue;
+      hidden = true;
     }
     parts.push(
       Decoration.mark({ class: cls, attributes: { 'data-al-kind': l.kind, 'data-al-term': l.term } }).range(l.from, l.to)
     );
+    // wikilink 非源码态：只显示 display||term（同旧阅读页 LinkChip），
+    // 隐藏 [[ ]] 括号与 name| / #heading 部分（区间按原文推导，偏移安全才应用）
+    if (hidden && l.to - l.from >= 4) {
+      const raw = doc.sliceString(l.from, l.to);
+      if (raw.startsWith('[[') && raw.endsWith(']]')) {
+        const inner = raw.slice(2, -2);
+        let labelFrom = 0;
+        let labelTo = inner.length;
+        const bar = inner.indexOf('|');
+        if (bar >= 0) {
+          labelFrom = bar + 1;
+        } else {
+          const hash = inner.indexOf('#');
+          if (hash >= 0) labelTo = hash;
+        }
+        if (labelTo > labelFrom) {
+          if (labelFrom > 0) parts.push(Decoration.replace({}).range(l.from + 2, l.from + 2 + labelFrom));
+          if (labelTo < inner.length) parts.push(Decoration.replace({}).range(l.from + 2 + labelTo, l.to - 2));
+          parts.push(Decoration.replace({}).range(l.from, l.from + 2));
+          parts.push(Decoration.replace({}).range(l.to - 2, l.to));
+        }
+      }
+    }
   }
   return Decoration.set(parts, true);
 }

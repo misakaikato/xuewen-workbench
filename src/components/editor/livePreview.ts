@@ -654,21 +654,30 @@ function makeLpPlugin(openLink: (href: string) => void) {
   );
 }
 
-// 编辑器主题：全部走应用 CSS 变量，A/B/C 三主题（含 C 深色）与阅读偏好即时生效
-const lpTheme = EditorView.theme({
-  ...editorBaseThemeSpec,
+// 编辑器主题：全部走应用 CSS 变量，A/B/C 三主题（含 C 深色）与阅读偏好即时生效。
+// 正文列宽：编辑页无卡片，100%-68px 复刻阅读页页边留白（减 28px 行内 padding 后与
+// 阅读页文字列对齐）；只读实例渲染在卡片/面板内，容器本身就是排版列，不再减。
+function makeLpTheme(readOnly: boolean) {
+  return EditorView.theme({
+    ...editorBaseThemeSpec,
+    ...(readOnly
+      ? {
+          '&': { color: 'hsl(var(--foreground))', backgroundColor: 'transparent', height: 'auto' },
+          '.cm-scroller': { ...editorBaseThemeSpec['.cm-scroller'], overflow: 'visible' },
+          // 阅读态无行内槽：文字列 = min(--rd-width, 容器宽)，与旧 .reader 同语义
+          '.cm-line': { padding: '0' },
+        }
+      : {}),
 
   // 正文列与阅读页同版式：同一套 --rd-* 变量、
   // 同一上限（--rd-width）并居中；calc(100% - 96px) 对应阅读页容器的水平留白
   // （max-w-5xl 容器 px-4 共 32px + 正文卡片 p-8 共 64px），窄窗口下两列同宽收缩
-  // 正文列与阅读页同版式：同一套 --rd-* 变量、同一上限并居中。
-  // 阅读页文字列 = min(--rd-width, 卡片内宽)（卡片在 max-w-5xl 容器内，页边留白共 96px）；
-  // 这里 .cm-content 上限取 min(rd-width + 28px, 100% - 68px)，减去 .cm-line 左右 14px
-  // padding 后文字列与阅读页逐像素对齐（窄窗口下两列同宽收缩）
   '.cm-content': {
-    caretColor: 'hsl(var(--foreground))',
-    paddingBottom: '20vh',
-    maxWidth: 'min(calc(var(--rd-width) + 28px), calc(100% - 68px))',
+    caretColor: readOnly ? 'transparent' : 'hsl(var(--foreground))',
+    paddingBottom: readOnly ? '12vh' : '20vh',
+    maxWidth: readOnly
+      ? 'min(var(--rd-width), 100%)'
+      : 'min(calc(var(--rd-width) + 28px), calc(100% - 68px))',
     marginLeft: 'auto',
     marginRight: 'auto',
   },
@@ -733,7 +742,8 @@ const lpTheme = EditorView.theme({
   '.cm-lp-table table': { borderCollapse: 'collapse', fontSize: '0.92em', lineHeight: '1.5' },
   '.cm-lp-table th, .cm-lp-table td': { border: '1px solid hsl(var(--border))', padding: '0.4em 0.8em', textAlign: 'left' },
   '.cm-lp-table th': { background: 'hsl(var(--muted))', fontWeight: '600' },
-});
+  });
+}
 
 // 实时预览扩展入口
 export function livePreview(opts: LivePreviewOptions) {
@@ -743,6 +753,6 @@ export function livePreview(opts: LivePreviewOptions) {
     lpReadOnly.of(!!opts.readOnly),
     lpTableField,
     makeLpPlugin(opts.openLink),
-    lpTheme,
+    makeLpTheme(!!opts.readOnly),
   ];
 }
