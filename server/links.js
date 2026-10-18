@@ -49,6 +49,32 @@ function plainExcerpt(text, max = 200) {
   return t.slice(0, max);
 }
 
+// ---------- 反链片段：纯文本净化 + 精确高亮区间 ----------
+// 片段由「前缀 + 命中文字 + 后缀」拼接而成：前后缀各自净化后长度不变地参与定位，
+// 因此 hiFrom/hiTo 恰好框住命中词（绝不用文本搜索找词，避免把长词内部的超串误标）。
+const SNIPPET_HR_RE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*$/; // 分隔线整行剔除
+const SNIPPET_LEAD_RE = /^(?: {0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+|\d{1,3}[.)][ \t]+))+/; // 可叠加的行首记号
+
+// 净化片段：剥行首 Markdown 记号、解链接/wikilink/行内代码语法只留文字、去 HTML 标签、折叠空白
+function snippetPlain(part) {
+  const lines = part.split(/\r?\n/).map((l) => (SNIPPET_HR_RE.test(l) ? '' : l.replace(SNIPPET_LEAD_RE, '')));
+  let t = lines.join(' ');
+  t = t.replace(/\[\[([^\]|]*)(?:\|([^\]]*))?\]\]/g, (_m, n, d) => (d || n));
+  t = t.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
+  t = t.replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, '$1');
+  t = t.replace(/`+([^`]*)`+/g, '$1');
+  t = t.replace(/<[^<>]+>/g, ' ');
+  // 上下文窗口可能把 wikilink 切成两半：丢掉悬空的半段（前缀尾部 [[开头无闭合 / 后缀首部 无开头]]），
+  // 避免片段里残留孤立的 [[ 或 ]] 记号
+  t = t.replace(/\[\[[^\[\]]*$/, '');
+  t = t.replace(/^[^\[\]]*\]\]/, '');
+  return t.replace(/\s+/g, ' ');
+}
+
+// 命中词两侧紧贴的强调记号（**、*、__、_、~~）剥除，避免片段里悬着孤立星号
+const stripEmphTail = (s) => s.replace(/[*_~]+$/, '');
+const stripEmphHead = (s) => s.replace(/^[*_~]+/, '');
+
 export class LinkIndex {
   constructor() {
     this.reset(null, null);
@@ -127,7 +153,7 @@ export class LinkIndex {
       }
     }
     // md 标题锚点（1–3 级）进入词条；记录各文档标题清单供 [[..#锚点]] 与预览用
-    const headingDocs = new Map(); // normHeading -> Set<path>
+    const headingDocs = new Map(); // normHeading -> Set<path>（仅统计用，不两处重复判定）
     for (const f of snapshot.files) {
       if (f.ext !== '.md') continue;
       const raw = texts.get(f.path);
@@ -138,8 +164,6 @@ export class LinkIndex {
       fm.excerpt = plainExcerpt(text);
       for (const h of fm.headings) {
         entries.push({ term: h.text, path: f.path, heading: h.text, kind: 'heading' });
-        if (!headingDocs.has(h.norm)) headingDocs.set(h.norm, new Set());
-        headingDocs.get(h.norm).add(f.path);
       }
     }
     for (const f of snapshot.files) {
@@ -149,11 +173,9 @@ export class LinkIndex {
         if (raw != null) fm.excerpt = plainExcerpt(raw.startsWith('\uFEFF') ? raw.slice(1) : raw);
       }
     }
-    // 通用标题（≥2 个文档里都出现的同名标题）不自动链，也不进词表
-    const generic = new Set();
-    for (const [norm, docs] of headingDocs) if (docs.size >= 2) generic.add(norm);
-    const filtered = entries.filter((e) => !(e.kind === 'heading' && generic.has(normalizeText(e.term))));
-    return { entries: filtered, sidecarIds, fileMeta };
+    return { entries, sidecarIds, fileMeta };
+    // 通用标题（≥2 个文档里都出现的同名标题）交给 buildAutoIndex：同名跨文档 → 歧义占位，
+    // 不自动链，但作为长词整体消费，阻止其内部短词成链
   }
 
   vocabSignature(entries, blocklist) {
@@ -475,16 +497,20 @@ export class LinkIndex {
       const t = doc ? this.textOf(src) : null;
       for (const l of links.slice(0, 5)) {
         if (!t) {
-          snippets.push({ text: l.term, offset: l.from, term: l.term });
+          snippets.push({ text: l.term, offset: l.from, hiFrom: 0, hiTo: l.term.length, term: l.term });
           continue;
         }
         const ctx = 36;
         const a = Math.max(0, l.from - ctx);
         const b = Math.min(t.text.length, l.to + ctx);
-        let text = t.text.slice(a, b).replace(/\s+/g, ' ');
-        if (a > 0) text = '…' + text;
-        if (b < t.text.length) text += '…';
-        snippets.push({ text, offset: l.from, term: l.term });
+        // 高亮文字用链接的精确 from/to 区间：wikilink 用显示文字，自动链恰为词条本身
+        const hi = l.kind === 'wiki' && l.display ? l.display : l.term;
+        const prefix = stripEmphTail(snippetPlain(t.text.slice(a, l.from)));
+        const suffix = stripEmphHead(snippetPlain(t.text.slice(l.to, b)));
+        const lead = a > 0 ? '…' : '';
+        const tail = b < t.text.length ? '…' : '';
+        const hiFrom = lead.length + prefix.length;
+        snippets.push({ text: lead + prefix + hi + suffix + tail, offset: l.from, hiFrom, hiTo: hiFrom + hi.length, term: hi });
       }
       out.push({ path: src, title: doc?.title || src, count: links.length, kinds, snippets });
     }

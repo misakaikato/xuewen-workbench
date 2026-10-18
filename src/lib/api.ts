@@ -72,12 +72,22 @@ export interface LinksStatus {
   ignoredCount?: number;
 }
 
+export interface BacklinkSnippet {
+  text: string;
+  /**命中词在原文档中的 UTF-16 偏移（点击定位用） */
+  offset: number;
+  /**命中词在片段 text 内的精确区间（服务端按链接 from/to 拼出，非文本搜索） */
+  hiFrom: number;
+  hiTo: number;
+  term: string;
+}
+
 export interface BacklinkEntry {
   path: string;
   title: string;
   count: number;
   kinds: string[];
-  snippets: { text: string; offset: number; term: string }[];
+  snippets: BacklinkSnippet[];
 }
 
 export interface LinkTerm {

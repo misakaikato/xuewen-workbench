@@ -550,7 +550,7 @@ export default function Edit() {
           </div>
         )}
         {showBacklinks && !isJson && (
-          <aside className="hidden lg:block w-64 shrink-0 border-l border-border overflow-x-hidden overflow-y-auto p-3">
+          <aside data-wb-backlinks className="hidden lg:block w-64 shrink-0 border-l border-border overflow-x-hidden overflow-y-auto p-3">
             <BacklinksPanel
               path={relPath}
               dsId={dsId}

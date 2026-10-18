@@ -71,12 +71,13 @@ const alField = StateField.define<AlState>({
       }
     }
     if (tr.docChanged) {
-      // 区间随编辑映射；触及编辑的丢弃（含塌缩），避免陈旧错位的链接
+      // 区间随编辑映射；触及编辑内部的丢弃（含塌缩），避免陈旧错位的链接。
+      // 端点统一取右侧（assoc=1）：链接前插入文字时标记整体右移保持完整，不在边界处误吸收/误丢弃
       const changed: [number, number][] = [];
       tr.changes.iterChangedRanges((_fA, _tA, fromB, toB) => changed.push([fromB, toB]));
       links = links
         .map((l) => {
-          const from = tr.changes.mapPos(l.from, -1);
+          const from = tr.changes.mapPos(l.from, 1);
           const to = tr.changes.mapPos(l.to, 1);
           return from >= to ? null : { ...l, from, to };
         })
@@ -250,10 +251,9 @@ export function autoLinks(opts: AutoLinksOptions): Extension {
           const mk = (label: string, fn: () => void) => {
             const b = document.createElement('button');
             b.textContent = label;
-            b.addEventListener('mousedown', (e) => {
-              e.preventDefault();
-              fn();
-            });
+            // mousedown 只阻默认（避免抢焦点），动作挂在 click 上
+            b.addEventListener('mousedown', (e) => e.preventDefault());
+            b.addEventListener('click', () => fn());
             actions.appendChild(b);
             return b;
           };
