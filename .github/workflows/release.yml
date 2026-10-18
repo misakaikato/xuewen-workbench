@@ -1,5 +1,7 @@
 # 发布流水线：打 tag 触发 mac + win 构建，产物上传为 draft release（人工核对后 Publish）
 # 注意：package.json 里 build.publish 的 owner/repo 占位符必须先替换为真实仓库
+# 串行执行（win needs mac）：electron-builder 的 getOrCreateReleaseByTag 非原子，
+# 双平台并行会在同一 tag 上各建一个 draft；串行时 win 会复用 mac 建好的 draft。
 name: release
 
 on:
@@ -11,15 +13,8 @@ permissions:
   contents: write # 允许 GITHUB_TOKEN 创建 release 并上传资产
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            script: release:mac
-          - os: windows-latest
-            script: release:win
-    runs-on: ${{ matrix.os }}
+  build-mac:
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,6 +22,20 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run ${{ matrix.script }}
+      - run: npm run release:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-win:
+    needs: build-mac
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run release:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
