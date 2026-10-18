@@ -22,12 +22,17 @@ def log_err(msg):
 
 def do_load(dir_):
     global _model, _tok
+    import os
     import mlx.core as mx
-    from mlx_embeddings import load
     from transformers import AutoTokenizer
 
     mx.set_default_device(mx.gpu)  # M 系列 Metal；不可用时 mlx 自动回退 cpu
-    _model, _ = load(dir_)
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)  # vendor 的 mlx_model 就在本目录
+    from mlx_model import load_bge_m3
+
+    _model = load_bge_m3(dir_)
     _tok = AutoTokenizer.from_pretrained(dir_)
     # 预热一次，触发图编译（首条不等编译）
     _embed(["预热"])

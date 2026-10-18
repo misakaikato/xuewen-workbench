@@ -33,3 +33,8 @@ npm-debug.log*
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# MLX 离线运行环境（构建期 fetch-mlx-env.mjs 重建，不入库）
+resources-mlx/python.tar.gz
+resources-mlx/wheels/
+__pycache__/

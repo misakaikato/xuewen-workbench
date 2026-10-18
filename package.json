@@ -127,6 +127,7 @@
     "files": [
       "dist/**/*",
       "server/**/*.js",
+      "server/rag/*.py",
       "schema/**/*.json",
       "electron/**/*",
       "assets/icons/**/*",
@@ -142,7 +143,16 @@
       ],
       "category": "public.app-category.productivity",
       "identity": null,
-      "hardenedRuntime": false
+      "hardenedRuntime": false,
+      "extraResources": [
+        {
+          "from": "resources-mlx",
+          "to": "mlx-env",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "win": {
       "target": [
@@ -152,6 +162,12 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "asarUnpack": [
+      "node_modules/onnxruntime-node/**",
+      "node_modules/better-sqlite3/**",
+      "server/rag/*.py"
+    ],
+    "afterPack": "./scripts/afterPack-prune.cjs"
   }
 }

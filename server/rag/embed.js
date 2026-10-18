@@ -18,6 +18,13 @@ const REPOS = {
 };
 const HOSTS = ['https://huggingface.co', 'https://hf-mirror.com'];
 
+// MLX sidecar 最小依赖集（实证对齐 resources-mlx/requirements.txt；vendor 前向后不再依赖 mlx-embeddings）
+const MLX_REQUIREMENTS = [
+  'anyio', 'click', 'filelock', 'h11', 'httpcore2', 'httpx2', 'huggingface-hub', 'idna',
+  'mlx', 'mlx-metal', 'numpy', 'packaging', 'pyyaml', 'regex', 'requests', 'safetensors',
+  'tokenizers', 'tqdm', 'transformers', 'truststore', 'typing-extensions',
+];
+
 // 繁→简归一化（逐字符 1:1 映射，与链接索引同源）
 export function t2s(text) {
   let out = '';
@@ -109,8 +116,8 @@ export class EmbedService {
     if (forced === 'mock' || forced === 'onnx' || forced === 'mlx') return forced;
     const onnxOk = this._manifestOk('onnx');
     if (process.platform === 'darwin') {
-      const mlxOk = this._manifestOk('mlx') && fs.existsSync(this.venvPython());
-      return mlxOk ? 'mlx' : onnxOk ? 'onnx' : 'onnx'; // 无权重时也报 onnx（提示下载）
+      // 有 mlx 权重即选 mlx（venv 在加载时按需置备，不存在不是否决条件）
+      return this._manifestOk('mlx') ? 'mlx' : 'onnx';
     }
     return 'onnx';
   }
@@ -124,6 +131,7 @@ export class EmbedService {
     return {
       state: this.state,
       backend,
+      ep: this._runtime?.ep || null,
       id: MODEL_ID,
       dim: DIM,
       sha: this._shaCache || null,
@@ -194,9 +202,11 @@ export class EmbedService {
     fs.mkdirSync(dest, { recursive: true });
     const manifest = { model: MODEL_ID, kind, files: [] };
     for (const f of spec.files) {
+      const dst = path.join(dest, f);
+      fs.mkdirSync(path.dirname(dst), { recursive: true }); // 嵌套子目录（onnx/ 等）
       const src = path.join(dir, f);
-      if (path.resolve(src) !== path.resolve(path.join(dest, f))) fs.copyFileSync(src, path.join(dest, f));
-      manifest.files.push({ path: f, sha256: await sha256File(path.join(dest, f)), bytes: fs.statSync(path.join(dest, f)).size });
+      if (path.resolve(src) !== path.resolve(dst)) fs.copyFileSync(src, dst);
+      manifest.files.push({ path: f, sha256: await sha256File(dst), bytes: fs.statSync(dst).size });
     }
     fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
     this.state = 'ready';
@@ -205,23 +215,49 @@ export class EmbedService {
     return { ok: true, kind };
   }
 
-  /** uv 置备 sidecar venv（mlx + mlx-embeddings + transformers） */
+  /** 置备 sidecar venv：优先 uv（开发机）；打包版从捆绑资源离线引导（python-build-standalone + wheels） */
   async ensureVenv() {
     const py = this.venvPython();
     if (fs.existsSync(py)) return;
     fs.mkdirSync(path.dirname(this.venvDir), { recursive: true });
-    const run = (cmd, args) =>
+    const run = (cmd, args, opts = {}) =>
       new Promise((resolve) => {
-        const p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+        const p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'], ...opts });
         let err = '';
         p.stderr.on('data', (d) => (err += d));
-        p.on('close', (c) => resolve(c === 0 ? { ok: true } : { ok: false, err }));
+        p.on('close', (c) => resolve(c === 0 ? { ok: true } : { ok: false, err: err.slice(-800) }));
         p.on('error', (e) => resolve({ ok: false, err: String(e) }));
       });
-    let r = await run('uv', ['venv', '--python', '3.12', this.venvDir]);
-    if (!r.ok) throw new Error('uv venv 失败: ' + r.err);
-    r = await run('uv', ['pip', 'install', '--python', py, 'mlx', 'mlx-embeddings', 'transformers']);
-    if (!r.ok) throw new Error('uv pip install 失败: ' + r.err);
+    // 路径 A：uv（开发机，联网）
+    const uvOk = await run('uv', ['--version']);
+    if (uvOk.ok) {
+      let r = await run('uv', ['venv', '--python', '3.12', this.venvDir]);
+      if (!r.ok) throw new Error('uv venv 失败: ' + r.err);
+      r = await run('uv', ['pip', 'install', '--python', py, ...MLX_REQUIREMENTS]);
+      if (!r.ok) throw new Error('uv pip install 失败: ' + r.err);
+      return;
+    }
+    // 路径 B：打包版捆绑资源（离线）：python-build-standalone + wheels
+    const resources = process.resourcesPath // Electron 打包版
+      ? path.join(process.resourcesPath, 'mlx-env')
+      : path.join(this.dataDir, 'mlx-env-bundle'); // 兼容手动放置
+    const tarball = path.join(resources, 'python.tar.gz');
+    const wheels = path.join(resources, 'wheels');
+    if (!fs.existsSync(tarball) || !fs.existsSync(wheels)) {
+      throw new Error('MLX 环境不可用：无 uv 且无捆绑资源（重装应用或安装 uv 后重试）');
+    }
+    // 解压可重定位 python 到 dataDir/py/runtime（tar 内顶层为 python/）
+    const runtime = path.join(path.dirname(this.venvDir), 'runtime');
+    if (!fs.existsSync(path.join(runtime, 'python', 'bin', 'python3'))) {
+      fs.mkdirSync(runtime, { recursive: true });
+      const { execFileSync } = await import('node:child_process');
+      execFileSync('tar', ['-xzf', tarball, '-C', runtime]);
+    }
+    const basePy = path.join(runtime, 'python', 'bin', 'python3');
+    let r = await run(basePy, ['-m', 'venv', this.venvDir]);
+    if (!r.ok) throw new Error('venv 创建失败: ' + r.err);
+    r = await run(py, ['-m', 'pip', 'install', '--no-index', '--find-links', wheels, '--no-deps', ...MLX_REQUIREMENTS]);
+    if (!r.ok) throw new Error('离线 pip install 失败: ' + r.err);
   }
 
   /** 惰性加载运行时；ready 前置检查模型 */
@@ -256,19 +292,62 @@ export class EmbedService {
   }
 
   async _loadOnnx() {
-    const { pipeline, env } = await import('@huggingface/transformers');
+    // tokenizer 走 transformers.js；推理会话直用 onnxruntime-node（可指定执行提供者：
+    // win 包内自带 DirectML（RTX 直接可用，零安装），cuda 需自编/边车（M2 实测点），
+    // mac 为 CPU。创建失败自动降级到 cpu 并记录实际后端。
+    const { AutoTokenizer, env } = await import('@huggingface/transformers');
     env.allowLocalModels = true;
     env.allowRemoteModels = false;
+    const ort = await import('onnxruntime-node');
     const dir = this.modelDir('onnx');
-    const pipe = await pipeline('feature-extraction', dir, { dtype: 'fp16' });
+    const modelPath = path.join(dir, 'onnx', 'model_fp16.onnx');
+    if (!fs.existsSync(modelPath)) throw new Error('缺少 ONNX 权重: onnx/model_fp16.onnx');
+    const tokenizer = await AutoTokenizer.from_pretrained(dir);
+    const want = (process.env.WORKBENCH_RAG_ONNX_EP || (process.platform === 'win32' ? 'dml' : 'cpu')).split(',');
+    let session = null;
+    let usedEp = 'cpu';
+    for (const ep of [...want, 'cpu']) {
+      try {
+        session = await ort.InferenceSession.create(modelPath, { executionProviders: [ep] });
+        usedEp = ep;
+        break;
+      } catch (e) {
+        this.error = null; // 降级不算错误，但记入日志
+        console.error(`[rag] ONNX EP ${ep} 不可用，降级: ${String(e.message || e).slice(0, 120)}`);
+      }
+    }
+    if (!session) throw new Error('ONNX 会话创建失败（含 cpu）');
+    const epUsed = usedEp;
     return {
       kind: 'onnx',
+      ep: epUsed,
       embed: async (texts) => {
         const out = [];
         for (let i = 0; i < texts.length; i += 8) {
           const batch = texts.slice(i, i + 8);
-          const rs = await Promise.all(batch.map((t) => pipe(t, { pooling: 'cls', normalize: true })));
-          for (const r of rs) out.push(new Float32Array(r.data));
+          const enc = await tokenizer(batch, { padding: true, truncation: true, max_length: 1024 });
+          const feeds = {
+            input_ids: new ort.Tensor('int64', BigInt64Array.from(enc.input_ids.data), enc.input_ids.dims),
+            attention_mask: new ort.Tensor('int64', BigInt64Array.from(enc.attention_mask.data), enc.attention_mask.dims),
+          };
+          const r = await session.run(feeds);
+          // 输出名不假设（Xenova 导出可能叫 last_hidden_state / token_embeddings），取首个
+          const t = Object.values(r)[0];
+          const raw = t.type === 'float16' ? f16To32(t.data) : t.data instanceof Float32Array ? t.data : Float32Array.from(t.data);
+          const dims = t.dims; // [B, L, D]
+          const dim = dims[2];
+          for (let b = 0; b < dims[0]; b++) {
+            const v = new Float32Array(dim);
+            let nrm = 0;
+            for (let j = 0; j < dim; j++) {
+              const x = raw[b * dims[1] * dim + j]; // CLS = 位置 0
+              v[j] = x;
+              nrm += x * x;
+            }
+            nrm = Math.sqrt(nrm) || 1;
+            for (let j = 0; j < dim; j++) v[j] /= nrm;
+            out.push(v);
+          }
         }
         return out;
       },
@@ -278,7 +357,11 @@ export class EmbedService {
   async _loadMlx() {
     await this.ensureVenv();
     const py = this.venvPython();
-    const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mlx-embed.py');
+    // 打包后本文件在 asar 内，python 读不了 asar——sidecar 脚本随 asarUnpack 放在 .unpacked
+    const script = path.join(
+      path.dirname(fileURLToPath(import.meta.url)).replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`),
+      'mlx-embed.py'
+    );
     const dir = this.modelDir('mlx');
     const proc = spawn(py, [script], { stdio: ['pipe', 'pipe', 'pipe'] });
     let stderr = '';
@@ -361,6 +444,21 @@ export class EmbedService {
     this._runtime = null;
     this._loading = null;
   }
+}
+
+// fp16 位模式 → float32（ORT float16 输出为 Uint16Array 位模式）
+function f16To32(h) {
+  const out = new Float32Array(h.length);
+  for (let i = 0; i < h.length; i++) {
+    const b = h[i];
+    const s = (b & 0x8000) >> 15;
+    const e = (b & 0x7c00) >> 10;
+    const f = b & 0x03ff;
+    if (e === 0) out[i] = (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+    else if (e === 0x1f) out[i] = f ? NaN : (s ? -1 : 1) * Infinity;
+    else out[i] = (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
+  }
+  return out;
 }
 
 // 确定性哈希向量（e2e）：对文本做字符 trigram 哈希叠加，同义近形文本向量相近
