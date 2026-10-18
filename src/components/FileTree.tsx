@@ -9,6 +9,7 @@ import type { TreeNode, FileEntry, Collection } from '@/lib/types';
 import {
   ChevronRight, ChevronDown, Folder, FolderOpen, FilePlus, FolderPlus,
   ChevronsDownUp, ChevronsUpDown, Boxes, Eye, EyeOff, Link2, Lock, PenLine, AlertTriangle,
+  FolderInput, Trash2,
 } from 'lucide-react';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { EntryActionDialogs, type EntryAction } from './EntryActionDialogs';
@@ -203,12 +204,15 @@ interface RowCtx {
   metaMsgs: Map<string, string[]>;
   linkCounts: Record<string, number>;
   cutPath: string | null;
-  onOpenFile: (row: Row) => void;
-  onToggle: (row: Row) => void;
+  selected: Set<string>;
+  onOpenFile: (row: Row, e?: React.MouseEvent) => void;
+  onToggle: (row: Row, e?: React.MouseEvent) => void;
   onCreate: OnCreate;
   onAction: OnAction;
   dsId: string | null;
   onDuplicated: (path: string) => void;
+  /** 拖拽到目录行：把路径（们）移入该目录 */
+  onDropInto: (dirPath: string, paths: string[]) => void;
 }
 
 function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
@@ -247,20 +251,25 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
 
   if (row.kind === 'file') {
     const active = ctx.activeFile === row.path;
+    const sel = ctx.selected.has(row.path);
     return (
       <ContextMenu>
       <ContextMenuTrigger asChild>
       <div
-        data-idx={idx} data-tpath={row.path} data-name={row.name} data-kind="file"
+        data-idx={idx} data-tpath={row.path} data-name={row.name} data-kind="file" data-sel={sel ? '1' : '0'}
         tabIndex={-1} draggable
         className={`group h-7 flex items-center gap-1.5 pr-1.5 rounded cursor-default text-sm select-none hover:bg-sidebar-accent ${focusCls} ${
           active ? 'bg-sidebar-accent font-medium text-primary' : ''
-        } ${cut ? 'opacity-50' : ''}`}
+        } ${sel ? 'bg-primary/15 ring-1 ring-inset ring-primary/40' : ''} ${cut ? 'opacity-50' : ''}`}
         style={{ paddingLeft: row.depth * 14 + 22 }}
-        onClick={() => ctx.onOpenFile(row)}
+        onClick={(e) => ctx.onOpenFile(row, e)}
         onDragStart={(e) => {
           e.dataTransfer.setData('text/plain', row.name);
           e.dataTransfer.setData('application/x-wb-file', row.path);
+          // 多选拖拽：整批随行（目录行 drop 优先读它；编辑器 drop 仍读单文件类型）
+          if (ctx.selected.has(row.path) && ctx.selected.size > 1) {
+            e.dataTransfer.setData('application/x-wb-multi', JSON.stringify([...ctx.selected]));
+          }
           e.dataTransfer.effectAllowed = 'copy';
         }}
         title={row.path}
@@ -286,17 +295,46 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
   // 目录行（物理树）与分组头（集合视图）
   const isHead = row.kind === 'head';
   const active = !isHead && ctx.activeDir === row.path;
+  const sel = !isHead && ctx.selected.has(row.path);
+  const [dropOver, setDropOver] = useState(false);
   const quickCreate = (kind: CreateKind) => setTimeout(() => ctx.onCreate(row.path, kind), 0);
   const dirRow = (
     <div
-      data-idx={idx} data-tpath={row.path} data-name={row.name} data-kind="dir"
+      data-idx={idx} data-tpath={row.path} data-name={row.name} data-kind="dir" data-sel={sel ? '1' : '0'}
       data-open={row.open ? '1' : '0'} tabIndex={-1}
       title={row.title}
       className={`group h-7 flex items-center gap-1 pr-1.5 rounded cursor-pointer select-none hover:bg-sidebar-accent ${focusCls} ${
         active ? 'bg-sidebar-accent' : ''
+      } ${sel ? 'bg-primary/15 ring-1 ring-inset ring-primary/40' : ''} ${
+        dropOver ? 'ring-2 ring-inset ring-primary bg-primary/10' : ''
       }`}
       style={{ paddingLeft: row.depth * 14 + 4 }}
-      onClick={() => ctx.onToggle(row)}
+      onClick={(e) => ctx.onToggle(row, e)}
+      onDragOver={(e) => {
+        if (isHead) return;
+        const types = Array.from(e.dataTransfer.types);
+        if (!types.includes('application/x-wb-file') && !types.includes('application/x-wb-multi')) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        e.stopPropagation();
+        setDropOver(true);
+      }}
+      onDragLeave={() => setDropOver(false)}
+      onDrop={(e) => {
+        if (isHead) return;
+        const types = Array.from(e.dataTransfer.types);
+        if (!types.includes('application/x-wb-file') && !types.includes('application/x-wb-multi')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setDropOver(false);
+        let paths: string[] = [];
+        try {
+          const multi = e.dataTransfer.getData('application/x-wb-multi');
+          paths = multi ? (JSON.parse(multi) as string[]) : [e.dataTransfer.getData('application/x-wb-file')];
+        } catch { /* 忽略坏载荷 */ }
+        paths = paths.filter(Boolean);
+        if (paths.length) ctx.onDropInto(row.path, paths);
+      }}
     >
       {row.open ? <ChevronDown className="w-3.5 h-3.5 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0" />}
       {isHead ? (
@@ -644,7 +682,88 @@ export function FileTree({
     setScrollTop(target);
     setPendingFocus(clamped);
   };
-  const toggleRow = (row: Row) => {
+  // ---- 多选（Cmd/Ctrl 点选、Shift 范围、Cmd+A 全选）与批量操作 ----
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const anchorRef = useRef(-1);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchFail, setBatchFail] = useState(0);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [moveAsk, setMoveAsk] = useState<string[] | null>(null);
+  // 换库 / 切视图 / 过滤时清空选择（路径含义已变）
+  useEffect(() => {
+    setSelected(new Set());
+    anchorRef.current = -1;
+  }, [dsId, view, q]);
+
+  const toggleSel = (path: string, idx: number) => {
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(path)) n.delete(path);
+      else n.add(path);
+      return n;
+    });
+    anchorRef.current = idx;
+  };
+  const rangeSel = (idx: number) => {
+    const a = anchorRef.current >= 0 ? anchorRef.current : idx;
+    const [lo, hi] = a <= idx ? [a, idx] : [idx, a];
+    setSelected(new Set(rows.slice(lo, hi + 1).map((r) => r.path)));
+  };
+
+  // 条目元信息（批量 move 需要 name/isDir）：优先物理树，兼 flat/集合视图
+  const entryOf = (path: string): { name: string; isDir: boolean } => {
+    const f = allFiles.find((x) => x.path === path);
+    if (f) return { name: f.name, isDir: false };
+    const d = tree.dirs.find((x) => x.path === path);
+    if (d) return { name: d.name, isDir: true };
+    return { name: path.split('/').pop() || path, isDir: false };
+  };
+  const isDescendant = (p: string, dir: string) => p === dir || p.startsWith(dir + '/');
+
+  // 批量执行：逐条复用 runEntryAction（flush / 刷新 / 草稿迁移 / 跟随导航全内置），失败计数
+  const runBatch = async (paths: string[], run: (p: string) => Promise<unknown>) => {
+    setBatchBusy(true);
+    setBatchFail(0);
+    let fail = 0;
+    for (const p of paths) {
+      try {
+        await run(p);
+      } catch {
+        fail++;
+      }
+    }
+    setBatchBusy(false);
+    setBatchFail(fail);
+    setSelected(new Set());
+    setConfirmDel(false);
+  };
+  const batchMove = (paths: string[], targetDir: string) =>
+    runBatch(
+      paths.filter((p) => !isDescendant(targetDir, p) && dirOf(p) !== targetDir),
+      (p) => {
+        const { name, isDir } = entryOf(p);
+        return runEntryAction({ type: 'move', path: p, name, isDir, targetDir });
+      }
+    ).then(() => {
+      // 移完展开目标目录：用户能看到东西去哪了
+      if (targetDir) applyOpen((s) => new Set([...s, targetDir]));
+    });
+  const batchDelete = (paths: string[]) =>
+    runBatch(paths, (p) => {
+      const { name, isDir } = entryOf(p);
+      return runEntryAction({ type: 'delete', path: p, name, isDir });
+    });
+
+  const toggleRow = (row: Row, e?: React.MouseEvent) => {
+    if (e?.shiftKey && row.kind !== 'head') {
+      rangeSel(rows.findIndex((r) => r.path === row.path));
+      return;
+    }
+    if ((e?.metaKey || e?.ctrlKey) && row.kind !== 'head') {
+      toggleSel(row.path, rows.findIndex((r) => r.path === row.path));
+      return;
+    }
+    if (!e || (!e.metaKey && !e.ctrlKey && !e.shiftKey)) setSelected(new Set());
     if (row.kind === 'head') toggleColHead(row.path);
     else if (row.kind === 'dir') toggleDir(row.path);
   };
@@ -669,7 +788,21 @@ export function FileTree({
       }
       return; // 其余 Ctrl 组合不拦截
     }
-    if (e.key === 'Escape') { if (clip) { setClip(null); e.preventDefault(); } return; }
+    if (e.key === 'Escape') {
+      if (selected.size) {
+        setSelected(new Set());
+        e.preventDefault();
+        return;
+      }
+      if (clip) { setClip(null); e.preventDefault(); }
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      setSelected(new Set(rows.filter((r) => r.kind !== 'head').map((r) => r.path)));
+      anchorRef.current = -1;
+      return;
+    }
 
     if (e.key === 'ArrowDown') { e.preventDefault(); focusIdx(idx + 1); return; }
     if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx(idx - 1); return; }
@@ -720,7 +853,17 @@ export function FileTree({
     }
   };
 
-  const ctxOpenFile = (row: Row) => {
+  const ctxOpenFile = (row: Row, e?: React.MouseEvent) => {
+    const idx = rows.findIndex((r) => r.path === row.path);
+    if (e?.shiftKey) {
+      rangeSel(idx);
+      return;
+    }
+    if (e?.metaKey || e?.ctrlKey) {
+      toggleSel(row.path, idx);
+      return;
+    }
+    setSelected(new Set());
     if (q) onFilterChange('');
     navigate('/read/' + row.path.split('/').map(encodeURIComponent).join('/'));
   };
@@ -734,12 +877,14 @@ export function FileTree({
     metaMsgs,
     linkCounts,
     cutPath: clip?.op === 'cut' ? clip.entry.path : null,
+    selected,
     onOpenFile: ctxOpenFile,
     onToggle: toggleRow,
     onCreate,
     onAction: setAction,
     dsId,
     onDuplicated,
+    onDropInto: (dirPath, paths) => batchMove(paths, dirPath),
   };
   const filtering = !!q;
   const emptyTree = tree.files.length === 0 && tree.dirs.length === 0;
@@ -829,6 +974,25 @@ export function FileTree({
         tabIndex={0}
         onKeyDown={onKeyDown}
         onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+        onDragOver={(e) => {
+          const types = Array.from(e.dataTransfer.types);
+          if (!types.includes('application/x-wb-file') && !types.includes('application/x-wb-multi')) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+        }}
+        onDrop={(e) => {
+          // 落在空白区/容器 = 移到根目录（行级 drop 会 stopPropagation，不会走到这）
+          const types = Array.from(e.dataTransfer.types);
+          if (!types.includes('application/x-wb-file') && !types.includes('application/x-wb-multi')) return;
+          e.preventDefault();
+          let paths: string[] = [];
+          try {
+            const multi = e.dataTransfer.getData('application/x-wb-multi');
+            paths = multi ? (JSON.parse(multi) as string[]) : [e.dataTransfer.getData('application/x-wb-file')];
+          } catch { /* 忽略坏载荷 */ }
+          paths = paths.filter(Boolean).filter((p) => dirOf(p) !== '');
+          if (paths.length) batchMove(paths, '');
+        }}
         className="flex-1 min-h-0 overflow-auto p-1 outline-none"
       >
         {rows.length === 0 ? (
@@ -852,6 +1016,90 @@ export function FileTree({
           </div>
         )}
       </div>
+
+      {/* 多选操作条：已选 n 项 → 移动 / 删除（行内确认）/ 清除；失败计数展示 */}
+      {selected.size > 0 && (
+        <div data-wb-selbar className="shrink-0 border-t border-sidebar-border px-1.5 py-1.5 flex items-center gap-1.5 text-xs flex-wrap">
+          {confirmDel ? (
+            <>
+              <span className="text-destructive">删除所选 {selected.size} 项？</span>
+              <button
+                className="px-2 py-0.5 rounded bg-destructive text-destructive-foreground"
+                disabled={batchBusy}
+                onClick={() => batchDelete([...selected])}
+              >
+                确认删除
+              </button>
+              <button className="px-2 py-0.5 rounded border border-border" onClick={() => setConfirmDel(false)}>
+                取消
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="stat-num">{selected.size}</span> 项已选
+              <button
+                className="flex items-center gap-1 px-2 py-0.5 rounded border border-border hover:bg-sidebar-accent"
+                disabled={batchBusy}
+                onClick={() => setMoveAsk([...selected])}
+              >
+                <FolderInput className="w-3.5 h-3.5" /> 移动到…
+              </button>
+              <button
+                className="flex items-center gap-1 px-2 py-0.5 rounded border border-border hover:bg-sidebar-accent"
+                disabled={batchBusy}
+                onClick={() => setConfirmDel(true)}
+              >
+                <Trash2 className="w-3.5 h-3.5" /> 删除
+              </button>
+              <button className="px-2 py-0.5 rounded border border-border hover:bg-sidebar-accent" onClick={() => setSelected(new Set())}>
+                清除
+              </button>
+            </>
+          )}
+          {batchBusy && <span className="text-muted-foreground">执行中…</span>}
+          {batchFail > 0 && <span className="text-destructive" title="部分条目操作失败（重名冲突 / 外部修改等）">{batchFail} 项失败</span>}
+        </div>
+      )}
+
+      {/* 批量移动：选目标目录（含根目录） */}
+      {moveAsk && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setMoveAsk(null)}>
+          <div
+            className="bg-card border border-border rounded-lg shadow-xl p-4 w-80 max-w-[90vw] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-medium mb-1">移动 {moveAsk.length} 项到…</div>
+            <div className="text-xs text-muted-foreground mb-2">同目录项与目标子目录自动跳过</div>
+            <div className="max-h-72 overflow-auto space-y-0.5" data-wb-movetargets>
+              <button
+                className="w-full text-left px-2 py-1.5 rounded hover:bg-accent text-sm"
+                onClick={() => {
+                  const paths = moveAsk;
+                  setMoveAsk(null);
+                  batchMove(paths, '');
+                }}
+              >
+                （资料库根目录）
+              </button>
+              {tree.dirs.map((d) => (
+                <button
+                  key={d.path}
+                  className="w-full text-left px-2 py-1.5 rounded hover:bg-accent text-sm truncate"
+                  title={d.path}
+                  onClick={() => {
+                    const paths = moveAsk;
+                    setMoveAsk(null);
+                    batchMove(paths, d.path);
+                  }}
+                >
+                  {d.path}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <EntryActionDialogs action={action} tree={tree} onClose={() => setAction(null)} onDone={onActionDone} />
       <CreateEntryDialog target={target} onClose={() => setTarget(null)} onCreated={onCreated} />
     </div>

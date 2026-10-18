@@ -74,6 +74,12 @@ async function main() {
     try { await j('/api/config'); break; } catch { if (i > 100) throw new Error('服务端未就绪'); await sleep(100); }
   }
   await app.whenReady();
+  app.on('web-contents-created', (_e, wc) => {
+    wc.on('console-message', (_ev, level, message) => {
+      if (level >= 2 && !String(message).includes('Security Warning')) console.log('RENDERER:', String(message).slice(0, 400));
+    });
+    wc.on('render-process-gone', (_ev, d) => console.log('GONE:', d.reason));
+  });
   win = new BrowserWindow({
     width: 1280, height: 800, show: false, paintWhenInitiallyHidden: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
@@ -372,6 +378,81 @@ async function main() {
   const cd = await j('/api/file?path=' + encodeURIComponent('tpl-date.md'));
   check('空白模板内容为空', tplB.ok && cb.content === '', JSON.stringify(cb.content));
   check('标题+日期模板含日期行', tplD.ok && cd.content.startsWith('# TplD') && cd.content.includes('日期：'), JSON.stringify(cd.content));
+
+  // ---------- 20. 多选 / 批量移动 / 拖拽移动 / 批量删除 ----------
+  console.log('== 20. 多选与批量操作 ==');
+  await win.loadURL(BASE + '/');
+  await until(`!!document.querySelector('[data-kind="file"]')`);
+  // 造三个待操作文件（直接 API 建省 UI 流程）
+  await post('/api/file/create', { dsId, dir: '', kind: 'md', name: '批a.md', title: '批a' });
+  await post('/api/file/create', { dsId, dir: '', kind: 'md', name: '批b.md', title: '批b' });
+  await post('/api/file/create', { dsId, dir: '', kind: 'md', name: '批c.md', title: '批c' });
+  await win.loadURL(BASE + '/');
+  await until(`!!document.querySelector('[data-tpath="批a.md"]')`);
+
+  // Cmd 多选三个文件
+  for (const n of ['批a.md', '批b.md', '批c.md']) {
+    await exec(`(() => { const r = document.querySelector('[data-tpath=${JSON.stringify(n)}]'); r.dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true })); return true; })()`);
+    await sleep(60);
+  }
+  check('Cmd 点选三个文件', await until(`!!document.querySelector('[data-wb-selbar]')`) && Number(await exec(`document.querySelectorAll('[data-sel="1"]').length`)) >= 3);
+  check('选择条显示已选 3 项', await exec(`document.querySelector('[data-wb-selbar]').textContent.includes('3') && document.querySelector('[data-wb-selbar]').textContent.includes('项已选')`));
+
+  // 批量移动到「笔记」目录
+  await exec(`(() => { const b = [...document.querySelectorAll('[data-wb-selbar] button')].find((x) => x.textContent.includes('移动到')); b.click(); return true; })()`);
+  await until(`!!document.querySelector('[data-wb-movetargets]')`);
+  await exec(`(() => { const b = [...document.querySelectorAll('[data-wb-movetargets] button')].find((x) => x.textContent.trim() === 'notes'); if (b) { b.click(); return true; } return false; })()`);
+  await sleep(800);
+  const movedOk = await Promise.all(['notes/批a.md', 'notes/批b.md', 'notes/批c.md'].map(async (pt) => (await j('/api/file?path=' + encodeURIComponent(pt))).name === pt.split('/').pop()));
+  check('批量移动三件到 notes/', movedOk.every(Boolean), JSON.stringify(movedOk));
+  check('移动后选择清空', await until(`!document.querySelector('[data-wb-selbar]')`) === true);
+
+  // 拖拽移动：把 notes/批a.md 拖回根（拖到根空白区）
+  await until(`!!document.querySelector('[data-tpath="notes/批a.md"]')`);
+  await exec(`(() => { const r = document.querySelector('[data-tpath="notes/批a.md"]'); r.dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true })); return true; })()`);
+  await sleep(120);
+  await exec(`(() => {
+    const r = document.querySelector('[data-tpath="notes/批a.md"]');
+    const dt = new DataTransfer();
+    dt.setData('application/x-wb-file', 'notes/批a.md');
+    r.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+    const sc = document.querySelector('aside .flex-1.overflow-auto');
+    if (!sc) return 'SC-MISS matches=' + document.querySelectorAll('aside .overflow-auto').length;
+    sc.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    sc.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    return 'dropped';
+  })()`);
+  await sleep(800);
+  check('拖到根空白区 = 移回根目录', (await j('/api/file?path=' + encodeURIComponent('批a.md'))).name === '批a.md');
+
+  // 目录行 drop：把根目录 批a.md 拖进 笔记
+  await exec(`(() => {
+    const dt = new DataTransfer();
+    dt.setData('application/x-wb-file', '批a.md');
+    const sc = document.querySelector('aside .flex-1.overflow-auto');
+    sc.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    const dir = document.querySelector('[data-kind="dir"][data-name="notes"]');
+    dir.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    dir.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    return true;
+  })()`);
+  await sleep(800);
+  check('拖到目录行 = 移入该目录', (await j('/api/file?path=' + encodeURIComponent('notes/批a.md'))).name === '批a.md');
+
+  // 批量删除（行内确认）
+  for (const n of ['notes/批a.md', 'notes/批b.md', 'notes/批c.md']) {
+    await exec(`(() => { const r = document.querySelector('[data-tpath=${JSON.stringify(n)}]'); r.dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true })); return true; })()`);
+    await sleep(60);
+  }
+  await exec(`(() => { const b = [...document.querySelectorAll('[data-wb-selbar] button')].find((x) => x.textContent.includes('删除')); b.click(); return true; })()`);
+  await until(`[...document.querySelectorAll('[data-wb-selbar] button')].some((x) => x.textContent.includes('确认删除'))`);
+  await exec(`(() => { const b = [...document.querySelectorAll('[data-wb-selbar] button')].find((x) => x.textContent.includes('确认删除')); b.click(); return true; })()`);
+  await sleep(900);
+  const delOk = await Promise.all(['notes/批a.md', 'notes/批b.md', 'notes/批c.md'].map(async (pt) => {
+    const r = await j('/api/file?path=' + encodeURIComponent(pt)).catch(() => null);
+    return !r || !r.name;
+  }));
+  check('批量删除三件（确认后）', delOk.every(Boolean), JSON.stringify(delOk));
 
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
   server?.kill();
