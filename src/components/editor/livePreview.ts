@@ -1,7 +1,8 @@
 // 实时预览扩展（论坛编辑器式）：全时渲染——所有格式记号（#/**/>/`` 等）
 // 恒隐藏，所见即所得；格式调整交给工具栏按钮（formatToolbar）或用户手打语法
 // （语法一旦成立即被识别渲染）。装饰只影响显示，绝不改动文档字节。
-// 例外：光标进入表格时临时显示该表源码（表格暂无单元格级编辑）；
+// 表格为可编辑块级部件：单元格点开即改、增删行列、对齐循环、⌨源码回退；
+// 光标在表格源码内（手改/撤销场景）时临时显示源码；
 // 光标所在空行保持原行高便于定位。
 import { syntaxTree } from '@codemirror/language';
 import { EditorState, Facet, StateEffect, StateField } from '@codemirror/state';
@@ -111,8 +112,37 @@ interface TableModel {
 function splitRow(line: string): string[] {
   let s = line.trim();
   if (s.startsWith('|')) s = s.slice(1);
-  if (s.endsWith('|')) s = s.slice(0, -1);
-  return s.split('|').map((c) => c.trim());
+  if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+  // 只按未转义的 | 分列（GFM 允许单元格里用 \\| 表示字面竖线）
+  return s.split(/(?<!\\)\|/).map((c) => c.trim());
+}
+
+// 单元格文本的显示态（去转义）与写回态（补转义）
+const unescapeCell = (t: string) => t.replace(/\\\|/g, '|');
+const escapeCell = (t: string) => t.replace(/(?<!\\)\|/g, '\\|');
+
+function cloneModel(m: TableModel): TableModel {
+  return { header: [...m.header], align: [...m.align], rows: m.rows.map((r) => [...r]) };
+}
+
+function colCount(m: TableModel): number {
+  return Math.max(1, m.header.length, m.align.length, ...m.rows.map((r) => r.length));
+}
+
+// 整表序列化（写回源文用）：规范化为 `| a | b |` 形态，对齐写入分隔行冒号；
+// lineBreak 跟随文档实际行分隔符（CRLF 文档不引入混杂换行）
+function serializeTable(m: TableModel, lineBreak: string): string {
+  const n = colCount(m);
+  const row = (cells: string[]) =>
+    '| ' + Array.from({ length: n }, (_, i) => escapeCell(cells[i] ?? '')).join(' | ') + ' |';
+  const delim =
+    '| ' +
+    Array.from({ length: n }, (_, i) => {
+      const a = m.align[i];
+      return a === 'left' ? ':---' : a === 'center' ? ':---:' : a === 'right' ? '---:' : '---';
+    }).join(' | ') +
+    ' |';
+  return [row(m.header), delim, ...m.rows.map(row)].join(lineBreak);
 }
 
 function parseTable(src: string): TableModel | null {
@@ -301,58 +331,418 @@ class FenceBarWidget extends WidgetType {
   }
 }
 
-// 表格整块渲染：点击后光标进入表格，显示源码
+// 表格可编辑部件：单元格点开即改、悬浮工具条增删行列、表头循环对齐、⌨回源码。
+// 所有写回都是「整表序列化替换源文」的单次事务（可撤销、可触发脏检测/草稿）。
+// 部件实例随文档重建：跨重建的接力（Tab 到下一格/新增行后自动进入编辑）
+// 经 pendingCellEdit + liveTables 完成——新实例的 toDOM 消费 pending 继续打开输入。
+interface PendingCellEdit {
+  from: number; // 表首位置（重建后不变，作为接力对账键）
+  r: number; // -1 = 表头
+  c: number;
+  at: number; // 毫秒时间戳，过期作废（位置漂移防误接力）
+}
+
+const liveTablesByView = new WeakMap<EditorView, Map<number, TableWidget>>();
+const pendingByView = new WeakMap<EditorView, PendingCellEdit | null>();
+
+function liveTablesFor(view: EditorView): Map<number, TableWidget> {
+  let m = liveTablesByView.get(view);
+  if (!m) {
+    m = new Map();
+    liveTablesByView.set(view, m);
+  }
+  return m;
+}
+
+function setPending(view: EditorView, p: PendingCellEdit | null) {
+  pendingByView.set(view, p);
+}
+
+function takePending(view: EditorView, from: number): PendingCellEdit | null {
+  const p = pendingByView.get(view);
+  if (p && p.from === from && Date.now() - p.at < 2000) {
+    pendingByView.set(view, null);
+    return p;
+  }
+  return null;
+}
+
 class TableWidget extends WidgetType {
-  private pos: number;
+  private from: number;
+  private to: number;
   private model: TableModel;
   private readOnly: boolean;
+  private view: EditorView | null = null; // toDOM 时记录，destroy 注销用
 
-  constructor(pos: number, model: TableModel, readOnly: boolean) {
+  constructor(from: number, to: number, model: TableModel, readOnly: boolean) {
     super();
-    this.pos = pos;
+    this.from = from;
+    this.to = to;
     this.model = model;
     this.readOnly = readOnly;
   }
 
   eq(other: TableWidget): boolean {
-    return other.pos === this.pos && other.readOnly === this.readOnly && JSON.stringify(other.model) === JSON.stringify(this.model);
+    // 首尾位置参与比较：文档在到处变动后部件不复用，写回不用陈旧坐标
+    return other.from === this.from && other.to === this.to && other.readOnly === this.readOnly &&
+      JSON.stringify(other.model) === JSON.stringify(this.model);
+  }
+
+  // 写回：整表替换源文一次事务；重算后部件以新模型重建
+  private applyModel(view: EditorView, m: TableModel) {
+    view.dispatch({ changes: { from: this.from, to: this.to, insert: serializeTable(m, view.state.lineBreak) } });
+  }
+
+  private cellText(r: number, c: number): string {
+    return r < 0 ? (this.model.header[c] ?? '') : (this.model.rows[r]?.[c] ?? '');
+  }
+
+  // 在当前视口 DOM 里定位本表某单元格（部件可能已随文档重建，经 data 属性查）
+  private cellIn(view: EditorView, r: number, c: number): HTMLTableCellElement | null {
+    return view.dom.querySelector(`.cm-lp-table[data-tbl-from="${this.from}"] [data-r="${r}"][data-c="${c}"]`);
+  }
+
+  private ownerWrap(view: EditorView): HTMLElement | null {
+    return view.dom.querySelector(`.cm-lp-table[data-tbl-from="${this.from}"]`);
+  }
+
+  // 打开单元格内联输入：Enter 提交 / Esc 取消 / Tab 接力下一格 / 失焦提交
+  private openInput(td: HTMLTableCellElement, view: EditorView) {
+    if (td.querySelector('input')) return;
+    const wrap = td.closest('.cm-lp-table') as HTMLElement | null;
+    if (!wrap) return;
+    const r = Number(td.dataset.r);
+    const c = Number(td.dataset.c);
+    const display = td.querySelector('.wb-tc-display') as HTMLElement | null;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'wb-tc-input';
+    input.value = unescapeCell(this.cellText(r, c));
+    if (display) display.style.display = 'none';
+    td.classList.add('wb-tc-editing');
+    td.insertBefore(input, display ?? null);
+    input.focus();
+    input.select();
+    let done = false;
+    const close = (commit: boolean, thenEdit?: { r: number; c: number }) => {
+      if (done) return;
+      done = true;
+      delete (wrap as { _wbClose?: unknown })._wbClose;
+      const val = escapeCell(input.value.trim());
+      input.remove();
+      td.classList.remove('wb-tc-editing');
+      if (display) display.style.display = '';
+      if (thenEdit) setPending(view, { from: this.from, r: thenEdit.r, c: thenEdit.c, at: Date.now() });
+      if (commit && val !== this.cellText(r, c)) {
+        const m = cloneModel(this.model);
+        if (r < 0) m.header[c] = val;
+        else {
+          const row = m.rows[r] ?? (m.rows[r] = []);
+          row[c] = val;
+        }
+        this.applyModel(view, m); // 文档变化 → 部件重建 → 新 toDOM 消费 pending 接力
+        return;
+      }
+      if (thenEdit) {
+        // 无变化不重建：旧 DOM 仍相连，直接在旧实例上打开下一格
+        requestAnimationFrame(() => {
+          if (!wrap.isConnected) return;
+          const p = takePending(view, this.from);
+          if (!p) return;
+          const el = this.cellIn(view, p.r, p.c);
+          if (el) this.openInput(el, view);
+        });
+      }
+    };
+    (wrap as { _wbClose?: (c: boolean) => void })._wbClose = (commit: boolean) => close(commit);
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation(); // 输入框拥有键盤，不给 CM 键映射拦截
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        close(true);
+        view.focus();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        close(false);
+        view.focus();
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        const n = colCount(this.model);
+        let nr = r;
+        let nc = c + 1;
+        if (nc >= n) {
+          nc = 0;
+          nr = r + 1;
+        }
+        if (nr >= this.model.rows.length) {
+          close(true);
+          view.focus(); // 末格：停留（不自动增行）
+        } else {
+          close(true, { r: nr, c: nc });
+        }
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        close(false);
+        view.focus(); // 撤销交给编辑器：再按一次 Ctrl+Z 撤销上一次表格写回
+      }
+    });
+    input.addEventListener('blur', () => close(true));
+  }
+
+  // 结构操作入口：先提交进行中的单元格编辑；提交可能触发重建，
+  // 操作经 liveTables 落到最新实例上执行（绝不用陈旧模型计算）
+  private run(view: EditorView, fn: (w: TableWidget) => void) {
+    const from = this.from;
+    const wrap = this.ownerWrap(view);
+    const closer = (wrap as { _wbClose?: (c: boolean) => void } | null)?._wbClose;
+    const go = () => {
+      const w = liveTablesFor(view).get(from);
+      if (w) fn(w);
+    };
+    if (closer) {
+      closer(true);
+      requestAnimationFrame(go);
+    } else go();
+  }
+
+  // 点击单元格：若他格正在编辑则先提交再接力；否则直接打开
+  private editCell(view: EditorView, r: number, c: number) {
+    const from = this.from;
+    const wrap = this.ownerWrap(view);
+    const closer = (wrap as { _wbClose?: (c: boolean) => void } | null)?._wbClose;
+    if (closer) {
+      setPending(view, { from, r, c, at: Date.now() });
+      closer(true);
+      requestAnimationFrame(() => {
+        // 旧 DOM 仍相连 = 未触发重建：直接打开（重建路径由新 toDOM 的 pending 接力）
+        if (!wrap || !wrap.isConnected) return;
+        const p = takePending(view, from);
+        if (!p) return;
+        const el = this.cellIn(view, p.r, p.c);
+        if (el) this.openInput(el, view);
+      });
+      return;
+    }
+    const el = this.cellIn(view, r, c);
+    if (el) this.openInput(el, view);
+  }
+
+  private addRow(view: EditorView) {
+    const m = cloneModel(this.model);
+    m.rows.push(Array.from({ length: colCount(m) }, () => ''));
+    setPending(view, { from: this.from, r: m.rows.length - 1, c: 0, at: Date.now() }); // 新行直接进入编辑
+    this.applyModel(view, m);
+  }
+
+  private addCol(view: EditorView) {
+    const m = cloneModel(this.model);
+    m.header.push('');
+    m.align.push(null);
+    for (const row of m.rows) row.push('');
+    setPending(view, { from: this.from, r: -1, c: m.header.length - 1, at: Date.now() });
+    this.applyModel(view, m);
+  }
+
+  private delRow(view: EditorView, r: number) {
+    if (r < 0 || r >= this.model.rows.length) return;
+    const m = cloneModel(this.model);
+    m.rows.splice(r, 1);
+    setPending(view, null);
+    this.applyModel(view, m);
+  }
+
+  private delCol(view: EditorView, c: number) {
+    if (colCount(this.model) <= 1) return;
+    const m = cloneModel(this.model);
+    m.header.splice(c, 1);
+    m.align.splice(c, 1);
+    for (const row of m.rows) row.splice(c, 1);
+    setPending(view, null);
+    this.applyModel(view, m);
+  }
+
+  private cycleAlign(view: EditorView, c: number) {
+    const order: (string | null)[] = [null, 'left', 'center', 'right'];
+    const cur = this.model.align[c] ?? null;
+    const m = cloneModel(this.model);
+    m.align[c] = order[(order.indexOf(cur) + 1) % order.length];
+    setPending(view, null);
+    this.applyModel(view, m);
+  }
+
+  // 光标移入表格源码：部件隐藏显示源码，可手改（原有「点击进源码」的替代入口）
+  private showSource(view: EditorView) {
+    setPending(view, null);
+    const closer = (this.ownerWrap(view) as { _wbClose?: (c: boolean) => void } | null)?._wbClose;
+    if (closer) closer(false);
+    view.dispatch({ selection: { anchor: this.from }, scrollIntoView: true });
   }
 
   toDOM(view: EditorView): HTMLElement {
+    const ro = this.readOnly;
+    const n = colCount(this.model);
+    this.view = view;
+    liveTablesFor(view).set(this.from, this);
     const wrap = document.createElement('div');
-    wrap.className = 'cm-lp-table';
-    wrap.title = '点击编辑表格源码';
+    wrap.className = 'cm-lp-table' + (ro ? '' : ' wb-tbl-edit');
+    wrap.setAttribute('data-tbl-from', String(this.from));
+
+    // 悬浮工具条：＋行 ＋列 ⌨源码（只读实例无）
+    if (!ro) {
+      const bar = document.createElement('div');
+      bar.className = 'wb-tbl-bar';
+      const mkBtn = (label: string, title: string, fn: (w: TableWidget) => void) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'wb-tbl-btn';
+        b.textContent = label;
+        b.title = title;
+        b.addEventListener('mousedown', (e) => {
+          e.preventDefault(); // 不抢单元格输入焦点
+          e.stopPropagation();
+        });
+        b.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.run(view, fn);
+        });
+        return b;
+      };
+      bar.appendChild(mkBtn('＋行', '在末尾添加一行（新行直接进入编辑）', (w) => w.addRow(view)));
+      bar.appendChild(mkBtn('＋列', '在末尾添加一列', (w) => w.addCol(view)));
+      bar.appendChild(mkBtn('⌨ 源码', '显示表格 Markdown 源码，可直接手改（点击表格外部恢复渲染）', (w) => w.showSource(view)));
+      wrap.appendChild(bar);
+    }
+
     const table = document.createElement('table');
     const thead = document.createElement('thead');
     const htr = document.createElement('tr');
-    this.model.header.forEach((cell, i) => {
+    for (let c = 0; c < n; c++) {
       const th = document.createElement('th');
-      th.appendChild(buildCell(cell));
-      if (this.model.align[i]) th.style.textAlign = this.model.align[i] as string;
+      th.dataset.r = '-1';
+      th.dataset.c = String(c);
+      const a = this.model.align[c];
+      if (a) th.style.textAlign = a;
+      const disp = document.createElement('span');
+      disp.className = 'wb-tc-display';
+      disp.appendChild(buildCell(unescapeCell(this.model.header[c] ?? '')));
+      th.appendChild(disp);
+      if (!ro) {
+        const ops = document.createElement('span');
+        ops.className = 'wb-th-ops';
+        const glyph = (al: string | null) => (al === 'left' ? '⇤' : al === 'center' ? '⇔' : al === 'right' ? '⇥' : '≡');
+        const nextName = (al: string | null) =>
+          al === null ? '左' : al === 'left' ? '中' : al === 'center' ? '右' : '默认';
+        const alBtn = document.createElement('button');
+        alBtn.type = 'button';
+        alBtn.className = 'wb-th-op';
+        alBtn.textContent = glyph(a ?? null);
+        alBtn.title = `对齐：${a ?? '默认'}（点击切为${nextName(a ?? null)}）`;
+        alBtn.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        alBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.run(view, (w) => w.cycleAlign(view, c));
+        });
+        ops.appendChild(alBtn);
+        if (n > 1) {
+          const delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.className = 'wb-th-op wb-th-del';
+          delBtn.textContent = '✕';
+          delBtn.title = '删除此列';
+          delBtn.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          });
+          delBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.run(view, (w) => w.delCol(view, c));
+          });
+          ops.appendChild(delBtn);
+        }
+        th.appendChild(ops);
+        th.addEventListener('mousedown', (e) => {
+          if ((e.target as HTMLElement).closest('.wb-th-ops')) return;
+          e.preventDefault(); // 不让 CM 抢焦点/移动光标
+          e.stopPropagation();
+          this.editCell(view, -1, c);
+        });
+      }
       htr.appendChild(th);
-    });
+    }
     thead.appendChild(htr);
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
-    for (const row of this.model.rows) {
+    this.model.rows.forEach((row, r) => {
       const tr = document.createElement('tr');
-      for (let i = 0; i < this.model.header.length; i++) {
+      for (let c = 0; c < n; c++) {
         const td = document.createElement('td');
-        td.appendChild(buildCell(row[i] ?? ''));
-        if (this.model.align[i]) td.style.textAlign = this.model.align[i] as string;
+        td.dataset.r = String(r);
+        td.dataset.c = String(c);
+        const a = this.model.align[c];
+        if (a) td.style.textAlign = a;
+        const disp = document.createElement('span');
+        disp.className = 'wb-tc-display';
+        disp.appendChild(buildCell(unescapeCell(row[c] ?? '')));
+        td.appendChild(disp);
+        if (!ro) {
+          td.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.editCell(view, r, c);
+          });
+        }
         tr.appendChild(td);
       }
+      if (!ro) {
+        const rop = document.createElement('td');
+        rop.className = 'wb-tb-rop';
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'wb-rop-btn';
+        del.textContent = '✕';
+        del.title = '删除此行';
+        del.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        del.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.run(view, (w) => w.delRow(view, r));
+        });
+        rop.appendChild(del);
+        tr.appendChild(rop);
+      }
       tbody.appendChild(tr);
-    }
+    });
     table.appendChild(tbody);
     wrap.appendChild(table);
-    if (!this.readOnly) {
-      wrap.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        view.dispatch({ selection: { anchor: this.pos }, scrollIntoView: true });
+
+    // 编辑接力：重建后继续打开 pending 单元格（Tab/新增行后自动进入编辑）
+    const pend = takePending(view, this.from);
+    if (pend && !ro) {
+      requestAnimationFrame(() => {
+        const el = this.cellIn(view, pend.r, pend.c);
+        if (el) this.openInput(el, view);
       });
     }
     return wrap;
+  }
+
+  destroy(): void {
+    // 部件从 DOM 撤下：若仍是本表的在册实例则注销（防陈旧实例被 run() 捡到）
+    const v = this.view;
+    if (v) {
+      const m = liveTablesByView.get(v);
+      if (m?.get(this.from) === this) m.delete(this.from);
+      if (pendingByView.get(v)?.from === this.from) pendingByView.set(v, null);
+    }
   }
 }
 
@@ -607,7 +997,7 @@ function buildTableDecorations(state: EditorState): DecorationSet {
           const model = parseTable(state.sliceDoc(fromL.from, toL.to));
           if (model) {
             parts.push(
-              Decoration.replace({ widget: new TableWidget(fromL.from, model, ro), block: true }).range(fromL.from, toL.to)
+              Decoration.replace({ widget: new TableWidget(fromL.from, toL.to, model, ro), block: true }).range(fromL.from, toL.to)
             );
           }
         }
@@ -751,11 +1141,11 @@ function makeLpTheme(card: boolean) {
   '.cm-lp-hr-w': { display: 'inline-block', width: '100%', height: 0, borderTop: '1px solid hsl(var(--border))', margin: '1.2em 0', verticalAlign: 'middle' },
 
   // 表格部件：自身携带横向滚动（窄列内长表格不把整个编辑器撑宽），
-  // 单元格内折行规则与阅读页一致（break-word 而非继承的 break-spaces）
+  // 单元格内折行规则与阅读页一致（break-word 而非继承的 break-spaces）；
+  // 可编辑部件另有悬浮工具条/表头操作/行尾删行（样式见下）
   '.cm-lp-table': {
     display: 'block',
     margin: '0.4em 0',
-    cursor: 'pointer',
     maxWidth: '100%',
     overflowX: 'auto',
     whiteSpace: 'normal',
@@ -764,7 +1154,72 @@ function makeLpTheme(card: boolean) {
   },
   '.cm-lp-table table': { borderCollapse: 'collapse', fontSize: '0.92em', lineHeight: '1.5' },
   '.cm-lp-table th, .cm-lp-table td': { border: '1px solid hsl(var(--border))', padding: '0.4em 0.8em', textAlign: 'left' },
-  '.cm-lp-table th': { background: 'hsl(var(--muted))', fontWeight: '600' },
+  '.cm-lp-table th': { background: 'hsl(var(--muted))', fontWeight: '600', position: 'relative' },
+
+  // ---- 可编辑表格 ----
+  '.cm-lp-table.wb-tbl-edit td': { cursor: 'text' },
+  '.wb-tbl-bar': { display: 'flex', gap: '4px', opacity: '0', transition: 'opacity 0.12s', marginBottom: '2px' },
+  '.cm-lp-table:hover .wb-tbl-bar': { opacity: '1' },
+  '.wb-tbl-btn': {
+    fontSize: '11px',
+    lineHeight: '1',
+    padding: '3px 8px',
+    borderRadius: '5px',
+    border: '1px solid hsl(var(--border))',
+    background: 'hsl(var(--card))',
+    color: 'hsl(var(--muted-foreground))',
+    cursor: 'pointer',
+  },
+  '.wb-tbl-btn:hover': { background: 'hsl(var(--accent))', color: 'hsl(var(--accent-foreground))' },
+  '.wb-th-ops': { position: 'absolute', top: '2px', right: '3px', display: 'inline-flex', gap: '2px', opacity: '0' },
+  '.cm-lp-table th:hover .wb-th-ops': { opacity: '1' },
+  '.wb-th-op': {
+    width: '16px',
+    height: '16px',
+    lineHeight: '14px',
+    padding: '0',
+    borderRadius: '4px',
+    border: 'none',
+    background: 'hsl(var(--card))',
+    color: 'hsl(var(--muted-foreground))',
+    fontSize: '11px',
+    cursor: 'pointer',
+  },
+  '.wb-th-op:hover': { background: 'hsl(var(--accent))', color: 'hsl(var(--accent-foreground))' },
+  '.wb-th-del:hover': { background: 'hsl(var(--destructive) / 0.15)', color: 'hsl(var(--destructive))' },
+  '.wb-tb-rop': {
+    borderLeft: 'none',
+    borderRight: 'none',
+    padding: '0 2px',
+    width: '1%',
+    whiteSpace: 'nowrap',
+  },
+  '.wb-rop-btn': {
+    width: '16px',
+    height: '16px',
+    lineHeight: '14px',
+    padding: '0',
+    borderRadius: '4px',
+    border: 'none',
+    background: 'transparent',
+    color: 'hsl(var(--destructive))',
+    fontSize: '11px',
+    cursor: 'pointer',
+    visibility: 'hidden',
+  },
+  '.cm-lp-table tr:hover .wb-rop-btn': { visibility: 'visible' },
+  '.wb-rop-btn:hover': { background: 'hsl(var(--destructive) / 0.15)' },
+  '.wb-tc-editing': { outline: '2px solid hsl(var(--primary) / 0.55)', outlineOffset: '-2px' },
+  '.wb-tc-input': {
+    width: '100%',
+    font: 'inherit',
+    color: 'inherit',
+    background: 'transparent',
+    border: 'none',
+    outline: 'none',
+    padding: '0',
+    margin: '0',
+  },
   });
 }
 

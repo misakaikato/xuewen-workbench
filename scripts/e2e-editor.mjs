@@ -257,6 +257,84 @@ async function main() {
     check('工具栏测试后缓冲区还原（无脏状态）', await exec(`${V}.state.sliceDoc(0).length === ${JSON.stringify(origText.length)} && !window.__wb.isDirty()`));
   }
 
+  // ---------- B3. 表格可视化编辑 ----------
+  console.log('== B3. 表格可视化编辑 ==');
+  {
+    const V = 'window.__wb.editor()';
+    const origDoc = await exec(`${V}.state.sliceDoc(0)`);
+    const hasTable = () => exec(`!!${V}.dom.querySelector('.cm-lp-table table')`);
+    const hasInput = () => exec(`!!${V}.dom.querySelector('.cm-lp-table input.wb-tc-input')`);
+    const mouse = (elJs, type) => exec(`(() => { ${elJs}.dispatchEvent(new MouseEvent('${type}', { bubbles: true, cancelable: true })); return true; })()`);
+    const keyOnInput = (key) => exec(`(() => { const i = ${V}.dom.querySelector('.cm-lp-table input.wb-tc-input'); if (!i) return false; i.dispatchEvent(new KeyboardEvent('keydown', { key: '${key}', bubbles: true, cancelable: true })); return true; })()`);
+    const barBtn = (kw) => `[...${V}.dom.querySelectorAll('.cm-lp-table .wb-tbl-bar button')].find((x) => x.title.includes('${kw}'))`;
+    const clickEl = (elJs) => mouse(elJs, 'mousedown').then(() => mouse(elJs, 'click'));
+
+    check('可编辑表格工具条存在', await exec(`!!${V}.dom.querySelector('.cm-lp-table .wb-tbl-bar')`));
+
+    // 单元格点开输入并提交写回
+    await mouse(`${V}.dom.querySelector('.cm-lp-table tbody td[data-r="0"][data-c="0"]')`, 'mousedown');
+    check('单元格点击出现内联输入', await hasInput());
+    await exec(`(() => { const i = ${V}.dom.querySelector('.cm-lp-table input.wb-tc-input'); const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value'); d.set.call(i, '单元格甲改'); return true; })()`);
+    await keyOnInput('Enter');
+    await sleep(150);
+    check('单元格提交写回源文且表格仍渲染', (await exec(`${V}.state.sliceDoc(0).includes('| 单元格甲改 |')`)) === true && (await hasTable()));
+
+    // Tab 接力：无改动不重建，旧 DOM 直接打开右侧格
+    await mouse(`${V}.dom.querySelector('.cm-lp-table tbody td[data-r="0"][data-c="0"]')`, 'mousedown');
+    await keyOnInput('Tab');
+    await sleep(150);
+    check('Tab 接力打开右侧单元格', await exec(`(() => { const i = ${V}.dom.querySelector('.cm-lp-table input.wb-tc-input'); return !!i && i.value === '单元二'; })()`) === true);
+    await keyOnInput('Escape');
+    await sleep(100);
+    check('Esc 取消关闭输入', (await hasInput()) === false);
+
+    // ＋行：行数 +1 且新行自动进入编辑
+    const rows0 = await exec(`${V}.dom.querySelectorAll('.cm-lp-table tbody tr').length`);
+    await clickEl(barBtn('添加一行'));
+    await sleep(150);
+    check('＋行增加一行', (await exec(`${V}.dom.querySelectorAll('.cm-lp-table tbody tr').length`)) === rows0 + 1);
+    check('新行自动进入单元格编辑', (await hasInput()) === true);
+    await keyOnInput('Escape');
+    await sleep(100);
+    check('新增空行写入源文', (await exec(`${V}.state.sliceDoc(0).includes('|  |  |  |')`)) === true);
+
+    // ＋列：表头 +1 且新列自动进入编辑
+    const th0 = await exec(`${V}.dom.querySelectorAll('.cm-lp-table thead th').length`);
+    await clickEl(barBtn('添加一列'));
+    await sleep(150);
+    check('＋列增加一列（表头+1）', (await exec(`${V}.dom.querySelectorAll('.cm-lp-table thead th').length`)) === th0 + 1);
+    await keyOnInput('Escape');
+    await sleep(100);
+
+    // 表头对齐循环：默认 → 左 → 写入分隔行冒号
+    await clickEl(`${V}.dom.querySelector('.cm-lp-table thead th[data-c="0"] .wb-th-op')`);
+    await sleep(150);
+    check('对齐循环写入分隔行（:---）', (await exec(`${V}.state.sliceDoc(0).includes('| :--- |')`)) === true);
+
+    // 删行 / 删列
+    const rows1 = await exec(`${V}.dom.querySelectorAll('.cm-lp-table tbody tr').length`);
+    await clickEl(`${V}.dom.querySelector('.cm-lp-table tbody tr:first-child .wb-rop-btn')`);
+    await sleep(150);
+    check('行尾 ✕ 删除一行', (await exec(`${V}.dom.querySelectorAll('.cm-lp-table tbody tr').length`)) === rows1 - 1);
+    const th1 = await exec(`${V}.dom.querySelectorAll('.cm-lp-table thead th').length`);
+    await clickEl(`${V}.dom.querySelector('.cm-lp-table thead th[data-c="0"] .wb-th-del')`);
+    await sleep(150);
+    check('表头 ✕ 删除一列', (await exec(`${V}.dom.querySelectorAll('.cm-lp-table thead th').length`)) === th1 - 1);
+
+    // ⌨源码：部件隐藏显示源码，光标离开后恢复渲染
+    await clickEl(barBtn('源码'));
+    await sleep(200);
+    check('源码按钮显示表格源码', (await exec(`!${V}.dom.querySelector('.cm-lp-table table') && ${V}.dom.textContent.includes('| 表头乙 |')`)) === true);
+    await exec(`${V}.dispatch({selection: {anchor: 0}})`);
+    await sleep(200);
+    check('光标离开后表格恢复渲染', (await hasTable()) === true);
+
+    // 还原缓冲区与草稿，避免影响后续段
+    await exec(`(() => { const v = ${V}; v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: ${JSON.stringify(origDoc)} } }); for (const k of Object.keys(localStorage)) if (k.includes(':rich.md')) localStorage.removeItem(k); return true; })()`);
+    await sleep(120);
+    check('表格编辑测试后缓冲区还原（无脏状态）', (await exec(`${V}.state.sliceDoc(0).length === ${JSON.stringify(origDoc.length)} && !window.__wb.isDirty()`)) === true);
+  }
+
   // ---------- C. 重命名/移动期间输入不丢 + 重绑后脏状态/草稿 ----------
   console.log('== C. 重命名/移动期间输入不丢 ==');
   const crA = await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-a') });
