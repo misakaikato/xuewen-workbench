@@ -210,7 +210,8 @@ class TaskWidget extends WidgetType {
   }
 
   eq(other: TaskWidget): boolean {
-    return other.checked === this.checked;
+    // 位置必须参与比较：否则文档在别处变动后部件被复用，写回用陈旧坐标
+    return other.checked === this.checked && other.markFrom === this.markFrom && other.markTo === this.markTo;
   }
 
   toDOM(view: EditorView): HTMLElement {

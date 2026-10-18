@@ -114,6 +114,15 @@ const lineDomText = (lineNo) => `(() => {
 })()`;
 
 async function main() {
+  // 诊断：渲染进程控制台与崩溃事件（排查用，保留无害）
+  app.on('web-contents-created', (_e, wc) => {
+    wc.on('console-message', (_ev, level, message) => {
+      if (level >= 2) console.log('RENDERER:', String(message).slice(0, 300));
+    });
+    wc.on('render-process-gone', (_ev, details) => console.log('GONE:', details.reason));
+    wc.on('did-fail-load', (_ev, code, desc, url) => console.log('LOAD-FAIL:', code, desc, url?.slice?.(0, 80)));
+  });
+
   fs.cpSync(path.join(ROOT, 'test-data'), tmpCorpus, { recursive: true });
   server = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
     env: {
@@ -188,6 +197,65 @@ async function main() {
   })()`);
   await sleep(300);
   check('光标进入表格显示 | 源码', await exec(`window.__wb.editor().dom.textContent.includes('| 表头甲 |')`));
+
+  // ---------- B2. 格式工具栏与手打语法即时渲染 ----------
+  console.log('== B2. 格式工具栏 ==');
+  {
+    const V = 'window.__wb.editor()';
+    const origText = await exec(`${V}.state.sliceDoc(0)`);
+    const fmtBtn = (title) => `[...document.querySelectorAll('[data-wb-fmtbar] button')].find((x) => x.title === ${JSON.stringify(title)})`;
+    const setVal = `const setVal = (el, val) => { const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value'); d.set.call(el, val); el.dispatchEvent(new Event('input', { bubbles: true })); };`;
+
+    check('格式工具栏存在（live 模式）', await exec(`!!document.querySelector('[data-wb-fmtbar]')`));
+
+    // 选中纯文本行 → 点加粗 → 源文含 ** 且渲染粗体；光标在粗体内 B 高亮；再点取消
+    await exec(`(() => { const v = ${V}; const doc = v.state.doc; for (let i = 1; i <= doc.lines; i++) { const l = doc.line(i); if (l.text === '- 无序项目一') { v.dispatch({ selection: { anchor: l.from + 2, head: l.to } }); return true; } } return false; })()`);
+    await exec(`(() => { const b = ${fmtBtn('加粗')}; if (b) { b.click(); return true; } return false; })()`);
+    await sleep(150);
+    check('加粗按钮写入 ** 包裹', await exec(`(() => { const doc = ${V}.state.doc; for (let i = 1; i <= doc.lines; i++) { const l = doc.line(i); if (l.text.startsWith('- **') && l.text.endsWith('**')) return true; } return false; })()`));
+    check('粗体即时渲染（cm-lp-strong）', await exec(`!!${V}.dom.querySelector('.cm-lp-strong')`));
+    check('光标在粗体内时 B 按钮高亮', await exec(`(() => { const b = ${fmtBtn('加粗')}; return !!b && b.className.includes('bg-accent'); })()`));
+    await exec(`(() => { const b = ${fmtBtn('加粗')}; if (b) { b.click(); return true; } return false; })()`);
+    await sleep(150);
+    check('再点加粗取消包裹（同级切换）', await exec(`(() => { const doc = ${V}.state.doc; for (let i = 1; i <= doc.lines; i++) { if (doc.line(i).text === '- 无序项目一') return true; } return false; })()`));
+
+    // 标题下拉：光标放空行 → 标题 2 级 → 源文变 ## 且渲染 h2、DOM 无井号
+    await exec(`(() => { const v = ${V}; const l2 = v.state.doc.line(2); v.dispatch({ selection: { anchor: l2.from } }); return true; })()`);
+    await exec(`(() => { const b = [...document.querySelectorAll('[data-wb-fmtbar] button')].find((x) => x.title === '标题' || x.title.startsWith('标题 H')); if (b) { b.click(); return true; } return false; })()`);
+    await sleep(150);
+    check('标题下拉菜单展开', await exec(`(() => { return [...document.querySelectorAll('[data-wb-fmtbar] button')].some((x) => x.textContent.includes('标题 2 级')); })()`));
+    await exec(`(() => { const b = [...document.querySelectorAll('[data-wb-fmtbar] button')].find((x) => x.textContent.includes('标题 2 级')); if (b) { b.click(); return true; } return false; })()`);
+    await sleep(150);
+    check('标题下拉写入 ## 前缀', await exec(`(() => { const doc = ${V}.state.doc; for (let i = 1; i <= doc.lines; i++) { if (doc.line(i).text === '## ') return true; } return false; })()`));
+    check('标题行渲染 h2 且 DOM 无井号', await exec(`(() => { const v = ${V}; const doc = v.state.doc; for (let i = 1; i <= doc.lines; i++) { const l = doc.line(i); if (l.text === '## ') { const { node } = v.domAtPos(l.from); const el = node.nodeType === 1 ? node : node.parentElement; const ln = el && (el.closest('.cm-line') || el); return !!ln && ln.className.includes('cm-lp-h2'); } } return false; })()`));
+
+    // 手打语法：直接插入「# 手打标题」→ 立即按一级标题渲染
+    await exec(`(() => { const v = ${V}; const doc = v.state.doc; const last = doc.line(doc.lines); v.dispatch({ changes: { from: last.to, insert: '\\n# 手打标题' } }); return true; })()`);
+    await sleep(150);
+    check('手打 # 即时渲染为标题（符号隐藏）', await exec(`(() => { const v = ${V}; const doc = v.state.doc; for (let i = 1; i <= doc.lines; i++) { const l = doc.line(i); if (l.text === '# 手打标题') { const { node } = v.domAtPos(l.from); const el = node.nodeType === 1 ? node : node.parentElement; const ln = el && (el.closest('.cm-line') || el); return !!ln && !ln.textContent.includes('#') && ln.className.includes('cm-lp-h1'); } } return false; })()`));
+
+    // 任务清单：插入 → 勾选框部件 → 点击切换写回 [x]
+    await exec(`(() => { const v = ${V}; const doc = v.state.doc; const last = doc.line(doc.lines); v.dispatch({ changes: { from: last.to, insert: '\\n- [ ] 任务甲' } }); return true; })()`);
+    await sleep(150);
+    check('任务清单渲染为勾选框', await exec(`!!${V}.dom.querySelector('input.cm-lp-task')`));
+    await exec(`(() => { const cbs = ${V}.dom.querySelectorAll('input.cm-lp-task'); const cb = cbs[cbs.length - 1]; if (cb) { cb.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })); return true; } return false; })()`);
+    await sleep(150);
+    check('点击勾选框写回 [x]', await exec(`(() => { return ${V}.state.sliceDoc(0).includes('[x] 任务甲'); })()`));
+
+    // 链接弹层：选中「任务甲」→ 链接按钮 → 填地址 → 确定
+    await exec(`(() => { const v = ${V}; const doc = v.state.doc; for (let i = 1; i <= doc.lines; i++) { const l = doc.line(i); if (l.text === '- [x] 任务甲') { v.dispatch({ selection: { anchor: l.from + 6, head: l.to } }); return true; } } return false; })()`);
+    await exec(`(() => { const b = ${fmtBtn('链接（光标在链接内时编辑）')}; if (b) { b.click(); return true; } return false; })()`);
+    await sleep(120);
+    check('链接弹层出现并预填文字', await exec(`(() => { const el = document.querySelector('[data-wb-fmtbar] input[placeholder="链接文字"]'); return !!el && el.value === '任务甲'; })()`));
+    await exec(`(() => { ${setVal} const inputs = [...document.querySelectorAll('[data-wb-fmtbar] input')]; const url = inputs.find((x) => x.placeholder.includes('地址')); setVal(url, 'https://example.com/todo'); const ok = [...document.querySelectorAll('[data-wb-fmtbar] button')].find((x) => x.textContent === '确定'); ok.click(); return true; })()`);
+    await sleep(150);
+    check('链接写入源文并渲染为链接', await exec(`(() => { const v = ${V}; const okText = v.state.sliceDoc(0).includes('[任务甲](https://example.com/todo)'); const okDom = !!v.dom.querySelector('.md-link'); return okText && okDom; })()`));
+
+    // 还原缓冲区与草稿，避免影响后续段
+    await exec(`(() => { const v = ${V}; const orig = ${JSON.stringify(origText)}; v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: orig } }); for (const k of Object.keys(localStorage)) if (k.includes(':rich.md')) localStorage.removeItem(k); return true; })()`);
+    await sleep(100);
+    check('工具栏测试后缓冲区还原（无脏状态）', await exec(`${V}.state.sliceDoc(0).length === ${JSON.stringify(origText.length)} && !window.__wb.isDirty()`));
+  }
 
   // ---------- C. 重命名/移动期间输入不丢 + 重绑后脏状态/草稿 ----------
   console.log('== C. 重命名/移动期间输入不丢 ==');
