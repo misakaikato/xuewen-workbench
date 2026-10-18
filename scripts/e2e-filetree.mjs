@@ -269,8 +269,11 @@ async function main() {
   await exec(`document.querySelector('[data-tpath="col:文辑"]').click(); true`);
   await sleep(200);
   await exec(`document.querySelector('[data-tpath="${DEEP}"]').click(); true`);
-  check('点开成员后跳转阅读并切回目录视图', await until(`location.pathname.includes('/read/${DEEP}') && !!document.querySelector('[data-kind="dir"][data-tpath="docs"]')`));
-  check('视图切换已持久化', await exec(`JSON.parse(localStorage.getItem('wb.filetree.view.${dsId}') || '"cols"') === 'tree'`));
+  check('点开成员后跳转阅读并保留集合视图', await until(`location.pathname.includes('/read/${DEEP}') && !!document.querySelector('[data-tpath="col:文辑"]') && !!document.querySelector('[data-tpath="${DEEP}"].bg-sidebar-accent')`));
+  check('视图保持集合未持久化为目录', await exec(`JSON.parse(localStorage.getItem('wb.filetree.view.${dsId}') || '"cols"') === 'cols'`));
+  // 集合模式下定位后回到目录树（后续段落按物理树断言）
+  await exec(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '目录').click(); true`);
+  await sleep(200);
 
   // ---------- 13. 被引用数徽标 ----------
   console.log('== 13. 被引用数徽标 ==');

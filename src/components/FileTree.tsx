@@ -663,6 +663,23 @@ export function FileTree({
     if (!tree || !revealKey || revealedRef.current === revealKey) return;
     revealedRef.current = revealKey;
     const targetPath = revealKey.slice(2);
+
+    // 集合视图下打开文件：保持集合模式不切回物理树——
+    // 展开其所在分组（首个认领集合，与 buildCollectionRows 同口径）并滚动定位
+    if (view === 'cols' && revealKey.startsWith('f:') && !q) {
+      const dir = dirOf(targetPath);
+      const col = collections.find((c) => c.dirs.some((d) => dir === d || dir.startsWith(d + '/')));
+      const key = col ? 'col:' + col.name : 'uncat';
+      setClosedCols((prev) => {
+        if (prev.dsId !== dsId || !prev.set.has(key)) return prev;
+        const n = new Set(prev.set);
+        n.delete(key);
+        return { dsId: prev.dsId, set: n };
+      });
+      setPendingScroll(targetPath);
+      return;
+    }
+
     const dir = revealKey.startsWith('f:') ? dirOf(targetPath) : targetPath;
     const chain = dir ? [...ancestorDirs(dir), dir] : [];
     applyOpen((s) => {
