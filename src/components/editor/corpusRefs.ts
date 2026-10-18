@@ -92,28 +92,10 @@ function scanHits(state: EditorState, matcher: CorpusRefMatcher): StoredHit[] {
   return out;
 }
 
-function activeLines(state: EditorState): Set<number> {
-  const set = new Set<number>();
-  for (const r of state.selection.ranges) {
-    const a = state.doc.lineAt(r.from).number;
-    const b = state.doc.lineAt(r.to).number;
-    for (let n = a; n <= b; n++) set.add(n);
-  }
-  return set;
-}
-
-function buildDeco(state: EditorState, hits: StoredHit[]): DecorationSet {
-  const readOnly = state.facet(crReadOnly);
-  const active = readOnly ? null : activeLines(state);
+function buildDeco(hits: StoredHit[]): DecorationSet {
+  // 全时渲染：光标行也不揭示源码（论坛编辑器式）
   const parts: Range<Decoration>[] = [];
   for (const h of hits) {
-    if (active) {
-      const a = state.doc.lineAt(h.from).number;
-      const b = state.doc.lineAt(h.to).number;
-      let onActive = false;
-      for (let n = a; n <= b; n++) if (active.has(n)) onActive = true;
-      if (onActive) continue;
-    }
     parts.push(
       Decoration.mark({
         class: h.inlineCode ? 'corpus-ref corpus-ref-inline-code' : 'corpus-ref',
@@ -157,7 +139,7 @@ const crField = StateField.define<CrState>({
     if (tr.selection) rebuildDeco = true;
     if (rescan && matcher) hits = scanHits(tr.state, matcher);
     if (!rescan && !rebuildDeco) return value;
-    return { matcher, hits, deco: matcher ? buildDeco(tr.state, hits) : Decoration.none };
+    return { matcher, hits, deco: matcher ? buildDeco(hits) : Decoration.none };
   },
   provide: (f) => EditorView.decorations.from(f, (v) => v.deco),
 });

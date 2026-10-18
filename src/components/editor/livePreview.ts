@@ -1,10 +1,11 @@
-// 实时预览扩展（Typora / Obsidian 式）：光标所在“活动块”显示 Markdown 源码，
-// 其余行按 Markdown 渲染。所有装饰只影响显示，绝不改动文档字节。
-// 重算时机：文档 / 选区 / 视口 / 语法树变化；内联装饰只为可见范围构建，长文档保持轻快。
-// 表格的整块替换装饰来自 StateField（块级替换装饰要求如此），点击表格进入源码编辑。
+// 实时预览扩展（论坛编辑器式）：全时渲染——所有格式记号（#/**/>/`` 等）
+// 恒隐藏，所见即所得；格式调整交给工具栏按钮（formatToolbar）或用户手打语法
+// （语法一旦成立即被识别渲染）。装饰只影响显示，绝不改动文档字节。
+// 例外：光标进入表格时临时显示该表源码（表格暂无单元格级编辑）；
+// 光标所在空行保持原行高便于定位。
 import { syntaxTree } from '@codemirror/language';
-import { Facet, StateEffect, StateField } from '@codemirror/state';
-import type { EditorState, Range } from '@codemirror/state';
+import { EditorState, Facet, StateEffect, StateField } from '@codemirror/state';
+import type { Range } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, WidgetType } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
@@ -57,7 +58,7 @@ function resolveAsset(docPath: string, src: string): string {
   return url;
 }
 
-// ---------- 活动块（显示源码的部分） ----------
+// ---------- 选区所在行（仅用于空行压缩与表格源码揭示） ----------
 
 // 只有这些块级容器需要下探寻找围栏代码块 / 表格
 const BLOCK_CONTAINERS = new Set(['Document', 'Blockquote', 'BulletList', 'OrderedList', 'ListItem']);
@@ -68,7 +69,7 @@ function selectionEndpoints(state: EditorState): number[] {
   return out;
 }
 
-// 活动行集合：选区覆盖的行；光标在围栏代码块或表格内时扩展为整块。
+// 选区覆盖的行；光标在围栏代码块或表格内时扩展为整块。
 // 只读实例恒为空（装饰全时渲染，选区不揭示源码）。
 function activeLineSet(state: EditorState): Set<number> {
   if (state.facet(lpReadOnly)) return new Set();
@@ -193,24 +194,43 @@ class BulletWidget extends WidgetType {
   }
 }
 
+// 任务勾选：编辑态可点击切换（写回 [ ]/[x] 源文，只改这两个字节）；只读态纯展示
 class TaskWidget extends WidgetType {
   private checked: boolean;
+  private markFrom: number;
+  private markTo: number;
+  private editable: boolean;
 
-  constructor(checked: boolean) {
+  constructor(checked: boolean, markFrom: number, markTo: number, editable: boolean) {
     super();
     this.checked = checked;
+    this.markFrom = markFrom;
+    this.markTo = markTo;
+    this.editable = editable;
   }
 
   eq(other: TaskWidget): boolean {
     return other.checked === this.checked;
   }
 
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const el = document.createElement('input');
     el.type = 'checkbox';
     el.className = 'cm-lp-task';
     el.checked = this.checked;
-    el.disabled = true; // 只读展示，修改请编辑源码
+    if (!this.editable) {
+      el.disabled = true;
+      return el;
+    }
+    el.title = '切换完成状态';
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      if (!view.state.facet(EditorView.editable)) return;
+      view.dispatch({
+        changes: { from: this.markFrom, to: this.markTo, insert: this.checked ? '[ ]' : '[x]' },
+        selection: { anchor: this.markTo },
+      });
+    });
     return el;
   }
 }
@@ -340,10 +360,9 @@ const childrenOf = (node: SyntaxNode): SyntaxNode[] => {
   return out;
 };
 
-// ATX 标题：行级样式 + 隐藏 # 记号与其后空格
-function decorateHeading(state: EditorState, node: SyntaxNode, active: Set<number>, parts: Range<Decoration>[]) {
+// ATX 标题：行级样式 + 隐藏 # 记号与其后空格（全时渲染，不再因光标显源码）
+function decorateHeading(state: EditorState, node: SyntaxNode, parts: Range<Decoration>[]) {
   const line = state.doc.lineAt(node.from);
-  if (active.has(line.number)) return;
   const m = node.name.match(/^ATXHeading(\d)$/);
   if (!m) return;
   parts.push(Decoration.line({ class: 'cm-lp-h' + m[1] }).range(line.from));
@@ -354,9 +373,10 @@ function decorateHeading(state: EditorState, node: SyntaxNode, active: Set<numbe
   if (to > node.from) parts.push(Decoration.replace({}).range(node.from, to));
 }
 
-// 围栏代码：行级样式 + 围栏行内容隐藏（开栏行显示语言细条）
+// 围栏代码：行级样式 + 围栏行内容隐藏（开栏行显示语言细条）；
+// 光标在代码块内部不揭示围栏行（内容本就是字面文本，直接编辑）
 function decorateFence(
-  state: EditorState, node: SyntaxNode, active: Set<number>,
+  state: EditorState, node: SyntaxNode,
   parts: Range<Decoration>[], vFrom: number, vTo: number
 ) {
   const doc = state.doc;
@@ -364,7 +384,7 @@ function decorateFence(
   const l2 = doc.lineAt(node.to).number;
   for (let ln = l1; ln <= l2; ln++) {
     const line = doc.line(ln);
-    if (line.from < vFrom || line.from > vTo || active.has(ln)) continue;
+    if (line.from < vFrom || line.from > vTo) continue;
     const cls = ['cm-lp-code'];
     if (ln === l1) cls.push('cm-lp-code-first');
     if (ln === l2) cls.push('cm-lp-code-last');
@@ -381,7 +401,7 @@ function decorateFence(
 
 // 引用块：行级样式（'>' 记号由 enter 里的 QuoteMark 分支隐藏）
 function decorateQuoteLines(
-  state: EditorState, node: SyntaxNode, active: Set<number>,
+  state: EditorState, node: SyntaxNode,
   parts: Range<Decoration>[], vFrom: number, vTo: number
 ) {
   const doc = state.doc;
@@ -389,7 +409,7 @@ function decorateQuoteLines(
   const l2 = doc.lineAt(node.to).number;
   for (let ln = l1; ln <= l2; ln++) {
     const line = doc.line(ln);
-    if (line.from < vFrom || line.from > vTo || active.has(ln)) continue;
+    if (line.from < vFrom || line.from > vTo) continue;
     parts.push(Decoration.line({ class: 'cm-lp-quote' }).range(line.from));
   }
 }
@@ -464,7 +484,7 @@ function decorateImage(state: EditorState, node: SyntaxNode, docPath: string, pa
 function buildInlineDecorations(view: EditorView): DecorationSet {
   const state = view.state;
   const doc = state.doc;
-  const active = activeLineSet(state);
+  const active = activeLineSet(state); // 仅用于空行压缩与表格源码揭示（见下）
   const docPath = state.facet(lpDocPath);
   const parts: Range<Decoration>[] = [];
   // 围栏代码区间：空行压缩（cm-lp-blank）不得进入代码块内部
@@ -472,7 +492,6 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
   const hide = (from: number, to: number) => {
     if (to > from) parts.push(Decoration.replace({}).range(from, to));
   };
-  const lineActive = (pos: number) => active.has(doc.lineAt(pos).number);
 
   for (const { from: vFrom, to: vTo } of view.visibleRanges) {
     syntaxTree(state).iterate({
@@ -484,53 +503,53 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
         if (n === 'Table') return false; // 整表由 StateField 的块级替换接管
         if (n === 'FencedCode') {
           codeIntervals.push({ from: node.from, to: node.to });
-          decorateFence(state, node, active, parts, vFrom, vTo);
+          decorateFence(state, node, parts, vFrom, vTo);
           return false;
         }
         if (n === 'ATXHeading1' || n === 'ATXHeading2' || n === 'ATXHeading3' ||
             n === 'ATXHeading4' || n === 'ATXHeading5' || n === 'ATXHeading6') {
-          decorateHeading(state, node, active, parts);
+          decorateHeading(state, node, parts);
           return; // 标题内还可有内联标记，继续下探
         }
         if (n === 'Blockquote') {
-          decorateQuoteLines(state, node, active, parts, vFrom, vTo);
+          decorateQuoteLines(state, node, parts, vFrom, vTo);
           return; // 继续下探处理 QuoteMark 与内联标记
         }
         if (n === 'QuoteMark') {
-          if (!lineActive(node.from)) hide(node.from, node.to);
+          hide(node.from, node.to);
           return;
         }
         if (n === 'HorizontalRule') {
-          if (!lineActive(node.from) && node.to > node.from) {
+          if (node.to > node.from) {
             parts.push(Decoration.replace({ widget: new HrWidget() }).range(node.from, node.to));
           }
           return false;
         }
         if (n === 'Emphasis' || n === 'StrongEmphasis') {
-          if (!lineActive(node.from)) decoratePairedMarks(node, 'EmphasisMark', n === 'Emphasis' ? 'cm-lp-em' : 'cm-lp-strong', parts);
+          decoratePairedMarks(node, 'EmphasisMark', n === 'Emphasis' ? 'cm-lp-em' : 'cm-lp-strong', parts);
           return false;
         }
         if (n === 'Strikethrough') {
-          if (!lineActive(node.from)) decoratePairedMarks(node, 'StrikethroughMark', 'cm-lp-strike', parts);
+          decoratePairedMarks(node, 'StrikethroughMark', 'cm-lp-strike', parts);
           return false;
         }
         if (n === 'InlineCode') {
-          if (!lineActive(node.from)) decoratePairedMarks(node, 'CodeMark', 'cm-lp-code-inline', parts);
+          decoratePairedMarks(node, 'CodeMark', 'cm-lp-code-inline', parts);
           return false;
         }
         if (n === 'Link' || n === 'Autolink') {
-          if (!lineActive(node.from)) decorateLink(state, node, parts);
+          decorateLink(state, node, parts);
           return false;
         }
         if (n === 'Image') {
-          if (!lineActive(node.from)) decorateImage(state, node, docPath, parts);
+          decorateImage(state, node, docPath, parts);
           return false;
         }
         if (n === 'ListMark') {
           // 无序列表符号替换为圆点部件；有序列表保留编号
           const parent = node.parent;
           const inBullet = parent?.parent?.name === 'BulletList';
-          if (inBullet && !lineActive(node.from)) {
+          if (inBullet) {
             let to = node.to;
             if (to < doc.length && state.sliceDoc(to, to + 1) === ' ') to++;
             parts.push(Decoration.replace({ widget: new BulletWidget() }).range(node.from, to));
@@ -538,13 +557,14 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
           return;
         }
         if (n === 'TaskMarker') {
-          if (!lineActive(node.from)) {
-            const text = state.sliceDoc(node.from, node.to);
-            const checked = /\[x\]/i.test(text);
-            let to = node.to;
-            if (to < doc.length && state.sliceDoc(to, to + 1) === ' ') to++;
-            parts.push(Decoration.replace({ widget: new TaskWidget(checked) }).range(node.from, to));
-          }
+          const checked = /\[x\]/i.test(state.sliceDoc(node.from, node.to));
+          let to = node.to;
+          if (to < doc.length && state.sliceDoc(to, to + 1) === ' ') to++;
+          parts.push(
+            Decoration.replace({
+              widget: new TaskWidget(checked, node.from, node.to, !state.facet(lpReadOnly)),
+            }).range(node.from, to)
+          );
           return;
         }
         return; // 其余节点继续下探

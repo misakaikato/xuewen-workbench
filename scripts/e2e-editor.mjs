@@ -166,14 +166,14 @@ async function main() {
   await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})');
   await sleep(300);
   const l1 = await exec(lineDomText(1));
-  check('活动标题行显示 # 源码', l1.includes('# '), JSON.stringify(l1));
+  check('标题行全时渲染不显示 #（含光标行）', !l1.includes('#'), JSON.stringify(l1));
   const h2Line = await exec(`(() => {
     const doc = window.__wb.editor().state.doc;
     for (let i = 1; i <= doc.lines; i++) if (doc.line(i).text.startsWith('## ')) return i;
     return 0;
   })()`);
   const l2 = await exec(lineDomText(h2Line));
-  check('非活动标题行不显示 #', !l2.includes('#'), JSON.stringify(l2));
+  check('任意标题行不显示 #', !l2.includes('#'), JSON.stringify(l2));
   check('表格渲染为 HTML 部件', await exec(`!!window.__wb.editor().dom.querySelector('.cm-lp-table table')`));
   check('图片部件存在', await exec(`!!window.__wb.editor().dom.querySelector('img.cm-lp-img')`));
   check('代码块行带 cm-lp-code', await exec(`!!window.__wb.editor().dom.querySelector('.cm-lp-code')`));
@@ -452,8 +452,8 @@ async function main() {
   })()`);
   await exec(`window.__wb.editor().dispatch({selection: {anchor: window.__wb.editor().state.doc.line(${wikiLine}).from}})`);
   await sleep(300);
-  check('光标行 wikilink 显示源码（标记隐藏）',
-    !(await exec(`[...window.__wb.editor().dom.querySelectorAll('[data-al-kind="wiki"]')].some((el) => el.textContent === '孔子')`)));
+  check('光标行 wikilink 仍渲染为词条（全时渲染）',
+    await exec(`[...window.__wb.editor().dom.querySelectorAll('[data-al-kind="wiki"]')].some((el) => el.textContent === '孔子')`));
   await exec('window.__wb.editor().dispatch({selection: {anchor: 0}})');
   await sleep(300);
 

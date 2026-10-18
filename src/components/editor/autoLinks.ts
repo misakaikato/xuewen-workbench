@@ -15,7 +15,6 @@ import type { DocLink } from '@/lib/api';
 import { wikiNameAt } from '../../../server/linkMatch.js';
 
 const alDocPath = Facet.define<string, string>({ combine: (v) => (v.length ? v[v.length - 1] : '') });
-const alReadOnly = Facet.define<boolean, boolean>({ combine: (v) => v.some(Boolean) });
 
 const setDocLinks = StateEffect.define<{ links: DocLink[]; seq: number }>();
 
@@ -25,40 +24,18 @@ interface AlState {
   deco: DecorationSet;
 }
 
-// 光标所在行集合（wikilink 在活动行显示源码）
-function activeLines(state: EditorState): Set<number> {
-  const set = new Set<number>();
-  for (const r of state.selection.ranges) {
-    const a = state.doc.lineAt(r.from).number;
-    const b = state.doc.lineAt(r.to).number;
-    for (let n = a; n <= b; n++) set.add(n);
-  }
-  return set;
-}
-
 function buildDecorations(links: DocLink[], state: EditorState): DecorationSet {
   const doc = state.doc;
-  const active = state.facet(alReadOnly) ? new Set<number>() : activeLines(state);
   const parts: Range<Decoration>[] = [];
   for (const l of links) {
     if (l.ignored || l.to <= l.from) continue;
     const cls = l.kind === 'auto' ? 'wb-autolink' : l.kind === 'wiki' ? 'wb-wikilink' : 'wb-wikilink-missing';
-    let hidden = false;
-    if (l.kind !== 'auto') {
-      // wikilink：活动行显示源码（只读实例除外）
-      const a = doc.lineAt(l.from).number;
-      const b = doc.lineAt(l.to).number;
-      let onActive = false;
-      for (let n = a; n <= b; n++) if (active.has(n)) onActive = true;
-      if (onActive) continue;
-      hidden = true;
-    }
+    // 全时渲染：光标行也不揭示源码（论坛编辑器式）
     parts.push(
       Decoration.mark({ class: cls, attributes: { 'data-al-kind': l.kind, 'data-al-term': l.term } }).range(l.from, l.to)
     );
-    // wikilink 非源码态：只显示 display||term（同旧阅读页 LinkChip），
-    // 隐藏 [[ ]] 括号与 name| / #heading 部分（区间按原文推导，偏移安全才应用）
-    if (hidden && l.to - l.from >= 4) {
+    // wikilink 隐藏 [[ ]] 与 name| / #heading，只显示 display||term（同阅读页）
+    if (l.kind !== 'auto' && l.to - l.from >= 4) {
       const raw = doc.sliceString(l.from, l.to);
       if (raw.startsWith('[[') && raw.endsWith(']]')) {
         const inner = raw.slice(2, -2);
@@ -320,5 +297,5 @@ export function autoLinks(opts: AutoLinksOptions): Extension {
 
 /** 供 Edit 页在打开 / 保存后触发拉取（扩展内事件处理也用它） */
 export function linksExtensionFor(docPath: string, opts: AutoLinksOptions): Extension[] {
-  return [alDocPath.of(docPath), alReadOnly.of(!!opts.readOnly), autoLinks(opts)];
+  return [alDocPath.of(docPath), autoLinks(opts)];
 }
