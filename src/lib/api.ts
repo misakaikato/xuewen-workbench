@@ -233,10 +233,18 @@ export const api = {
   ragIndexBuild: (rebuild: boolean) => req<{ ok: boolean }>('/api/rag/index/build', json('POST', { rebuild })),
   ragIndexPause: () => req<{ ok: boolean }>('/api/rag/index/pause', json('POST', {})),
   ragSearch: (q: string, limit = 20) => req<RagSearchResponse>('/api/rag/search', json('POST', { q, limit })),
+  ragConfigGet: () => req<{ dsId: string; config: RagConfig }>('/api/rag/config'),
+  ragConfigSave: (patch: Partial<RagConfig>) => req<{ ok: boolean; config: RagConfig }>('/api/rag/config', json('PUT', patch)),
   ragLlmGet: () => req<RagLlmConfig>('/api/rag/llm'),
   ragLlmSave: (cfg: Partial<RagLlmConfig>) => req<{ ok: boolean }>('/api/rag/llm', json('PUT', cfg)),
   ragLlmTest: () => req<{ ok: boolean; models?: string[]; error?: string }>('/api/rag/llm/test', json('POST', {})),
 };
+
+export interface RagConfig {
+  chunk: { maxChars: number; jsonValueLimit: number; headingContext: boolean; hardSplitOversize: boolean };
+  embed: { maxLength: number };
+  search: { topN: number; rrfK: number; rrfMin: number; cosFloor: number; cosSigma: number };
+}
 
 export interface RagModelStatus {
   state: 'missing' | 'downloading' | 'ready' | 'error';
@@ -260,6 +268,7 @@ export interface RagIndexStatus {
   dbBytes: number;
   updatedAt: number | null;
   error: string | null;
+  configChanged?: boolean;
 }
 
 export interface RagStatus {

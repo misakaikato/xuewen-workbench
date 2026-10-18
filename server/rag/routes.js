@@ -44,6 +44,19 @@ export function mountRag(manager, resolveLib) {
     res.json(manager.pause(lib.id));
   });
 
+  r.get('/config', (req, res) => {
+    const lib = needLib(req, res);
+    if (!lib) return;
+    res.json({ dsId: lib.id, config: manager.index(lib.id).cfg });
+  });
+
+  r.put('/config', (req, res) => {
+    const lib = needLib(req, res);
+    if (!lib) return;
+    const next = manager.saveConfig(lib.id, req.body || {});
+    res.json({ ok: true, config: next });
+  });
+
   r.post('/search', async (req, res) => {
     const lib = needLib(req, res);
     if (!lib) return;

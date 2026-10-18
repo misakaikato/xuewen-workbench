@@ -47,11 +47,11 @@ def do_load(dir_):
     return {"ok": True}
 
 
-def _embed(texts):
+def _embed(texts, max_length=1024):
     import mlx.core as mx
 
     # padding 分桶到 128 的倍数：形状收敛 → buffer 高复用，避免 cache 碎片化膨胀
-    enc = _tok(texts, padding=True, truncation=True, max_length=1024, pad_to_multiple_of=128)
+    enc = _tok(texts, padding=True, truncation=True, max_length=max_length, pad_to_multiple_of=128)
     out = _model(
         input_ids=mx.array(enc["input_ids"]),
         attention_mask=mx.array(enc["attention_mask"]),
@@ -62,8 +62,8 @@ def _embed(texts):
     return v
 
 
-def do_embed(texts):
-    v = _embed(texts)
+def do_embed(texts, max_length=None):
+    v = _embed(texts, max_length or 1024)
     out = v.tolist()
     # 每批后清 cache：单批工作集很小（~3GB 峰值），清掉可把 RSS 压到模型本身
     import mlx.core as mx
@@ -87,7 +87,7 @@ def main():
             if cmd == "load":
                 resp = do_load(req["dir"])
             elif cmd == "embed":
-                resp = do_embed(req.get("texts", []))
+                resp = do_embed(req.get("texts", []), req.get("max_length"))
             else:
                 resp = {"error": "unknown cmd: %s" % cmd}
         except Exception as e:

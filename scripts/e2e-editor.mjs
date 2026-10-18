@@ -695,6 +695,40 @@ async function main() {
     check('智能检索覆盖 txt 块', (rs.body?.hits || []).some((h) => h.path === TXT), JSON.stringify((rs.body?.hits || []).map((h) => h.path)));
   }
 
+  // ---------- E7. RAG 参数配置 ----------
+  console.log('== E7. RAG 参数配置 ==');
+  {
+    const c0 = await j('/api/rag/config');
+    check('配置默认值（maxChars=600/headingContext=true）', c0.body?.config?.chunk?.maxChars === 600 && c0.body?.config?.chunk?.headingContext === true, JSON.stringify(c0.body?.config?.chunk));
+    const st0 = await j('/api/rag/status');
+    const chunks0 = st0.body?.index?.chunks || 0;
+    // 缩小切块 → 未重建时提示 configChanged
+    const c1 = await put('/api/rag/config', { chunk: { maxChars: 80 } });
+    check('保存切块参数（部分补丁合并）', c1.body?.config?.chunk?.maxChars === 80 && c1.body?.config?.chunk?.headingContext === true, JSON.stringify(c1.body?.config?.chunk));
+    check('越界值被钳制（topN=99999→200）', (await put('/api/rag/config', { search: { topN: 99999 } })).body?.config?.search?.topN === 200);
+    const st1 = await j('/api/rag/status');
+    check('参数变化提示重建（configChanged）', st1.body?.index?.configChanged === true);
+    // 重建后块数显著增多（600→80 更碎）
+    await post('/api/rag/index/build', { rebuild: true });
+    let rebuilt = false;
+    for (let i = 0; i < 40; i++) {
+      await sleep(200);
+      const st = await j('/api/rag/status');
+      if (st.body?.index?.state === 'ready') { rebuilt = true; break; }
+    }
+    check('小切块重建完成', rebuilt);
+    const st2 = await j('/api/rag/status');
+    check('块数随上限变小而增多', (st2.body?.index?.chunks || 0) > chunks0, `chunks ${chunks0} → ${st2.body?.index?.chunks}`);
+    check('重建后 configChanged 归位', st2.body?.index?.configChanged === false);
+    // 检索参数即时生效（不触发 configChanged）
+    await put('/api/rag/config', { search: { topN: 10 } });
+    check('检索参数调整不标记重建', (await j('/api/rag/status')).body?.index?.configChanged === false);
+    const rs = await post('/api/rag/search', { q: '基本概念' });
+    check('调参后检索仍正常', (rs.body?.hits || []).length > 0);
+    // 恢复默认，留给后续干净状态
+    await put('/api/rag/config', { chunk: { maxChars: 600 }, search: { topN: 30 } });
+  }
+
   console.log('== F. 自动内链与反向链接 ==');
   await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-links') });
 

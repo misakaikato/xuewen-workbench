@@ -76,7 +76,8 @@ function paragraphs(lines) {
 }
 
 // 段落单元聚合成 ≤MAX_CHARS 的块（单元本身超限则独立成块，不硬切）
-function groupUnits(units) {
+function groupUnits(units, cfg) {
+  const maxChars = cfg.maxChars;
   const out = [];
   let acc = [];
   let len = 0;
@@ -88,21 +89,27 @@ function groupUnits(units) {
     }
   };
   for (const u of units) {
-    if (len > 0 && len + u.length > MAX_CHARS) flush();
+    if (len > 0 && len + u.length > maxChars) flush();
+    if (u.length > maxChars && cfg.hardSplitOversize) {
+      // 硬切模式：超长单元按 maxChars 切片
+      flush();
+      for (let i = 0; i < u.length; i += maxChars) out.push(u.slice(i, i + maxChars));
+      continue;
+    }
     acc.push(u);
     len += u.length;
-    if (len >= MAX_CHARS) flush(); // 单个大单元也独立成块
+    if (len >= maxChars) flush(); // 单个大单元独立成块（默认不硬切）
   }
   flush();
   return out;
 }
 
-export function chunkMarkdown(text) {
+export function chunkMarkdown(text, cfg = DEFAULT_RAG_CONFIG.chunk) {
   const out = [];
   for (const sec of mdSections(text)) {
     const units = paragraphs(sec.lines);
     if (!units.length) continue;
-    for (const body of groupUnits(units)) {
+    for (const body of groupUnits(units, cfg)) {
       out.push({ headingPath: sec.headingPath, text: body });
     }
   }
@@ -111,19 +118,19 @@ export function chunkMarkdown(text) {
 
 // ---- docx / 纯文本（word.js 提取的段落文本，\n\n 分段） ----
 
-export function chunkPlainText(text) {
-  return groupUnits(paragraphs(text.split(/\r?\n/))).map((body) => ({ headingPath: '', text: body }));
+export function chunkPlainText(text, cfg = DEFAULT_RAG_CONFIG.chunk) {
+  return groupUnits(paragraphs(text.split(/\r?\n/)), cfg).map((body) => ({ headingPath: '', text: body }));
 }
 
 // ---- json：数组按条目，对象按顶层键；字段名保留在块文本里 ----
 
-const jsonItemText = (key, val) => {
+const jsonItemText = (key, val, limit) => {
   const t = typeof val === 'string' ? val : JSON.stringify(val);
-  const body = t && t.length > 1500 ? t.slice(0, 1500) + '…' : t;
+  const body = t && t.length > limit ? t.slice(0, limit) + '…' : t;
   return key ? `${key}: ${body}` : body;
 };
 
-export function chunkJson(text) {
+export function chunkJson(text, cfg = DEFAULT_RAG_CONFIG.chunk) {
   let data;
   try {
     data = JSON.parse(text);
@@ -136,28 +143,28 @@ export function chunkJson(text) {
       const key = item && typeof item === 'object' && !Array.isArray(item)
         ? Object.entries(item).slice(0, 3).map(([k]) => k).join(', ')
         : null;
-      out.push({ headingPath: `条目 ${i + 1}`, text: jsonItemText(key, item) });
+      out.push({ headingPath: `条目 ${i + 1}`, text: jsonItemText(key, item, cfg.jsonValueLimit) });
     });
   } else if (data && typeof data === 'object') {
     for (const [k, v] of Object.entries(data)) {
-      const t = jsonItemText(k, v);
+      const t = jsonItemText(k, v, cfg.jsonValueLimit);
       if (t.trim()) out.push({ headingPath: k, text: t });
     }
   } else {
-    out.push({ headingPath: '', text: String(data) });
+    out.push({ headingPath: '', text: String(data).slice(0, cfg.jsonValueLimit) });
   }
-  return out.length ? out : [{ headingPath: '', text: text.slice(0, 1500) }];
+  return out.length ? out : [{ headingPath: '', text: text.slice(0, cfg.jsonValueLimit) }];
 }
 
 // ---- 统一入口 ----
 
-export function chunkFile(ext, text) {
-  if (ext === '.md') return chunkMarkdown(text);
-  if (ext === '.json') return chunkJson(text);
-  return chunkPlainText(text); // .txt / .doc / .docx 提取文本
+export function chunkFile(ext, text, cfg = DEFAULT_RAG_CONFIG.chunk) {
+  if (ext === '.md') return chunkMarkdown(text, cfg);
+  if (ext === '.json') return chunkJson(text, cfg);
+  return chunkPlainText(text, cfg); // .txt / .doc / .docx 提取文本
 }
 
-// 块的嵌入文本：标题路径 + 正文（给向量与 FTS 提供语境）
-export function embedTextOf(chunk) {
-  return chunk.headingPath ? `${chunk.headingPath}\n\n${chunk.text}` : chunk.text;
+// 块的嵌入文本：标题路径 + 正文（给向量与 FTS 提供语境；headingContext=false 时仅正文）
+export function embedTextOf(chunk, headingContext = true) {
+  return headingContext && chunk.headingPath ? `${chunk.headingPath}\n\n${chunk.text}` : chunk.text;
 }

@@ -56,6 +56,7 @@ npm run dev:server # 仅后端；npm run dev:client 仅前端
 - **嵌入模型**：bge-m3（1024 维）。首次点「下载」（约 1.1GB，Hugging Face → hf-mirror 自动回退，sha256 校验），或手动导入模型目录；macOS 走 MLX（Apple GPU，uv 自动置备 Python 环境），Windows 走 ONNX runtime（CUDA EP 为打包期实测点，失败回退 CPU）；开发/测试可用 `WORKBENCH_RAG_EMBED=mock`。
 - **语义索引**：按库隔离（`sources/<dsId>/rag.db`，better-sqlite3 + FTS5 中文 bigram + 向量 BLOB）；结构化切块（md 按标题层级、txt/docx 按段落、json 按条目，超长节按段落边界二次分组）；构建有进度、可暂停续建；文件改动后经 chokidar 自动增量（mtime+size 对账）；索引是可重建缓存，删除即全量重建。
 - **检索测试台**：与检索页智能 tab 同链路，附 bm25/语义/融合分便于调参。
+- **参数配置**（按库）：目标块上限 / JSON 单值截断 / 标题路径语境 / 超长单元硬切（切块）；嵌入截断 token（嵌入）；每路 Top-N / RRF k / 最低融合分 / 余弦下限 / 余弦 σ 倍数（检索）。切块与嵌入参数改动后状态页提示「建议重建」并一键重建；检索参数即时生效。越界值自动钳制，可一键恢复默认。
 - **本地问答（v2 预留）**：OpenAI 兼容端点配置（默认 `http://localhost:11434/v1`，兼容 Ollama / LM Studio），生成回答为 M3 里程碑。
 
 实现规格见 `specs/2026-10-18-rag.md`。

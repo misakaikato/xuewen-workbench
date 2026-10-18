@@ -321,11 +321,12 @@ export class EmbedService {
     return {
       kind: 'onnx',
       ep: epUsed,
-      embed: async (texts) => {
+      embed: async (texts, opts = {}) => {
+        const maxLen = opts.maxLength || 1024;
         const out = [];
         for (let i = 0; i < texts.length; i += 8) {
           const batch = texts.slice(i, i + 8);
-          const enc = await tokenizer(batch, { padding: true, truncation: true, max_length: 1024 });
+          const enc = await tokenizer(batch, { padding: true, truncation: true, max_length: maxLen });
           const feeds = {
             input_ids: new ort.Tensor('int64', BigInt64Array.from(enc.input_ids.data), enc.input_ids.dims),
             attention_mask: new ort.Tensor('int64', BigInt64Array.from(enc.attention_mask.data), enc.attention_mask.dims),
@@ -418,10 +419,11 @@ export class EmbedService {
     });
     return {
       kind: 'mlx',
-      embed: async (texts) => {
+      embed: async (texts, opts = {}) => {
+        const maxLen = opts.maxLength || 1024;
         const out = [];
         for (let i = 0; i < texts.length; i += 16) {
-          const r = await call({ cmd: 'embed', texts: texts.slice(i, i + 16) });
+          const r = await call({ cmd: 'embed', texts: texts.slice(i, i + 16), max_length: maxLen });
           for (const v of r.vectors) out.push(Float32Array.from(v));
         }
         return out;
@@ -434,9 +436,9 @@ export class EmbedService {
     };
   }
 
-  async embed(texts) {
+  async embed(texts, opts = {}) {
     const rt = await this.ensureReady();
-    return rt.embed(texts);
+    return rt.embed(texts, opts);
   }
 
   dispose() {

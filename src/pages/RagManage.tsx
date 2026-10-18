@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { RagStatus, RagLlmConfig } from '@/lib/api';
+import type { RagStatus, RagLlmConfig, RagConfig } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { extIcon } from '@/lib/extIcon';
-import { Download, FolderInput, Play, Pause, RotateCcw, RefreshCw, Cpu, Zap, FlaskConical, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Download, FolderInput, Play, Pause, RotateCcw, RefreshCw, Cpu, Zap, FlaskConical, CheckCircle2, AlertTriangle, SlidersHorizontal } from 'lucide-react';
 
 const fmtBytes = (n: number) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : String(n));
 
@@ -48,6 +48,8 @@ export default function RagManage() {
   const [smart, setSmart] = useState<Awaited<ReturnType<typeof api.ragSearch>> | null>(null);
   const [llm, setLlm] = useState<RagLlmConfig | null>(null);
   const [llmTest, setLlmTest] = useState<string | null>(null);
+  const [cfg, setCfg] = useState<RagConfig | null>(null);
+  const [cfgSaved, setCfgSaved] = useState<string | null>(null);
 
   const poll = useCallback(async () => {
     if (!dsId) return;
@@ -68,7 +70,8 @@ export default function RagManage() {
 
   useEffect(() => {
     api.ragLlmGet().then(setLlm).catch(() => {});
-  }, []);
+    api.ragConfigGet().then((r) => setCfg(r.config)).catch(() => {});
+  }, [dsId]);
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label);
@@ -184,6 +187,13 @@ export default function RagManage() {
           </div>
         )}
         {ix?.error && <div className="text-xs text-red-600 mb-3">{ix.error}</div>}
+        {ix?.configChanged && (
+          <div className="text-xs border border-amber-400 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 rounded p-2 mb-3 flex items-center gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            切块/嵌入参数与建库时不同，现有索引按旧参数生成。
+            <button className="underline" disabled={busy !== null} onClick={() => run('rebuild', () => api.ragIndexBuild(true))}>立即重建</button>
+          </div>
+        )}
         <div className="flex items-center gap-2 flex-wrap">
           <button
             className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 flex items-center gap-1 disabled:opacity-40"
@@ -213,6 +223,79 @@ export default function RagManage() {
           )}
           <span className="text-[11px] text-muted-foreground">索引存于本机应用数据目录，删除后可随时重建；文件改动后自动增量更新。</span>
         </div>
+      </section>
+
+      {/* 参数配置 */}
+      <section className="bg-card border border-border rounded-lg p-4">
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+          <SlidersHorizontal className="w-4 h-4" /> 切块与检索参数
+          <span className="text-xs text-muted-foreground font-normal">（按当前资料库；改切块/嵌入后需重建索引）</span>
+        </h2>
+        {cfg && (
+          <>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs mb-3">
+              {([
+                ['chunk.maxChars', '目标块上限（字符）', 60], ['chunk.jsonValueLimit', 'JSON 单值截断', 60],
+                ['embed.maxLength', '嵌入截断（token）', 60], ['search.topN', '每路 Top-N', 10],
+                ['search.rrfK', 'RRF k', 10], ['search.rrfMin', '最低融合分', 0.001],
+                ['search.cosFloor', '余弦下限', 0.01], ['search.cosSigma', '余弦 σ 倍数', 0.1],
+              ] as const).map(([key, label, step]) => {
+                const [sec, k] = key.split('.') as [keyof RagConfig, string];
+                return (
+                  <label key={key} className="flex flex-col gap-1">
+                    <span className="text-muted-foreground">{label}</span>
+                    <input
+                      type="number"
+                      step={step}
+                      value={(cfg[sec] as unknown as Record<string, number>)[k]}
+                      onChange={(e) => setCfg((p) => p ? { ...p, [sec]: { ...(p[sec] as object), [k]: Number(e.target.value) } } : p)}
+                      className="px-2 py-1.5 rounded border border-input bg-card"
+                    />
+                  </label>
+                );
+              })}
+              {([
+                ['chunk.headingContext', '标题路径拼入嵌入文本（提供语境）'],
+                ['chunk.hardSplitOversize', '超长单元硬切（默认独立成块）'],
+              ] as const).map(([key, label]) => {
+                const [sec, k] = key.split('.') as [keyof RagConfig, string];
+                return (
+                  <label key={key} className="flex items-center gap-2 sm:col-span-2 lg:col-span-1">
+                    <input
+                      type="checkbox"
+                      checked={(cfg[sec] as unknown as Record<string, boolean>)[k]}
+                      onChange={(e) => setCfg((p) => p ? { ...p, [sec]: { ...(p[sec] as object), [k]: e.target.checked } } : p)}
+                    />
+                    <span>{label}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
+                disabled={busy !== null}
+                onClick={async () => {
+                  const r = await api.ragConfigSave(cfg);
+                  setCfg(r.config);
+                  setCfgSaved('已保存' + (ix?.files ? '——切块/嵌入参数变化需重建索引生效' : ''));
+                  await poll();
+                }}
+              >保存参数</button>
+              <button
+                className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent"
+                disabled={busy !== null}
+                onClick={async () => {
+                  const r = await api.ragConfigSave({ chunk: { maxChars: 600, jsonValueLimit: 1500, headingContext: true, hardSplitOversize: false }, embed: { maxLength: 1024 }, search: { topN: 30, rrfK: 60, rrfMin: 0.0105, cosFloor: 0.25, cosSigma: 2.0 } });
+                  setCfg(r.config);
+                  setCfgSaved('已恢复默认');
+                  await poll();
+                }}
+              >恢复默认</button>
+              {cfgSaved && <span className="text-xs text-muted-foreground">{cfgSaved}</span>}
+            </div>
+          </>
+        )}
       </section>
 
       {/* 检索测试台 */}

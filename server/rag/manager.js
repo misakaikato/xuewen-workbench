@@ -6,9 +6,10 @@ import path from 'node:path';
 import { RagStore, tokenizeFts, ftsIndexText } from './store.js';
 import { chunkFile, embedTextOf } from './chunk.js';
 import { EmbedService, t2s, DIM } from './embed.js';
+import { loadRagConfig, saveRagConfig, indexConfigFingerprint, DEFAULT_RAG_CONFIG } from './config.js';
 
-const RRF_K = 60;
-const TOPN = 30;
+// 检索参数来自按库配置（loadRagConfig），以下仅为回退默认
+const { rrfK: RRF_K, topN: TOPN } = DEFAULT_RAG_CONFIG.search;
 
 class RagIndex {
   constructor(dsId, dbPath, getSnapshot, embed) {
@@ -16,6 +17,10 @@ class RagIndex {
     this.dbPath = dbPath;
     this.getSnapshot = getSnapshot; // () => { files: [{path, contentHash, ext}] } | null
     this.embed = embed;
+    this.cfg = loadRagConfig(dsId);
+    this.reloadCfg = () => {
+      this.cfg = loadRagConfig(dsId);
+    };
     this.store = null;
     this.state = 'none'; // none | building | paused | ready | error
     this.phase = ''; // 切块 | 嵌入 | 完成
@@ -38,6 +43,11 @@ class RagIndex {
   status() {
     const store = this._ensureStore();
     const st = store.stats();
+    // 切块/嵌入参数与建库时不同 → 提示重建
+    let configChanged = false;
+    try {
+      configChanged = !!store.metaGet('index_cfg') && store.metaGet('index_cfg') !== indexConfigFingerprint(this.cfg);
+    } catch { /* 忽略 */ }
     // 重启恢复：库里有完成的文件即为就绪（内存态丢失时从数据推导）
     if (this.state === 'none' && st.files > 0 && st.filesDone === st.files) this.state = 'ready';
     let dbBytes = 0;
@@ -56,6 +66,7 @@ class RagIndex {
       dbBytes,
       updatedAt: this._updatedAt || null,
       error: this.error,
+      configChanged,
     };
   }
 
@@ -96,13 +107,13 @@ class RagIndex {
           this.done++;
           continue;
         }
-        const chunks = chunkFile(f.ext || '.md', text);
+        const chunks = chunkFile(f.ext || '.md', text, this.cfg.chunk);
         store.replaceChunks(f.path, f.contentHash, chunks, kindOf(f.ext), (t) => ftsIndexText(t2s(t)));
         // 立即嵌入该文件全部块（文件级完成粒度）
         this.phase = '嵌入';
         if (chunks.length) {
           const ids = store.db.prepare('SELECT id FROM chunks WHERE path=? ORDER BY ordinal').all(f.path).map((r) => r.id);
-          const vecs = await this.embed.embed(chunks.map(embedTextOf));
+          const vecs = await this.embed.embed(chunks.map((c) => embedTextOf(c, this.cfg.chunk.headingContext)), { maxLength: this.cfg.embed.maxLength });
           store.writeVecs(ids.map((id, i) => ({ id, vec: vecs[i] })));
         }
         store.markFileDone(f.path);
@@ -112,6 +123,7 @@ class RagIndex {
       this.state = 'ready';
       this.phase = '完成';
       this._updatedAt = Date.now();
+      store.metaSet('index_cfg', indexConfigFingerprint(this.cfg)); // 重建提示指纹
       return { ok: true };
     } catch (e) {
       this.state = 'error';
@@ -183,6 +195,13 @@ export class RagManager {
     return this.index(dsId).build(opts);
   }
 
+  saveConfig(dsId, patch) {
+    const next = saveRagConfig(dsId, patch);
+    const ix = this.index(dsId);
+    ix.cfg = next;
+    return next;
+  }
+
   pause(dsId) {
     return this.index(dsId).pause();
   }
@@ -204,6 +223,7 @@ export class RagManager {
     const t0 = Date.now();
     const ix = this.index(dsId);
     const store = ix._ensureStore();
+    const cfg = ix.cfg;
     const st = store.stats();
     if (!st.chunks) throw new Error('索引为空（请先构建索引）');
     const qs = t2s(q).toLowerCase().trim();
@@ -211,10 +231,10 @@ export class RagManager {
 
     // ① FTS5
     const tokens = tokenizeFts(qs);
-    const fts = store.searchFts(tokens, TOPN); // [{id, score}] score=bm25（小好）
+    const fts = store.searchFts(tokens, cfg.search.topN); // [{id, score}] score=bm25（小好）
 
     // ② 余弦 + 统计阈值（诚实空结果：无关查询的余弦分布无离群点，整体压掉）
-    const qv = (await this.embed.embed([qs]))[0];
+    const qv = (await this.embed.embed([qs], { maxLength: cfg.embed.maxLength }))[0];
     const { ids, mat, dim } = store.vecMatrix();
     let cos = [];
     if (ids.length && dim === qv.length) {
@@ -228,24 +248,25 @@ export class RagManager {
       const n = all.length || 1;
       const mean = all.reduce((a, x) => a + x.score, 0) / n;
       const std = Math.sqrt(all.reduce((a, x) => a + (x.score - mean) * (x.score - mean), 0) / n);
-      const cosMin = Math.max(0.25, mean + 2 * std);
+      const cosMin = Math.max(cfg.search.cosFloor, mean + cfg.search.cosSigma * std);
       cos = all.filter((x) => x.score >= cosMin).sort((a, b) => b.score - a.score);
     }
 
     // ③ RRF 融合（bm25 名次升序、cos 名次降序）
     const rrf = new Map();
+    const rrfK = cfg.search.rrfK;
     fts.forEach((r, i) => {
-      const s = 1 / (RRF_K + i + 1);
+      const s = 1 / (rrfK + i + 1);
       rrf.set(r.id, (rrf.get(r.id) || 0) + s);
     });
-    cos.slice(0, TOPN).forEach((r, i) => {
-      const s = 1 / (RRF_K + i + 1);
+    cos.slice(0, cfg.search.topN).forEach((r, i) => {
+      const s = 1 / (rrfK + i + 1);
       rrf.set(r.id, (rrf.get(r.id) || 0) + s);
     });
     // 只被一路命中的弱结果过滤：融合分 < 阈值（约等于另一路 60 名开外）
     const fused = [...rrf.entries()]
       .map(([id, score]) => ({ id, score: Math.round(score * 1e4) / 1e4 }))
-      .filter((x) => x.score >= 0.0105)
+      .filter((x) => x.score >= cfg.search.rrfMin)
       .sort((a, b) => (b.score - a.score) || (a.id - b.id)); // 量化后稳定排序
     const top = fused.slice(0, limit);
     const chunks = store.getChunksByIds(top.map((x) => x.id));
