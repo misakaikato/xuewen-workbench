@@ -28,7 +28,7 @@ const lpReadOnly = Facet.define<boolean, boolean>({ combine: (v) => v.some(Boole
 // 语法树延迟补全后，提醒表格 StateField 重算的空效果
 const lpTreeRefresh = StateEffect.define<null>();
 
-// ---------- 路径解析（与 MarkdownReader 同口径） ----------
+// ---------- 路径解析（与 ReadOnlyDoc 同口径） ----------
 
 function joinRel(baseDir: string, rel: string): string {
   const parts = (baseDir ? baseDir.split('/') : []).filter(Boolean);
@@ -658,7 +658,7 @@ function makeLpPlugin(openLink: (href: string) => void) {
 const lpTheme = EditorView.theme({
   ...editorBaseThemeSpec,
 
-  // 正文列与阅读页（MarkdownReader/.reader）同版式：同一套 --rd-* 变量、
+  // 正文列与阅读页同版式：同一套 --rd-* 变量、
   // 同一上限（--rd-width）并居中；calc(100% - 96px) 对应阅读页容器的水平留白
   // （max-w-5xl 容器 px-4 共 32px + 正文卡片 p-8 共 64px），窄窗口下两列同宽收缩
   // 正文列与阅读页同版式：同一套 --rd-* 变量、同一上限并居中。

@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
 import type { StatsResponse, TopicEntry, ConceptEntry, FileEntry } from '@/lib/types';
-import { extIcon } from '@/components/RefChip';
+import { extIcon } from '@/lib/extIcon';
 import { Pin, PinOff, AlertTriangle, RefreshCw } from 'lucide-react';
 
 function fmtTime(ms: number) {

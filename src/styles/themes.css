@@ -253,8 +253,6 @@ html { background-color: var(--wb-bg); }
 [data-theme="A"] .wb-paper {
   background-image: linear-gradient(90deg, rgba(150, 120, 70, 0.05), transparent 3%, transparent 97%, rgba(150, 120, 70, 0.05));
 }
-[data-theme="A"] .reader a,
-[data-theme="B"] .reader a,
 [data-theme="A"] .md-link,
 [data-theme="B"] .md-link {
   color: var(--wb-link);
@@ -266,7 +264,6 @@ html { background-color: var(--wb-bg); }
 [data-theme="B"] .wb-chrome { border-bottom-color: transparent; }
 
 /* 深色阅读偏好优先于 A/B 的链接描边 */
-.dark .reader a,
 .dark .md-link {
   color: hsl(var(--primary));
   text-decoration: underline;
@@ -275,9 +272,11 @@ html { background-color: var(--wb-bg); }
 }
 
 /* C 夜读：暖白正文、米色大标题、鎏金高亮与点线链接（特异性压过 .dark 规则） */
+/* .reader 服务 Word/JSON 视图；markdown 只读渲染为 .ro-doc（CM 实例根） */
 :root[data-theme="C"] .reader { color: var(--wb-text); }
 :root[data-theme="C"] .reader h1 { color: #f1e6cc; font-weight: 600; }
-:root[data-theme="C"] .reader a,
+:root[data-theme="C"] .ro-doc { color: var(--wb-text); }
+:root[data-theme="C"] .ro-doc .cm-lp-h1 { color: #f1e6cc; font-weight: 600; }
 :root[data-theme="C"] .md-link { color: var(--wb-link); text-decoration: none; border-bottom: var(--wb-link-border); }
 :root[data-theme="C"] .reader mark,
 :root[data-theme="C"] .hl { background: var(--wb-hl); color: #f3e7c9; }

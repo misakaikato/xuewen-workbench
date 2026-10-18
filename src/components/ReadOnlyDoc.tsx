@@ -151,7 +151,7 @@ export function ReadOnlyDoc({ content, docPath, refNames, collections, links, hi
   }, [highlightTerm]);
 
   return (
-    <div className="min-w-0">
+    <div className="min-w-0 ro-doc">
       <CodeMirrorEditor
         initialDoc={content}
         extensions={extensions}

@@ -11,7 +11,7 @@ import { ReadOnlyDoc, docHeadings, scrollDocToPos, findNextInDoc } from '@/compo
 import { JsonViewer } from '@/components/JsonViewer';
 import { WordReader } from '@/components/WordReader';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
-import { extIcon } from '@/components/RefChip';
+import { extIcon } from '@/lib/extIcon';
 import type { DocLink } from '@/lib/api';
 import type { EditorView } from '@codemirror/view';
 import {

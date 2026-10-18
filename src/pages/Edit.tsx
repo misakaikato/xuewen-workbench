@@ -43,7 +43,7 @@ declare global {
   }
 }
 
-// 相对路径解析（与 MarkdownReader 同口径）
+// 相对路径解析（与 livePreview / ReadOnlyDoc 同口径）
 function joinRel(baseDir: string, rel: string): string {
   const parts = (baseDir ? baseDir.split('/') : []).filter(Boolean);
   for (const seg of rel.split('/')) {

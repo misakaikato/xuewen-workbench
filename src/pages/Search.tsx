@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
 import type { SearchResult } from '@/lib/types';
-import { extIcon } from '@/components/RefChip';
+import { extIcon } from '@/lib/extIcon';
 import { SearchX, Loader2 } from 'lucide-react';
 
 const TYPE_OPTIONS = [

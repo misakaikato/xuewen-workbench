@@ -24,7 +24,7 @@ function ActionItems({ onAction, target }: { onAction: OnAction; target: Omit<En
     </>
   );
 }
-import { extIcon } from './RefChip';
+import { extIcon } from '@/lib/extIcon';
 
 function Node({
   node,
