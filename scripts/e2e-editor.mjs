@@ -315,7 +315,9 @@ async function main() {
     const r = c.getBoundingClientRect();
     const cs = getComputedStyle(c);
     const m = document.querySelector('main');
-    const mr = m ? m.getBoundingClientRect() : null;
+    const scr = c.closest('.cm-scroller');
+    const sbw = scr ? scr.offsetWidth - scr.clientWidth : 0; // 竖滚动条占宽，右侧留白扣除
+    const mr = m ? { left: m.getBoundingClientRect().left, right: m.getBoundingClientRect().right - sbw } : null;
     // 文本列宽：减去 .cm-line 水平内距（编辑态 14px×2，阅读态 0）——
     // 两边同引擎后这才是用户看到的文字列，盒宽受滚动条/槽位干扰
     const ln = c.querySelector('.cm-line');
@@ -374,6 +376,32 @@ async function main() {
   const perfInfo = JSON.parse((await exec(overflowInfo)) || 'null');
   check('ds-perf 文档0000 编辑器无横向溢出', !!perfInfo && perfInfo.sw <= perfInfo.cw + 1, JSON.stringify(perfInfo));
   check('ds-perf 文档0000 页面无横向溢出', !!perfInfo && perfInfo.dsw <= perfInfo.iw, JSON.stringify(perfInfo));
+
+  // ---------- G. 阅读页 TOC / 锚点 / 滚动延续（只读 CM 渲染） ----------
+  console.log('== G. 阅读页 TOC / 锚点 / 滚动延续 ==');
+  await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-fmt') });
+  await win.loadURL(BASE + '/read/' + encodeURIComponent('rich.md'));
+  await waitFor('!!document.querySelector(".ro-doc .cm-content")', '阅读页就绪');
+  await sleep(500);
+  check('TOC 来自源文标题',
+    await exec(`(() => { const t = [...document.querySelectorAll('aside ul button')].map((b) => b.textContent.trim()); return t.length >= 3 && t[0] === '富格式样例' && t.includes('二级标题') && t.includes('三级标题'); })()`));
+  await exec(`(() => { const b = [...document.querySelectorAll('aside button')].find((x) => x.textContent.trim() === '三级标题'); if (b) { b.click(); return true; } return false; })()`);
+  await sleep(150);
+  check('TOC 点击滚动正文', await exec(`(() => { const sc = document.querySelector('.wb-paper'); return !!sc && sc.scrollTop > 0; })()`));
+  await win.loadURL(BASE + '/read/' + encodeURIComponent('rich.md') + '#' + encodeURIComponent('三级标题'));
+  await waitFor('!!document.querySelector(".ro-doc .cm-content")', '锚点阅读页就绪');
+  await sleep(600);
+  check('#锚点 定位到标题', await exec(`(() => { const sc = document.querySelector('.wb-paper'); return !!sc && sc.scrollTop > 0; })()`));
+  await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.title === '进入编辑 (Ctrl+E)'); if (b) { b.click(); return true; } return false; })()`);
+  await waitFor('!!(window.__wb && __wb.editor())', '编辑器就绪');
+  await sleep(700);
+  check('阅读→编辑 滚动延续', await exec(`(() => { const sc = window.__wb.editor().scrollDOM; return sc.scrollTop > 20; })()`));
+  await exec(`(() => { const sc = window.__wb.editor().scrollDOM; sc.scrollTop = sc.scrollHeight; return true; })()`);
+  await sleep(200);
+  await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === '返回阅读'); if (b) { b.click(); return true; } return false; })()`);
+  await waitFor('!!document.querySelector(".ro-doc .cm-content")', '返回阅读就绪');
+  await sleep(800);
+  check('编辑→阅读 滚动延续（近底部）', await exec(`(() => { const sc = document.querySelector('.wb-paper'); const max = sc.scrollHeight - sc.clientHeight; return max > 0 && sc.scrollTop > max * 0.6; })()`));
 
   // ---------- F. 自动内链与反向链接（ds-links） ----------
   console.log('== F. 自动内链与反向链接 ==');
