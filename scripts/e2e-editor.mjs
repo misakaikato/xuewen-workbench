@@ -506,6 +506,25 @@ async function main() {
   await sleep(800);
   check('完整编辑器→阅读 滚动延续（近底部）', await exec(`(() => { const sc = document.querySelector('.wb-paper'); const max = sc.scrollHeight - sc.clientHeight; return max > 0 && sc.scrollTop > max * 0.6; })()`));
 
+  // 文档级后退/前进：内链跳转 → 后退回原文档与原位置 → 前进
+  await win.loadURL(BASE + '/read/' + encodeURIComponent('rich.md'));
+  await waitFor('!!document.querySelector(".ro-doc .cm-content")', '后退测试·阅读就绪');
+  await sleep(500);
+  await exec(`(() => { const sc = document.querySelector('.wb-paper'); sc.scrollTop = 300; return true; })()`);
+  await sleep(200); // 让 scroll 记录落盘（防抖即时写）
+  await exec(`(() => { const a = document.querySelector('.md-link[data-lp-href="crlf.md"]'); if (a) { a.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })); return true; } return false; })()`);
+  await waitFor(`decodeURIComponent(window.location.pathname).includes('crlf.md')`, '内链跳转到 crlf.md');
+  await sleep(400);
+  check('后退按钮可用', await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.title && x.title.includes('后退')); return !!b && !b.disabled; })()`));
+  check('前进按钮禁用（栈顶）', await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.title && x.title.startsWith('前进')); return !!b && b.disabled; })()`));
+  await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.title && x.title.includes('后退')); b.click(); return true; })()`);
+  await waitFor(`decodeURIComponent(window.location.pathname).includes('rich.md')`, '后退回 rich.md');
+  await sleep(700);
+  check('后退恢复原阅读位置', Math.abs(Number(await exec(`document.querySelector('.wb-paper').scrollTop`)) - 300) <= 12);
+  check('前进按钮恢复可用', await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.title && x.title.startsWith('前进')); return !!b && !b.disabled; })()`));
+  await exec(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.title && x.title.startsWith('前进')); b.click(); return true; })()`);
+  await waitFor(`decodeURIComponent(window.location.pathname).includes('crlf.md')`, '前进回 crlf.md');
+
   // CRLF 原位往返：插入字符保存后字节精确（BOM / \r\n 保留）
   await win.loadURL(BASE + '/read/' + encodeURIComponent('bom-crlf.md'));
   await waitFor('!!document.querySelector(".ro-doc .cm-content")', 'CRLF 阅读就绪');

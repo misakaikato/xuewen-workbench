@@ -1,7 +1,7 @@
 // 阅读页：默认阅读模式打开一切文件。目录(TOC)、正文查找、引用跳转、阅读偏好面板、
 // 固定/反链/编辑入口。编辑为次级操作，阅读态不产生未保存状态。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate, useParams, Link, useSearchParams, useBlocker } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, Link, useSearchParams, useBlocker, useNavigationType } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { useReadingPrefs } from '@/lib/prefs';
@@ -20,7 +20,7 @@ import type { DocLink } from '@/lib/api';
 import type { EditorView } from '@codemirror/view';
 import {
   Pencil, Pin, PinOff, ListTree, Link2, Search, X, Settings2, ChevronUp, AlertCircle,
-  Save, AlertTriangle, CheckCircle2, Columns2,
+  Save, AlertTriangle, CheckCircle2, Columns2, ArrowLeft, ArrowRight,
 } from 'lucide-react';
 
 type EditSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -50,6 +50,8 @@ export default function Read() {
   const [findOpen, setFindOpen] = useState(false);
   const [findQ, setFindQ] = useState('');
   const [pinned, setPinned] = useState(false);
+  const navType = useNavigationType();
+  const [navDepth, setNavDepth] = useState({ idx: 0, max: 0 });
   const contentRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -293,7 +295,14 @@ export default function Read() {
     }
   }, [file, highlightTerm, viewReady]);
 
-  // 恢复阅读位置/锚点：#锚点（标题文本定位）> 编辑返回比例 > 记忆位置
+  // 导航深度（react-router 在 history.state.idx 维护栈位）：后退/前进按钮可用性
+  useEffect(() => {
+    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
+    setNavDepth((d) => ({ idx, max: Math.max(d.max, idx) }));
+  }, [location]);
+
+  // 恢复阅读位置/锚点：#锚点 > 携带比例（非 POP）> 记忆位置
+  // 后退/前进（POP）时优先「离开该文档时的记忆位置」，而非当初入场比例
   useEffect(() => {
     if (!file) return;
     const sc = scrollRef.current;
@@ -312,7 +321,9 @@ export default function Read() {
           }
         }
       }
-      const ratio = (location.state as { wbScrollRatio?: number } | null)?.wbScrollRatio;
+      const ratio = navType === 'POP'
+        ? undefined
+        : (location.state as { wbScrollRatio?: number } | null)?.wbScrollRatio;
       if (typeof ratio === 'number' && ratio > 0) {
         const max = sc.scrollHeight - sc.clientHeight;
         if (max > 0) {
@@ -362,6 +373,18 @@ export default function Read() {
           if (editingRef.current) finishEdit();
           else enterEdit();
         }
+      }
+      if (e.altKey && e.key === 'ArrowLeft') {
+        e.preventDefault();
+        navigate(-1);
+      }
+      if (e.altKey && e.key === 'ArrowRight') {
+        e.preventDefault();
+        navigate(1);
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === '[' || e.key === ']')) {
+        e.preventDefault();
+        navigate(e.key === '[' ? -1 : 1);
       }
       if (e.key === 'Escape') {
         setFindOpen(false);
@@ -562,6 +585,22 @@ export default function Read() {
             </div>
           ) : (
           <div className="bg-card border border-border rounded-lg shadow-sm p-1.5 flex items-center gap-2 flex-wrap">
+            <button
+              className="p-1.5 rounded hover:bg-accent text-muted-foreground disabled:opacity-30"
+              disabled={navDepth.idx <= 0}
+              onClick={() => navigate(-1)}
+              title="后退：上一个文档（Alt+← / ⌘[）"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <button
+              className="p-1.5 rounded hover:bg-accent text-muted-foreground disabled:opacity-30"
+              disabled={navDepth.idx >= navDepth.max}
+              onClick={() => navigate(1)}
+              title="前进（Alt+→ / ⌘]）"
+            >
+              <ArrowRight className="w-4 h-4" />
+            </button>
             <nav className="text-xs text-muted-foreground flex items-center gap-1 flex-wrap min-w-0">
               {crumbs.map((seg, i) => (
                 <span key={i} className="flex items-center gap-1">
