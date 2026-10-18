@@ -6,21 +6,27 @@ import { useNavigate, useParams, useBlocker, useLocation } from 'react-router-do
 import { EditorState } from '@codemirror/state';
 import type { Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { markdown } from '@codemirror/lang-markdown';
 import { json } from '@codemirror/lang-json';
 import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { useReadingPrefs } from '@/lib/prefs';
 import { saveDraft, loadDraft, clearDraft } from '@/lib/drafts';
 import type { FilePayload } from '@/lib/types';
-import { MarkdownReader } from '@/components/MarkdownReader';
+import type { DocLink } from '@/lib/api';
+import { ReadOnlyDoc } from '@/components/ReadOnlyDoc';
 import { registerOpenDoc } from '@/lib/openEditor';
 import { runEntryAction, type EntryAction } from '@/lib/entryOps';
 import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
 import { editorBaseExtensions, editorBaseThemeSpec } from '@/components/editor/setup';
 import { livePreview } from '@/components/editor/livePreview';
+import { mdLang } from '@/components/editor/mdLanguage';
+import { linksExtensionFor, pushDocLinks } from '@/components/editor/autoLinks';
+import { corpusRefsExtension, pushCorpusNames } from '@/components/editor/corpusRefs';
+import { FormatToolbar } from '@/components/editor/FormatToolbar';
+import { CorpusRefPopover, type CorpusRefRequest } from '@/components/CorpusRefPopover';
 import { detectLineSeparator } from '@/components/editor/lineSeparator';
-import { Save, Undo2, AlertTriangle, X, CheckCircle2, Columns2, Eye, Code2, Wand2 } from 'lucide-react';
+import { BacklinksPanel } from '@/components/BacklinksPanel';
+import { Save, Undo2, AlertTriangle, X, CheckCircle2, Columns2, Eye, Code2, Wand2, Link2 } from 'lucide-react';
 
 type SaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
 type Mode = 'live' | 'source' | 'preview' | 'split';
@@ -38,7 +44,7 @@ declare global {
   }
 }
 
-// 相对路径解析（与 MarkdownReader 同口径）
+// 相对路径解析（与 livePreview / ReadOnlyDoc 同口径）
 function joinRel(baseDir: string, rel: string): string {
   const parts = (baseDir ? baseDir.split('/') : []).filter(Boolean);
   for (const seg of rel.split('/')) {
@@ -87,6 +93,18 @@ export default function Edit() {
   pathRef.current = relPath;
   const [refNames, setRefNames] = useState<{ name: string; base: string; path: string; ext: string; dir: string }[]>([]);
   const [collections, setCollections] = useState<{ name: string }[]>([]);
+  const [docLinks, setDocLinks] = useState<DocLink[]>([]);
+  const [crReq, setCrReq] = useState<CorpusRefRequest | null>(null);
+  const [showBacklinks, setShowBacklinks] = useState(false);
+  const splitPreviewRef = useRef<HTMLDivElement | null>(null);
+  const syncLockRef = useRef(0);
+  // 工具栏重渲染触发：选区/文档变化时递增版本（扩展身份稳定，随 reconfigure 复用）
+  const [fmtVer, setFmtVer] = useState(0);
+  const fmtListenerRef = useRef(
+    EditorView.updateListener.of((u) => {
+      if (u.docChanged || u.selectionSet) setFmtVer((v) => v + 1);
+    })
+  );
 
   const isJson = file?.type === 'json';
   const effMode: 'source' | 'preview' | 'split' | 'live' = isJson ? 'source' : mode;
@@ -112,6 +130,65 @@ export default function Edit() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [isJson]
   );
+
+  // 编辑器滚动比例（阅读↔编辑往返延续用）
+  const editorRatio = useCallback(() => {
+    const sc = viewRef.current?.scrollDOM;
+    if (!sc) return 0;
+    const max = sc.scrollHeight - sc.clientHeight;
+    return max > 0 ? Math.min(1, Math.max(0, sc.scrollTop / max)) : 0;
+  }, []);
+
+  // 阅读页带来的滚动位置：编辑器就绪后按比例恢复（两引擎内容高度不同，比例近似）
+  useEffect(() => {
+    if (!file || !viewRef.current) return;
+    const ratio = (location.state as { wbScrollRatio?: number } | null)?.wbScrollRatio;
+    if (typeof ratio !== 'number' || ratio <= 0) return;
+    const sc = viewRef.current.scrollDOM;
+    const raf = requestAnimationFrame(() => {
+      const max = sc.scrollHeight - sc.clientHeight;
+      if (max > 0) sc.scrollTop = ratio * max;
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadSeq]);
+
+  // split 模式左右滚动同步（比例互随，150ms 防回环锁）
+  useEffect(() => {
+    if (effMode !== 'split') return;
+    const v = viewRef.current;
+    const right = splitPreviewRef.current;
+    if (!v || !right) return;
+    const left = v.scrollDOM;
+    let raf = 0;
+    const ratioOf = (el: HTMLElement) => {
+      const m = el.scrollHeight - el.clientHeight;
+      return m > 0 ? el.scrollTop / m : 0;
+    };
+    const onLeft = () => {
+      if (Date.now() < syncLockRef.current) return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        syncLockRef.current = Date.now() + 150;
+        const m = right.scrollHeight - right.clientHeight;
+        if (m > 0) right.scrollTop = ratioOf(left) * m;
+      });
+    };
+    const onRight = () => {
+      if (Date.now() < syncLockRef.current) return;
+      syncLockRef.current = Date.now() + 150;
+      const m = left.scrollHeight - left.clientHeight;
+      if (m > 0) left.scrollTop = ratioOf(right) * m;
+    };
+    left.addEventListener('scroll', onLeft, { passive: true });
+    right.addEventListener('scroll', onRight, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      left.removeEventListener('scroll', onLeft);
+      right.removeEventListener('scroll', onRight);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effMode, loadSeq]);
 
   const validateJson = useCallback(
     (text: string): boolean => {
@@ -191,6 +268,51 @@ export default function Edit() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [dirty]);
 
+  // 自动内链：拉取服务端链接（就绪前轮询），注入编辑器装饰与预览面板；保存/更新后重拉
+  const linksSeqRef = useRef(0);
+  const isJsonRef = useRef(false);
+  isJsonRef.current = isJson;
+  const pullLinksAbortRef = useRef<() => void>(() => {});
+  const pullLinks = useCallback(
+    async (minSeq: number) => {
+      if (!dsId || !relPath || isJsonRef.current) return;
+      let dead = false;
+      const stop = () => {
+        dead = true;
+      };
+      pullLinksAbortRef.current?.();
+      pullLinksAbortRef.current = stop;
+      for (let i = 0; i < 30 && !dead; i++) {
+        const r = await api.linksDoc(relPath).catch(() => null);
+        if (dead || !r || r.dsId !== dsId) return;
+        if (r.ready && r.buildSeq >= minSeq) {
+          linksSeqRef.current = r.buildSeq;
+          setDocLinks(r.links);
+          pushDocLinks(viewRef.current, r.links, r.buildSeq);
+          return;
+        }
+        await new Promise((s) => setTimeout(s, 500));
+      }
+    },
+    [dsId, relPath]
+  );
+  useEffect(() => {
+    linksSeqRef.current = 0;
+    setDocLinks([]);
+    pullLinks(0);
+    return () => pullLinksAbortRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dsId, relPath, loadSeq]);
+  // 语料引用名称清单注入编辑器（挂载与 refNames 变化时）
+  useEffect(() => {
+    pushCorpusNames(viewRef.current, refNames, collections);
+  }, [refNames, collections, loadSeq]);
+  useEffect(() => {
+    const h = () => pullLinks(0);
+    window.addEventListener('wb-links-updated', h);
+    return () => window.removeEventListener('wb-links-updated', h);
+  }, [pullLinks]);
+
   // 实际写盘（抛错由调用方处理）；成功后更新基准文本与 mtime
   const performSave = useCallback(
     async (text: string, overrideMtime?: number) => {
@@ -221,8 +343,11 @@ export default function Edit() {
         setConflict(null);
         setSaveState('saved');
         setSaveMsg('已保存到 ' + relPath);
+        // 保存后重拉自动内链（等待新一次索引构建）并刷新反向链接面板
+        pullLinks(linksSeqRef.current + 1);
+        window.dispatchEvent(new CustomEvent('wb-links-updated'));
         if (andReturn) {
-          navigate('/read/' + encPath(relPath));
+          navigate('/read/' + encPath(relPath), { state: { wbScrollRatio: editorRatio() } });
         }
       } catch (e) {
         const err = e as Error & { conflict?: boolean; current?: string; currentMtimeMs?: number; missing?: boolean };
@@ -235,7 +360,7 @@ export default function Edit() {
         }
       }
     },
-    [file, dsId, buffer, dirty, isJson, relPath, navigate, performSave, validateJson]
+    [file, dsId, buffer, dirty, isJson, relPath, navigate, performSave, validateJson, pullLinks, editorRatio]
   );
 
   // Ctrl+S 保存
@@ -322,18 +447,40 @@ export default function Edit() {
     navRef.current(anchor ? nav + '#' + encodeURIComponent(anchor) : nav);
   }, []);
 
+  // 自动内链目标打开：跳阅读页（含标题锚点）
+  const openLinkTarget = useCallback((t: { path: string; heading?: string | null }) => {
+    const nav = '/read/' + encPath(t.path);
+    navRef.current(t.heading ? nav + '#' + encodeURIComponent(t.heading) : nav);
+  }, []);
+  const openLinkTargetRef = useRef(openLinkTarget);
+  openLinkTargetRef.current = openLinkTarget;
+
   // 编辑器扩展：显式行分隔符保证字节精确；实时预览/源码按模式切换（重配置不重建）
   const extensions = useMemo<Extension[]>(() => {
     const list: Extension[] = [
       EditorState.lineSeparator.of(lineSep),
+      fmtListenerRef.current,
       ...editorBaseExtensions({ lineNumbers: !isLive, foldGutter: !isLive }),
     ];
     if (isJson) {
       list.push(json(), jsonTheme(prefs.codeFontSize));
-    } else if (isLive) {
-      list.push(...livePreview({ docPath: relPath, openLink }));
     } else {
-      list.push(markdown(), plainTheme);
+      // 自动内链标记只在 md 模式挂载（实时预览与源码都有下划线；JSON 不适用）
+      list.push(...linksExtensionFor(relPath, {
+        onOpen: (t) => openLinkTargetRef.current(t),
+      }));
+      if (isLive) {
+        list.push(
+          ...livePreview({ docPath: relPath, openLink }),
+          ...corpusRefsExtension({
+            names: [],
+            collections: [],
+            onOpen: (url, at) => setCrReq({ url, ...at }),
+          })
+        );
+      } else {
+        list.push(...mdLang(), plainTheme);
+      }
     }
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -369,6 +516,7 @@ export default function Edit() {
       extensions={extensions}
       onCreate={(v) => {
         viewRef.current = v;
+        setFmtVer((x) => x + 1);
       }}
       onDocChanged={onDocChanged}
     />
@@ -428,6 +576,15 @@ export default function Edit() {
             格式化
           </button>
         )}
+        {!isJson && (
+          <button
+            className={`text-xs px-2.5 py-1.5 rounded border flex items-center gap-1 ${showBacklinks ? 'border-primary text-primary' : 'border-border hover:bg-accent'}`}
+            onClick={() => setShowBacklinks(!showBacklinks)}
+            title="提到本篇的文档"
+          >
+            <Link2 className="w-3.5 h-3.5" /> 反向链接
+          </button>
+        )}
         <button
           className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent disabled:opacity-40 flex items-center gap-1"
           disabled={!dirty}
@@ -445,7 +602,7 @@ export default function Edit() {
         </button>
         <button
           className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent flex items-center gap-1"
-          onClick={() => navigate('/read/' + encPath(relPath))}
+          onClick={() => navigate('/read/' + encPath(relPath), { state: { wbScrollRatio: editorRatio() } })}
         >
           <Undo2 className="w-3.5 h-3.5" /> 返回阅读
         </button>
@@ -468,16 +625,42 @@ export default function Edit() {
       )}
 
       {/* 编辑区 */}
-      <div className="flex-1 min-h-0 flex">
-        {effMode !== 'preview' && (
-          <div className={`min-w-0 ${effMode === 'split' ? 'w-1/2 border-r border-border' : 'flex-1'}`}>{editorEl}</div>
-        )}
-        {(effMode === 'preview' || effMode === 'split') && (
-          <div className={`min-w-0 overflow-auto p-6 ${effMode === 'split' ? 'w-1/2' : 'flex-1'}`}>
-            <MarkdownReader content={content} docPath={relPath} refNames={refNames} collections={collections} />
-          </div>
-        )}
+      <div className="flex-1 min-h-0 flex flex-col">
+        {isLive && <FormatToolbar view={viewRef.current} version={fmtVer} />}
+        <div className="flex-1 min-h-0 flex">
+          {effMode !== 'preview' && (
+            <div className={`min-w-0 ${effMode === 'split' ? 'w-1/2 border-r border-border' : 'flex-1'}`}>{editorEl}</div>
+          )}
+          {(effMode === 'preview' || effMode === 'split') && (
+            <div
+              ref={splitPreviewRef}
+              className={`min-w-0 overflow-auto p-6 ${effMode === 'split' ? 'w-1/2' : 'flex-1'}`}
+            >
+              <ReadOnlyDoc
+                key={relPath + (effMode === 'split' ? ':split' : ':preview')}
+                content={content}
+                docPath={relPath}
+                refNames={refNames}
+                collections={collections}
+                links={docLinks}
+              />
+            </div>
+          )}
+          {showBacklinks && !isJson && (
+            <aside data-wb-backlinks className="hidden lg:block w-64 shrink-0 border-l border-border overflow-x-hidden overflow-y-auto p-3">
+              <BacklinksPanel
+                path={relPath}
+                dsId={dsId}
+                onOpen={(src, term) => navigate('/read/' + encPath(src) + '?h=' + encodeURIComponent(term))}
+                onClose={() => setShowBacklinks(false)}
+              />
+            </aside>
+          )}
+        </div>
       </div>
+
+      {/* 语料引用解析弹层 */}
+      <CorpusRefPopover req={crReq} onClose={() => setCrReq(null)} />
 
       {/* 草稿恢复提示 */}
       {draftPrompt && (

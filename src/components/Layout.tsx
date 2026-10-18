@@ -1,19 +1,30 @@
-// 整体布局：顶栏（概览/数据源/全局搜索/重扫/设置）+ 可折叠侧栏（目录树）+ 内容区
-// 小屏幕侧栏变为抽屉；Escape 关闭抽屉。
+// 整体布局：顶栏（logo、概览、资料库切换、全局搜索、重扫、设置）+ 可折叠侧栏（目录树）+ 内容区
+// 小屏幕侧栏变为抽屉；Escape 关闭抽屉。多资料库：切换器列出全部已打开库，可添加/移除。
 import { useEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/store/app';
 import { FileTree } from './FileTree';
 import { setEntryContext } from '@/lib/entryOps';
-import { LayoutDashboard, RefreshCw, Settings, Database, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import {
+  LayoutDashboard, RefreshCw, Settings, Database, PanelLeftClose, PanelLeftOpen, Search,
+  ChevronsUpDown, Check, Plus, FolderMinus,
+} from 'lucide-react';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 export function Layout() {
-  const { config, tree, rescan, dsId, refreshTree } = useApp();
+  const { config, libraries, tree, rescan, dsId, refreshTree, activateLib, removeLib } = useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [treeFilter, setTreeFilter] = useState('');
   const [q, setQ] = useState('');
   const [rescanning, setRescanning] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -41,6 +52,9 @@ export function Layout() {
   }, [dsId, refreshTree, navigate]);
 
   const st = config?.status;
+  const currentName = config?.baseDir
+    ? (libraries.find((l) => l.id === dsId)?.name ?? config.baseDir)
+    : '未打开资料库';
 
   const sidebarContent = (
     <div className="flex flex-col h-full">
@@ -48,16 +62,22 @@ export function Layout() {
         <input
           value={treeFilter}
           onChange={(e) => setTreeFilter(e.target.value)}
-          placeholder="过滤目录与文件…"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setTreeFilter('');
+              if (!treeFilter) (e.target as HTMLInputElement).blur();
+            }
+          }}
+          placeholder="过滤目录与文件…（Esc 清空）"
           className="w-full text-xs px-2 py-1.5 rounded border border-input bg-background"
         />
       </div>
       <div className="flex-1 overflow-auto p-1">
         {tree ? (
-          <FileTree tree={tree} filter={treeFilter} />
+          <FileTree tree={tree} filter={treeFilter} onFilterChange={setTreeFilter} />
         ) : (
           <div className="text-xs text-muted-foreground p-3">
-            {st?.scanning ? '正在扫描数据源…' : '暂无目录数据'}
+            {st?.scanning ? '正在扫描资料库…' : '暂无目录数据'}
           </div>
         )}
       </div>
@@ -68,6 +88,7 @@ export function Layout() {
     <div className="h-screen flex flex-col">
       {/* 顶栏用主题窗框色（B 主题下无分隔线，见 themes.css） */}
       <header className="h-12 shrink-0 border-b border-border wb-chrome flex items-center gap-2 px-3">
+        <img src="/logo-32.png" alt="学问 Workbench" className="w-6 h-6 rounded-[5px] shrink-0 select-none" draggable={false} />
         <button
           className="p-1.5 rounded hover:bg-accent md:hidden"
           onClick={() => setDrawer(true)}
@@ -87,17 +108,56 @@ export function Layout() {
           <span className="hidden sm:inline">语料概览</span>
         </Link>
         <span className="text-border">|</span>
-        <Link
-          to="/setup"
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary max-w-[220px] md:max-w-md min-w-0"
-          title={config?.baseDir || '配置数据源'}
-        >
-          <Database className="w-3.5 h-3.5 shrink-0" />
-          <span className="truncate">{config?.baseDir || '未配置数据源'}</span>
-        </Link>
-        {st && (
+        {/* 资料库切换器：列出全部已打开库；添加/移除入口 */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary min-w-0 px-1.5 py-1 rounded hover:bg-accent/50"
+              title={config?.baseDir || '打开资料库'}
+            >
+              <Database className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate max-w-[120px] md:max-w-[240px]">{currentName}</span>
+              <ChevronsUpDown className="w-3 h-3 shrink-0 opacity-60" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-96">
+            <DropdownMenuLabel>资料库（{libraries.length} 个已打开）</DropdownMenuLabel>
+            {libraries.map((l) => (
+              <DropdownMenuItem
+                key={l.id}
+                onClick={() => {
+                  if (l.id !== dsId) {
+                    activateLib(l.id).catch(() => {});
+                    navigate('/');
+                  }
+                }}
+              >
+                <Check className={`w-4 h-4 shrink-0 ${l.id === dsId ? 'opacity-100' : 'opacity-0'}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm truncate">{l.name}</div>
+                  <div className="text-[11px] text-muted-foreground truncate">{l.baseDir}</div>
+                </div>
+                <span className="text-[11px] text-muted-foreground shrink-0">
+                  {l.status.scanning ? '扫描中…' : l.status.counts ? `${l.status.counts.files} 文件` : '未扫描'}
+                </span>
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => navigate('/setup')}>
+              <Plus className="w-4 h-4 shrink-0" /> 添加资料库…
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!config?.configured}
+              onClick={() => setConfirmRemove(true)}
+              className="text-destructive focus:text-destructive"
+            >
+              <FolderMinus className="w-4 h-4 shrink-0" /> 从工作区移除当前资料库…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {st && config?.configured && (
           <span className="text-xs text-muted-foreground hidden lg:inline">
-            {st.scanning ? '扫描中…' : st.counts ? `${st.counts.files} 个文件` : ''}
+            {st.scanning ? '扫描中…' : st.counts ? '' : ''}
             {st.watching ? ' · 自动监听' : ''}
           </span>
         )}
@@ -120,7 +180,7 @@ export function Layout() {
         </form>
         <button
           className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-primary disabled:opacity-40"
-          title="重新扫描数据源"
+          title="重新扫描资料库"
           disabled={rescanning || !config?.configured}
           onClick={async () => {
             setRescanning(true);
@@ -154,6 +214,32 @@ export function Layout() {
           <Outlet />
         </main>
       </div>
+
+      {/* 移除当前资料库确认：只移出工作区（停监听/卸索引），不动磁盘文件与草稿/最近记录 */}
+      <AlertDialog open={confirmRemove} onOpenChange={setConfirmRemove}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>从工作区移除「{currentName}」？</AlertDialogTitle>
+            <AlertDialogDescription>
+              只把它移出本应用的打开列表（停止监听、卸载内存索引），不会删除磁盘上的任何文件；
+              最近记录、草稿与集合配置都会保留，重新添加同目录即可恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const id = dsId;
+                setConfirmRemove(false);
+                if (id) removeLib(id).catch(() => {});
+                navigate('/');
+              }}
+            >
+              移除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

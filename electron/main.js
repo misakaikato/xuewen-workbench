@@ -93,6 +93,7 @@ function createWindow(url) {
   win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 960, minHeight: 600,
     title: '学问 Workbench', show: false, backgroundColor: winBg,
+    icon: path.join(ROOT, 'assets', 'icons', 'icon.png'),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.once('ready-to-show', () => win.show());

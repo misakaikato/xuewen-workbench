@@ -19,6 +19,7 @@
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language-data": "^6.5.2",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -65,15 +66,17 @@
     "react-day-picker": "^9.13.0",
     "react-dom": "^19.2.0",
     "react-hook-form": "^7.70.0",
-    "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.2.2",
     "react-router": "^7.6.1",
     "react-router-dom": "^7.18.4",
     "recharts": "^2.15.4",
-    "rehype-highlight": "^7.0.2",
+    "rehype-stringify": "^10.0.1",
     "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.4.0",
+    "unified": "^11.0.5",
     "vaul": "^1.1.2",
     "word-extractor": "^1.0.4",
     "zod": "^4.3.5"
@@ -92,6 +95,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "kimi-plugin-inspect-react": "^1.0.3",
+    "opencc-js": "^1.4.2",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.19",
     "tailwindcss-animate": "^1.0.7",
@@ -115,9 +119,11 @@
       "server/**/*.js",
       "schema/**/*.json",
       "electron/**/*",
+      "assets/icons/**/*",
       "package.json",
       "!server/data{,/**/*}"
     ],
+    "icon": "assets/icons/icon.png",
     "asar": true,
     "mac": {
       "target": [

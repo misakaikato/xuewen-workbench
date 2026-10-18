@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- 宣纸纹理：低幅分形噪点，仅背景 -->
+    <filter id="paper" x="-2%" y="-2%" width="104%" height="104%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.55" numOctaves="3" seed="7" result="n"/>
+      <feColorMatrix in="n" type="matrix"
+        values="0 0 0 0 0.45  0 0 0 0 0.38  0 0 0 0 0.27  0 0 0 0.06 0"/>
+      <feComposite operator="over" in2="SourceGraphic"/>
+    </filter>
+    <!-- 印面细微斑驳：极低幅粗噪点，只作用红面 -->
+    <filter id="sealwear" x="-2%" y="-2%" width="104%" height="104%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="2" seed="21" result="n"/>
+      <feColorMatrix in="n" type="matrix"
+        values="0 0 0 0 0.36  0 0 0 0 0.10  0 0 0 0 0.05  0 0 0 0.10 0"/>
+      <feComposite operator="over" in2="SourceGraphic"/>
+    </filter>
+  </defs>
+
+  <!-- 纸底 -->
+  <rect width="1024" height="1024" fill="#f7f1e3"/>
+  <rect width="1024" height="1024" fill="#f7f1e3" filter="url(#paper)"/>
+
+  <!-- 朱砂印面（白文印） -->
+  <g>
+    <rect x="167" y="167" width="690" height="690" rx="60" fill="#b23a24"/>
+    <rect x="167" y="167" width="690" height="690" rx="60" fill="#b23a24" filter="url(#sealwear)"/>
+    <!-- 内框细线 -->
+    <rect x="203" y="203" width="618" height="618" rx="40" fill="none"
+          stroke="#f7f1e3" stroke-width="10" opacity="0.92"/>
+    <!-- 印文：学问（报隶，竖排） -->
+    <text x="512" y="356" text-anchor="middle" dominant-baseline="central"
+          font-family="Baoli SC, Kaiti SC, STKaiti, serif" font-size="262"
+          fill="#f7f1e3">学</text>
+    <text x="512" y="670" text-anchor="middle" dominant-baseline="central"
+          font-family="Baoli SC, Kaiti SC, STKaiti, serif" font-size="262"
+          fill="#f7f1e3">问</text>
+  </g>
+</svg>

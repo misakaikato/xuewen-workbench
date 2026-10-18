@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
 import type { StatsResponse, TopicEntry, ConceptEntry, FileEntry } from '@/lib/types';
-import { extIcon } from '@/components/RefChip';
+import { extIcon } from '@/lib/extIcon';
 import { Pin, PinOff, AlertTriangle, RefreshCw } from 'lucide-react';
 
 function fmtTime(ms: number) {
@@ -44,10 +44,10 @@ export default function Dashboard() {
   if (!config?.configured) {
     return (
       <div className="max-w-xl mx-auto py-16 px-4 text-center">
-        <h1 className="text-2xl font-bold mb-3">欢迎使用批量文档语料工作台</h1>
-        <p className="text-muted-foreground mb-6">首次使用请先配置语料根目录，应用将自动发现其中的 Markdown、JSON 与 Word 文件。</p>
+        <h1 className="text-2xl font-bold mb-3">欢迎使用学问 Workbench</h1>
+        <p className="text-muted-foreground mb-6">先打开一个资料库（本机的语料目录），应用将自动发现其中的 Markdown、JSON 与 Word 文件；之后可以同时打开多个。</p>
         <Link to="/setup" className="inline-block px-5 py-2.5 rounded bg-primary text-primary-foreground">
-          配置数据源
+          打开资料库
         </Link>
       </div>
     );

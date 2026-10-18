@@ -1,7 +1,7 @@
 // API 访问层：统一错误处理
 import type {
   ConfigResponse, FilePayload, ScanStatus, TreeNode, StatsResponse,
-  SearchResult, RefResolution, Collection, MetadataMapping, TopicEntry, ConceptEntry, FileEntry,
+  SearchResult, RefResolution, Collection, MetadataMapping, TopicEntry, ConceptEntry, FileEntry, LibraryInfo,
 } from './types';
 import type { Theme } from './theme';
 
@@ -46,10 +46,67 @@ export interface MetaImportResponse {
   errors: { line: number; path?: string; error: string }[];
 }
 
+// ---------- 自动内链（词条）与反向链接 ----------
+
+export interface DocLink {
+  from: number;
+  to: number;
+  term: string;
+  norm?: string;
+  kind: 'auto' | 'wiki' | 'wiki-missing';
+  display: string | null;
+  target: { path: string; heading?: string | null } | null;
+  candidates?: string[];
+  ignored?: boolean;
+}
+
+export interface LinksStatus {
+  ready: boolean;
+  building: boolean;
+  buildSeq: number;
+  files: number;
+  terms: number;
+  links: number;
+  lastFullMs: number;
+  lastUpdateMs: number;
+  ignoredCount?: number;
+}
+
+export interface BacklinkEntry {
+  path: string;
+  title: string;
+  count: number;
+  kinds: string[];
+  snippets: { text: string; offset: number; term: string }[];
+}
+
+export interface LinkTerm {
+  term: string;
+  path: string;
+  heading: string | null;
+}
+
 type EntryResult = { ok: boolean; kind: 'file' | 'folder'; oldPath?: string; path: string };
 
+// ---------- 资料库作用域 ----------
+// 当前前端实例作用的资料库 id；所有请求自动携带 ?ds=，切库后旧库响应被各页 dsId 守卫丢弃。
+let scopeDs: string | null = null;
+
+export function setApiScope(ds: string | null) {
+  scopeDs = ds;
+}
+
+export function getApiScope() {
+  return scopeDs;
+}
+
+function withDs(url: string) {
+  if (!scopeDs) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'ds=' + encodeURIComponent(scopeDs);
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const res = await fetch(withDs(url), init);
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(body.error || `请求失败 (${res.status})`) as Error & Record<string, unknown>;
@@ -75,8 +132,13 @@ export const api = {
       '/api/config/test', json('POST', { baseDir })),
   saveConfig: (baseDir: string) =>
     req<ConfigResponse & { ok: boolean }>('/api/config', json('POST', { baseDir })),
+  libraries: () => req<{ libraries: LibraryInfo[]; activeId: string | null }>('/api/libraries'),
+  activateLibrary: (ds: string) =>
+    req<{ ok: boolean } & ConfigResponse>('/api/library/activate', json('POST', { ds })),
+  removeLibrary: (ds: string) =>
+    req<{ ok: boolean; activeId: string | null; libraries: LibraryInfo[] }>('/api/library/remove', json('POST', { ds })),
   rescan: () => req<{ ok: boolean; status: ScanStatus }>('/api/rescan', json('POST')),
-  status: () => req<ScanStatus>('/api/status'),
+  status: () => req<ScanStatus & { libs?: Record<string, { scanning: boolean; watching: boolean; scannedAt: string | null }> }>('/api/status'),
   tree: () => req<{ dsId: string; tree: TreeNode }>('/api/tree'),
   stats: () => req<StatsResponse>('/api/stats'),
   file: (path: string) => req<FilePayload>('/api/file?path=' + encodeURIComponent(path)),
@@ -112,11 +174,27 @@ export const api = {
       '/api/refs/names'),
   backlinks: (path: string) =>
     req<{ backlinks: FileEntry[] }>('/api/backlinks?path=' + encodeURIComponent(path)),
+  linksDoc: (path: string) =>
+    req<{ dsId: string; path: string; links: DocLink[] } & LinksStatus>('/api/links/doc?path=' + encodeURIComponent(path)),
+  linksBacklinks: (path: string) =>
+    req<{ dsId: string; path: string; backlinks: BacklinkEntry[] } & LinksStatus>('/api/links/backlinks?path=' + encodeURIComponent(path)),
+  linksTerms: (q: string) =>
+    req<{ terms: LinkTerm[] } & LinksStatus>('/api/links/terms?q=' + encodeURIComponent(q)),
+  linksPreview: (path: string) =>
+    req<{ path: string; title: string; excerpt: string }>('/api/links/preview?path=' + encodeURIComponent(path)),
+  linksStatus: () => req<LinksStatus & { dsId?: string }>('/api/links/status'),
+  linksIgnore: (body: { path: string; term: string; targetPath: string; ignore: boolean } | { clearAll: true }) =>
+    req<{ ok: boolean; ignored?: boolean; ignoredCount: number }>('/api/links/ignore', json('POST', body)),
+  linksBlocklist: () =>
+    req<{ dsId: string; terms: string[]; ignoredCount: number }>('/api/links/blocklist'),
+  saveLinksBlocklist: (terms: string[]) =>
+    req<{ ok: boolean; terms: string[]; ignoredCount: number }>('/api/links/blocklist', json('PUT', { terms })),
   recents: () => req<{ recents: { path: string; at: number; exists: boolean; file: FileEntry | null }[] }>('/api/recents'),
   touchRecent: (path: string) => req('/api/recents', json('POST', { path })),
   pins: () => req<{ pins: { path: string; at: number; exists: boolean }[] }>('/api/pins'),
   pin: (path: string, action: 'add' | 'remove') => req('/api/pins', json('POST', { path, action })),
   collections: () => req<{ collections: Collection[] }>('/api/collections'),
+  revealInSystem: (path: string) => req<{ ok: boolean; revealed: string }>('/api/reveal', json('POST', { path })),
   saveCollections: (collections: Collection[]) =>
     req('/api/collections', json('PUT', { collections })),
   metadata: () => req<{ mappings: MetadataMapping[] }>('/api/metadata'),
@@ -131,5 +209,5 @@ export const api = {
 };
 
 export function rawFileUrl(path: string) {
-  return '/api/file/raw?path=' + encodeURIComponent(path);
+  return withDs('/api/file/raw?path=' + encodeURIComponent(path));
 }

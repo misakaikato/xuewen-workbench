@@ -1,9 +1,7 @@
-// 元数据旁注问题提示：只列出，不自动修复
-import { useEffect, useState } from 'react';
+// 元数据旁注问题提示：只列出，不自动修复。issues 由 FileTree 统一拉取后传入，避免重复请求
 import { AlertTriangle } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { api, type MetaIssue } from '@/lib/api';
-import type { TreeNode } from '@/lib/types';
+import type { MetaIssue } from '@/lib/api';
 
 const LABEL: Record<MetaIssue['kind'], string> = {
   orphan: '孤立元数据',
@@ -12,13 +10,7 @@ const LABEL: Record<MetaIssue['kind'], string> = {
   invalid: '无效 JSON',
 };
 
-export function MetaIssuesBadge({ tree }: { tree: TreeNode }) {
-  const [issues, setIssues] = useState<MetaIssue[]>([]);
-  useEffect(() => {
-    let dead = false;
-    api.metaIssues().then((r) => { if (!dead) setIssues(r.issues); }).catch(() => {});
-    return () => { dead = true; };
-  }, [tree]);
+export function MetaIssuesBadge({ issues }: { issues: MetaIssue[] }) {
   if (!issues.length) return null;
   return (
     <Popover>

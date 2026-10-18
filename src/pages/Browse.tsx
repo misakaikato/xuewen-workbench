@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useApp } from '@/store/app';
 import type { TreeNode, FileEntry } from '@/lib/types';
-import { extIcon } from '@/components/RefChip';
+import { extIcon } from '@/lib/extIcon';
 
 function collect(node: TreeNode, dirPrefix: string, out: FileEntry[]) {
   const inScope = (p: string) => !dirPrefix || p === dirPrefix || p.startsWith(dirPrefix + '/');

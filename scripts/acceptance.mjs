@@ -12,7 +12,7 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const A = path.join(ROOT, 'test-data', 'ds-a');
 const B = path.join(ROOT, 'test-data', 'ds-b');
 const PERF = path.join(ROOT, 'test-data', 'ds-perf');
-const BASE = 'http://localhost:7410';
+const BASE = 'http://localhost:' + (process.env.WORKBENCH_PORT || 7410); // 主服务端口（可用环境变量错开他人占用）
 
 let pass = 0, fail = 0;
 function check(name, cond, detail = '') {
@@ -494,6 +494,29 @@ check('C 的 --background 为深色（亮度 < 20%）', !!cBg && parseFloat(cBg[
 const indexHtmlSrc = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
 check('index.html 内联脚本读取 wb:theme', indexHtmlSrc.includes("'wb:theme'") && indexHtmlSrc.includes('dataset.theme'));
 
+// (a2) 原生控件主题化：滚动条/选区/accent 走主题令牌；设置页不再用原生 select
+const indexCssSrc = fs.readFileSync(path.join(ROOT, 'src', 'index.css'), 'utf8');
+check('全局滚动条样式存在（Chromium）', indexCssSrc.includes('::-webkit-scrollbar') && indexCssSrc.includes('::-webkit-scrollbar-thumb'));
+check('全局滚动条样式存在（Firefox）', indexCssSrc.includes('scrollbar-width') && indexCssSrc.includes('scrollbar-color'));
+check('滚动条拇指引用主题令牌', /::-webkit-scrollbar-thumb\s*\{[^}]*var\(--muted-foreground\)/s.test(indexCssSrc));
+check('选区颜色引用主题令牌', /::selection\s*\{[^}]*var\(--primary\)/s.test(indexCssSrc));
+check('原生表单控件 accent 引用主题令牌', /input\[type="range"\]\s*\{[^}]*accent-color:\s*hsl\(var\(--primary\)\)/s.test(indexCssSrc));
+const settingsSrc = fs.readFileSync(path.join(ROOT, 'src', 'pages', 'Settings.tsx'), 'utf8');
+check('设置页无原生 select', !settingsSrc.includes('<select'));
+
+// (a3) Logo 资产与集成
+check('图标源文件存在（1024）', fs.existsSync(path.join(ROOT, 'assets', 'icons', 'icon.png')));
+for (const s of [512, 192, 64, 32]) {
+  check('public/logo-' + s + '.png 存在', fs.existsSync(path.join(ROOT, 'public', 'logo-' + s + '.png')));
+}
+check('index.html 引用 favicon', /rel="icon"[^>]*logo-32\.png/.test(indexHtmlSrc));
+const electronMainSrc = fs.readFileSync(path.join(ROOT, 'electron', 'main.js'), 'utf8');
+check('Electron 窗口设置 icon', /icon:\s*path\.join\(ROOT,\s*'assets',\s*'icons',\s*'icon\.png'\)/.test(electronMainSrc));
+const pkgSrc = fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8');
+check('electron-builder 配置 icon', /"icon"\s*:\s*"assets\/icons\/icon\.png"/.test(pkgSrc));
+const layoutSrc = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Layout.tsx'), 'utf8');
+check('顶栏渲染 logo 图片', /<img[^>]*logo-32\.png/.test(layoutSrc));
+
 // (b) 独立服务进程：临时数据目录 + 静态目录（最小 index.html 夹具），验证持久化与注入
 const THEME_PORT = 7499;
 const TB = 'http://127.0.0.1:' + THEME_PORT;
@@ -684,6 +707,489 @@ try {
   for (const id of tempDsIds) fs.rmSync(path.join(sourcesDir15, id), { recursive: true, force: true });
   await post('/api/config', { baseDir: A });
   fs.rmSync(tmp15, { recursive: true, force: true });
+}
+
+console.log('== 16. 自动内链与反向链接 ==');
+// 独立服务 + 临时数据目录 + test-data 临时副本：不碰仓库内夹具与 server/data
+{
+  const PORT16 = 7498;
+  const B16 = 'http://127.0.0.1:' + PORT16;
+  const tmp16 = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-links-'));
+  const corpus16 = path.join(tmp16, 'test-data');
+  fs.cpSync(path.join(ROOT, 'test-data'), corpus16, { recursive: true });
+  const DS = path.join(corpus16, 'ds-links');
+  const PERF = path.join(corpus16, 'ds-perf');
+  const dataDir16 = path.join(tmp16, 'data');
+  const N16 = (...p) => path.join(DS, ...p);
+  const j16 = async (url, init) => {
+    const r = await fetch(B16 + url, init);
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  };
+  const post16 = (url, body) => j16(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const put16 = (url, body) => j16(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let child16 = null;
+  const spawn16 = async () => {
+    child16 = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
+      env: { ...process.env, WORKBENCH_PORT: String(PORT16), WORKBENCH_HOST: '127.0.0.1', WORKBENCH_DATA_DIR: dataDir16 },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    child16.stderr.on('data', (d) => process.stderr.write('[srv16] ' + d));
+    const t0 = Date.now();
+    for (;;) {
+      try { const r = await fetch(B16 + '/api/config'); if (r.ok) return; } catch { /* 未就绪 */ }
+      if (Date.now() - t0 > 15000) throw new Error('§16 服务等待超时');
+      await new Promise((s) => setTimeout(s, 200));
+    }
+  };
+  const stop16 = async () => {
+    if (child16 && !child16.killed) {
+      try { child16.kill('SIGKILL'); } catch { /* ignore */ }
+      child16 = null;
+      await new Promise((s) => setTimeout(s, 300));
+    }
+  };
+  const waitReady16 = async (timeout = 20000) => {
+    const t0 = Date.now();
+    for (;;) {
+      const st = await j16('/api/links/status');
+      if (st.body.ready) return st.body;
+      if (Date.now() - t0 > timeout) throw new Error('链接索引就绪超时');
+      await new Promise((s) => setTimeout(s, 200));
+    }
+  };
+  const linksOf16 = async (p) => (await j16('/api/links/doc?path=' + encodeURIComponent(p))).body;
+  const backOf16 = async (p) => (await j16('/api/links/backlinks?path=' + encodeURIComponent(p))).body;
+  const contentOf16 = async (p) => (await j16('/api/file?path=' + encodeURIComponent(p))).body.content;
+  const sha256dir16 = (dir) => {
+    const out = {};
+    const walk = (d, rel) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const f = path.join(d, e.name);
+        const r = rel ? rel + '/' + e.name : e.name;
+        if (e.isDirectory()) walk(f, r);
+        else out[r] = crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+      }
+    };
+    walk(dir, '');
+    return out;
+  };
+
+  try {
+    await spawn16();
+    let r16 = await post16('/api/config', { baseDir: DS });
+    check('配置 ds-links 副本成功', r16.body.ok === true, JSON.stringify(r16.body).slice(0, 100));
+    const ds16 = r16.body.dsId;
+    const st16 = await waitReady16();
+    check('链接索引就绪且统计非空', st16.ready && st16.files === 14 && st16.terms >= 15 && st16.links >= 30, JSON.stringify(st16));
+
+    // 快照哈希：后续只读操作后必须逐一相等
+    const before16 = sha256dir16(DS);
+
+    // (a) 词条与匹配规则：正向/反向用例（偏移以 /api/file 文本为准）
+    {
+      const c = await contentOf16('论语讲稿.md');
+      const d = await linksOf16('论语讲稿.md');
+      const auto = d.links.filter((l) => l.kind === 'auto');
+      const at = (term, nth = 0) => {
+        const hits = auto.filter((l) => l.term === term);
+        return hits[nth];
+      };
+      const wantKzjy = c.indexOf('孔子家语与论语都提到孔子');
+      check('最长匹配：孔子家语 整词链出（不吃内部的 孔子）',
+        at('孔子家语') && at('孔子家语').from === wantKzjy && at('孔子家语').target.path === '孔子家语.md' &&
+        !auto.some((l) => l.term === '孔子' && l.from > wantKzjy && l.from < wantKzjy + 4),
+        JSON.stringify(auto.slice(0, 3)));
+      check('后续独立 孔子 仍链接且偏移精确',
+        auto.some((l) => l.term === '孔子' && l.from === c.indexOf('都提到孔子') + 3 && l.to === l.from + 2),
+        JSON.stringify(auto.filter((l) => l.term === '孔子')));
+      check('别名 仲尼/夫子 链到 孔子', at('仲尼')?.target.path === '孔子.md' && at('夫子')?.target.path === '孔子.md');
+      check('自身别名 论语 不自动链', !auto.some((l) => l.term === '论语'));
+      check('链 JSON 词条 儒家概念表', at('儒家概念表')?.target.path === '儒家概念表.json');
+      check('链标题词条 文艺复兴', at('文艺复兴')?.target.path === '文艺复兴.md');
+      const renStart = c.indexOf('Renaissance');
+      check('拉丁边界：Ren 不命中 Renaissance 内部',
+        renStart >= 0 && !d.links.some((l) => l.from >= renStart && l.from < renStart + 'Renaissance'.length && l.term === 'Ren'),
+        JSON.stringify(d.links.filter((l) => l.term === 'Ren')));
+      check('独立 Ren 单独成链', auto.some((l) => l.term === 'Ren' && l.from === c.indexOf('Ren 但') && l.target.path === 'Ren.md'));
+      // wikilink 各形态
+      const wk = (name) => d.links.find((l) => l.kind !== 'auto' && l.term === name);
+      check('[[孔子]] 解析为 wiki 链接', wk('孔子')?.kind === 'wiki' && wk('孔子').target.path === '孔子.md');
+      check('[[孔子|孔夫子]] 带显示文字', d.links.some((l) => l.display === '孔夫子' && l.kind === 'wiki'));
+      check('[[孔子家语#引言]] 指向锚点', wk('孔子家语#引言') == null && d.links.some((l) => l.kind === 'wiki' && l.target?.path === '孔子家语.md' && l.target?.heading === '引言'));
+      check('[[礼记研讨]] 重名给候选不直链', d.links.some((l) => l.term === '礼记研讨' && l.kind === 'wiki' && !l.target && l.candidates?.length === 2));
+      check('[[不存在词条]] 标记缺失', d.links.some((l) => l.term === '不存在词条' && l.kind === 'wiki-missing'));
+      check('[[儒家概念表.json]] 按路径解析', d.links.some((l) => l.kind === 'wiki' && l.target?.path === '儒家概念表.json'));
+    }
+    {
+      const d = await linksOf16('论语讲稿.md'); // 上面作用域外的重复请求，简单化处理
+      check('集合名|文件名 显式引用不进链接索引（由前端 RefChip 处理）', !d.links.some((l) => l.term.includes('|')));
+    }
+    {
+      const c = await contentOf16('孔子家语.md');
+      const d = await linksOf16('孔子家语.md');
+      const hits = d.links.filter((l) => l.term === '孔子');
+      const sec = c.indexOf('## 第二节');
+      check('同节只链首次', hits.length >= 1 && hits[0].from === c.indexOf('孔子 first') && !hits.slice(1).some((l) => l.from < sec), JSON.stringify(hits));
+      check('新节再次链接', hits.length === 2 && hits[1].from > sec, JSON.stringify(hits));
+      check('繁体 論語 链到 论语讲稿', d.links.some((l) => l.term === '論語' && l.target.path === '论语讲稿.md'));
+      check('通用标题 引言 不自动链', !d.links.some((l) => l.term === '引言'));
+      check('自提及 孔子家语 不链自身', !d.links.some((l) => l.target?.path === '孔子家语.md'));
+    }
+    {
+      const c = await contentOf16('文艺复兴.md');
+      const d = await linksOf16('文艺复兴.md');
+      const ren = c.indexOf('Renaissance');
+      check('Renaissance 整词不链', !d.links.some((l) => l.from >= ren && l.to <= ren + 'Renaissance'.length));
+      check('Ren 独立出现成链', d.links.some((l) => l.term === 'Ren' && l.from === c.indexOf('Ren 不应')));
+      check('繁体 孔子家語 链出', d.links.some((l) => l.term === '孔子家語' && l.target.path === '孔子家语.md'));
+      check('自身标题 文艺复兴 不自链', !d.links.some((l) => l.term === '文艺复兴' && l.target?.path === '文艺复兴.md'));
+    }
+    {
+      const d = await linksOf16('讲稿1.md');
+      check('排除名文档仍可向外链接且同节只链一次', d.links.filter((l) => l.term === '孔子').length === 1);
+      const d2 = await linksOf16('未命名.md');
+      check('排除名 未命名.md 正文仲尼成链', d2.links.some((l) => l.term === '仲尼' && l.target.path === '孔子.md'));
+      const d3 = await linksOf16('天.md');
+      check('单字标题 天 不进词表但正文夫子成链', d3.links.some((l) => l.term === '夫子' && l.target.path === '孔子.md'));
+      const d4 = await linksOf16('2023-05-01.md');
+      check('日期名文档正文孔子家语成链', d4.links.some((l) => l.term === '孔子家语' && l.target.path === '孔子家语.md'));
+    }
+    {
+      const d = await linksOf16('同题文档甲.md');
+      check('重名词条 礼记研讨 不自动链', !d.links.some((l) => l.term === '礼记研讨' && l.kind === 'auto'));
+      const d2 = await linksOf16('同题文档乙.md');
+      check('唯一标题锚点 仁的定义 成链', d2.links.some((l) => l.term === '仁的定义' && l.target.path === '孔子.md' && l.target.heading === '仁的定义'));
+    }
+    {
+      const d = await linksOf16('儒家概念表.json');
+      check('JSON 文档作为链接来源', d.links.some((l) => l.term === '孔子' && l.target.path === '孔子.md') && d.links.some((l) => l.term === '论语讲稿'));
+      check('JSON 自身 title 不自链', !d.links.some((l) => l.target?.path === '儒家概念表.json'));
+    }
+    {
+      const c = await contentOf16('编码与链接.md');
+      const d = await linksOf16('编码与链接.md');
+      const zone = (needle) => {
+        const i = c.indexOf(needle);
+        return [i, i + needle.length];
+      };
+      const inZone = (l, [a, b]) => l.from < b && l.to > a;
+      check('行内代码内不链', !d.links.some((l) => inZone(l, zone('\u0060孔子\u0060'))));
+      check('既有链接文字与目标不链', !d.links.some((l) => inZone(l, zone('[孔子](https://example.org/kongzi)'))));
+      check('URL 内不链', !d.links.some((l) => inZone(l, zone('https://example.org/孔子'))));
+      check('围栏代码内不链且 wikilink 不解析',
+        !d.links.some((l) => inZone(l, zone('孔子 在围栏内不链接'))) && !d.links.some((l) => l.term === '孔子' && inZone(l, zone('[[孔子]] 在围栏内也不解析'))));
+      check('HTML 标签间正文可链', d.links.filter((l) => l.term === '孔子').length === 1 && d.links[0]?.from === c.indexOf('孔子在标签之间'));
+    }
+
+    // (b) 反向链接：内容/计数/片段/排序；旧接口兼容
+    {
+      const bl = await backOf16('孔子.md');
+      check('反向链接非空且按次数降序', bl.ready && bl.backlinks.length >= 8 &&
+        bl.backlinks.every((b, i) => i === 0 || bl.backlinks[i - 1].count >= b.count), JSON.stringify(bl.backlinks.map((b) => [b.path, b.count])));
+      const lyj = bl.backlinks.find((b) => b.path === '论语讲稿.md');
+      check('论语讲稿 提及 孔子 计数正确（auto 孔子/仲尼/夫子 + wiki×2）', lyj?.count === 5, JSON.stringify(lyj));
+      check('片段含命中词与原文偏移', lyj?.snippets?.length >= 1 && lyj.snippets.every((s) => s.text.includes(s.term) && Number.isInteger(s.offset)));
+      const c = await contentOf16('论语讲稿.md');
+      check('片段偏移指向真实提及（auto 精确 / wikilink 落在区间内）',
+        lyj.snippets.every((s) => c.slice(s.offset, s.offset + s.term.length) === s.term ||
+          c.slice(s.offset, s.offset + 80).includes(s.term)), JSON.stringify(lyj.snippets));
+      check('无提及文档反向链接为空', (await backOf16('编码与链接.md')).backlinks.length === 0);
+      const old = await j16('/api/backlinks?path=' + encodeURIComponent('孔子.md'));
+      check('旧 /api/backlinks 兼容（文件清单形状）', old.body.backlinks?.length === bl.backlinks.length && old.body.backlinks.every((f) => f.path && f.name && f.ext), JSON.stringify(old.body.backlinks?.slice(0, 2)));
+    }
+
+    // (c) 词条搜索 / 预览
+    {
+      const t = await j16('/api/links/terms?q=' + encodeURIComponent('孔')).then((x) => x.body);
+      check('前缀搜索含 孔子/孔子家语', t.terms.some((x) => x.term === '孔子') && t.terms.some((x) => x.term === '孔子家语'));
+      check('搜索不含排除名/单字', !t.terms.some((x) => ['天', '讲稿1', '未命名'].includes(x.term)));
+      const t2 = await j16('/api/links/terms?q=' + encodeURIComponent('论')).then((x) => x.body);
+      check('别名 论语 也可搜到', t2.terms.some((x) => x.term === '论语'));
+      const p = await j16('/api/links/preview?path=' + encodeURIComponent('孔子.md')).then((x) => x.body);
+      check('预览含标题与摘录', p.title === '孔子' && typeof p.excerpt === 'string' && p.excerpt.length > 0 && p.excerpt.length <= 220, JSON.stringify(p).slice(0, 120));
+    }
+
+    // (d) 忽略：本篇忽略后标记、反链计数变化、存在数据源外的状态文件
+    {
+      const before = (await backOf16('孔子.md')).backlinks.find((b) => b.path === '论语讲稿.md').count;
+      r16 = await post16('/api/links/ignore', { path: '论语讲稿.md', term: '孔子', targetPath: '孔子.md', ignore: true });
+      check('忽略接口返回成功', r16.body.ok === true && r16.body.ignoredCount === 1, JSON.stringify(r16.body));
+      const d = await linksOf16('论语讲稿.md');
+      check('被忽略链接带 ignored 标记', d.links.some((l) => l.term === '孔子' && l.kind === 'auto' && l.ignored === true));
+      const after = (await backOf16('孔子.md')).backlinks.find((b) => b.path === '论语讲稿.md').count;
+      // 忽略按（本篇, 词条, 目标）三者定位：孔子 的 1 处 auto + 2 处 [[孔子]] wiki 一并忽略
+      check('忽略后反向链接计数减少（同词同目标共 3 处）', after === before - 3, `${before} -> ${after}`);
+      const igFile = path.join(dataDir16, 'sources', ds16, 'linkIgnores.json');
+      check('忽略状态存在数据源之外', fs.existsSync(igFile) && JSON.parse(fs.readFileSync(igFile, 'utf8')).length === 1, igFile);
+      r16 = await post16('/api/links/ignore', { path: '论语讲稿.md', term: '孔子', targetPath: '孔子.md', ignore: false });
+      check('取消忽略后恢复', (await linksOf16('论语讲稿.md')).links.every((l) => !l.ignored) && (await backOf16('孔子.md')).backlinks.find((b) => b.path === '论语讲稿.md').count === before);
+    }
+
+    // (e) 屏蔽词表：命中的词条不再自动链；状态存数据源之外
+    {
+      r16 = await put16('/api/links/blocklist', { terms: ['仲尼'] });
+      check('屏蔽词表保存成功', r16.body.ok === true && JSON.stringify(r16.body.terms) === '["仲尼"]', JSON.stringify(r16.body));
+      const bl = await j16('/api/links/blocklist').then((x) => x.body);
+      check('读取屏蔽词表', JSON.stringify(bl.terms) === '["仲尼"]');
+      const d = await linksOf16('论语讲稿.md');
+      check('屏蔽词条不再自动链（wikilink 不受影响）',
+        !d.links.some((l) => l.term === '仲尼' && l.kind === 'auto') && d.links.some((l) => l.kind === 'wiki'));
+      check('屏蔽词状态存数据源之外', fs.existsSync(path.join(dataDir16, 'sources', ds16, 'linkBlocklist.json')));
+      await put16('/api/links/blocklist', { terms: [] });
+      check('清空屏蔽词表后恢复', (await linksOf16('论语讲稿.md')).links.some((l) => l.term === '仲尼' && l.kind === 'auto'));
+    }
+
+    // (f) 只读操作后语料字节不变
+    {
+      const after16 = sha256dir16(DS);
+      const keys = new Set([...Object.keys(before16), ...Object.keys(after16)]);
+      const diffs = [...keys].filter((k) => before16[k] !== after16[k]);
+      check('所有只读操作后数据源字节不变（含文件清单一致）', diffs.length === 0 && Object.keys(after16).length === Object.keys(before16).length, diffs.join(','));
+    }
+
+    // (g) 缓存文件与重启复用
+    {
+      const cache = path.join(dataDir16, 'links', ds16 + '.json');
+      check('缓存文件创建在数据目录 links/ 下', fs.existsSync(cache), cache);
+      let cv = null;
+      try { cv = JSON.parse(fs.readFileSync(cache, 'utf8')); } catch { /* ignore */ }
+      check('缓存内容含各文件外发链接', !!cv && Object.keys(cv.files || {}).length === 14 && (cv.files['论语讲稿.md']?.links || []).length > 0);
+      await stop16();
+      await spawn16(); // 同一数据目录重启：自动恢复数据源并复用缓存
+      const st = await waitReady16();
+      check('重启后链接索引就绪', st.ready === true && st.buildSeq >= 1, JSON.stringify(st));
+      const d = await linksOf16('论语讲稿.md');
+      check('重启后链接结果一致', d.links.some((l) => l.term === '孔子家语' && l.kind === 'auto'));
+    }
+
+    // (h) 增量更新：磁盘追加提及 → chokidar → 反向链接在秒级更新
+    {
+      fs.appendFileSync(N16('讲稿1.md'), '\n## 追加节\n\n孔子在新节里又出现一次。\n');
+      const t0 = Date.now();
+      let count = 0;
+      for (;;) {
+        const bl = await backOf16('孔子.md');
+        const hit = bl.backlinks.find((b) => b.path === '讲稿1.md');
+        count = hit ? hit.count : 0;
+        if (count === 2) break;
+        if (Date.now() - t0 > 8000) break;
+        await new Promise((s) => setTimeout(s, 200));
+      }
+      const ms = Date.now() - t0;
+      check('磁盘追加提及后反向链接秒级更新（≈3s 内）', count === 2 && ms <= 4000, `count=${count} ${ms}ms`);
+      console.log(`  ℹ 监听增量更新耗时=${ms}ms（含 chokidar 去抖）`);
+    }
+
+    // (i) 改名：链接/反链跟随新路径；忽略记录迁移
+    {
+      // 先建两条忽略：有旁注的按 id 跟随，无旁注的按路径迁移（目标路径也随改名迁移）
+      await post16('/api/links/ignore', { path: '论语讲稿.md', term: '礼乐考', targetPath: '礼乐记.md', ignore: true });
+      await post16('/api/links/ignore', { path: '未命名.md', term: '仲尼', targetPath: '孔子.md', ignore: true });
+      r16 = await post16('/api/file/rename', { dsId: ds16, path: '礼乐记.md', newName: '礼乐记传' });
+      check('改名目标文档成功（标题保留）', r16.body.ok === true && r16.body.path === '礼乐记传.md' && r16.body.titleUpdated === false, JSON.stringify(r16.body));
+      await waitReady16();
+      const d = await linksOf16('论语讲稿.md');
+      check('自动链接改指新路径', d.links.some((l) => l.term === '礼乐考' && l.kind === 'auto' && l.target.path === '礼乐记传.md'));
+      check('wikilink 锚点也跟随新路径', d.links.some((l) => l.kind === 'wiki' && l.target?.path === '礼乐记传.md' && l.target?.heading === '礼乐源流'));
+      check('忽略条目的目标路径随迁移（链接仍被忽略）',
+        d.links.some((l) => l.term === '礼乐考' && l.kind === 'auto' && l.target.path === '礼乐记传.md' && l.ignored === true));
+      const blNew = await backOf16('礼乐记传.md');
+      const blOld = await backOf16('礼乐记.md');
+      check('反向链接跟随新路径', blNew.backlinks.length >= 1 && blOld.backlinks.length === 0, JSON.stringify([blNew.backlinks.length, blOld.backlinks.length]));
+      r16 = await post16('/api/file/rename', { dsId: ds16, path: '未命名.md', newName: '未命名草稿' });
+      check('无旁注文档改名成功', r16.body.ok === true && r16.body.path === '未命名草稿.md', JSON.stringify(r16.body));
+      await waitReady16();
+      const d2 = await linksOf16('未命名草稿.md');
+      check('路径键忽略记录随改名迁移', d2.links.some((l) => l.term === '仲尼' && l.ignored === true), JSON.stringify(d2.links));
+      // 清理忽略，避免影响后续断言
+      await post16('/api/links/ignore', { clearAll: true });
+    }
+
+    // (j) 删除：链接与词条移除，wikilink 变缺失
+    {
+      r16 = await post16('/api/file/delete', { dsId: ds16, path: '礼乐记传.md' });
+      check('删除目标文档成功', r16.body.ok === true, JSON.stringify(r16.body).slice(0, 120));
+      await waitReady16();
+      const d = await linksOf16('论语讲稿.md');
+      check('指向已删文档的自动链接消失', !d.links.some((l) => l.target?.path === '礼乐记传.md' && l.kind === 'auto'));
+      check('wikilink 变为缺失', d.links.some((l) => l.kind === 'wiki-missing' && l.term === '礼乐考'), JSON.stringify(d.links.filter((l) => l.kind !== 'auto').map((l) => [l.term, l.kind])));
+      const t = await j16('/api/links/terms?q=' + encodeURIComponent('礼乐考')).then((x) => x.body);
+      check('已删文档词条不再可搜', t.terms.length === 0, JSON.stringify(t.terms));
+      check('已删文档反向链接为空', (await backOf16('礼乐记传.md')).backlinks.length === 0);
+    }
+
+    // (k) 旁注别名变化 → 词表更新
+    {
+      const metaAbs = N16('孔子.md.meta.json');
+      const m = JSON.parse(fs.readFileSync(metaAbs, 'utf8'));
+      m.aliases = [...m.aliases, '尼父'];
+      fs.writeFileSync(metaAbs, JSON.stringify(m, null, 2) + '\n');
+      const t0 = Date.now();
+      let ok = false;
+      for (;;) {
+        const d = await linksOf16('文艺复兴.md');
+        if (d.links.some((l) => l.term === '尼父' && l.target?.path === '孔子.md')) { ok = true; break; }
+        if (Date.now() - t0 > 8000) break;
+        await new Promise((s) => setTimeout(s, 200));
+      }
+      check('旁注新增别名后词表更新并成链', ok);
+    }
+
+    // (l) 性能：ds-perf 副本千文件全量构建 + 单文件增量
+    {
+      const t0 = Date.now();
+      r16 = await post16('/api/config', { baseDir: PERF });
+      check('切换到 ds-perf 副本', r16.body.ok === true && r16.body.status.counts.files === 1000, JSON.stringify(r16.body.status?.counts));
+      let st;
+      for (;;) {
+        st = (await j16('/api/links/status')).body;
+        if (st.ready && st.files > 0) break;
+        await new Promise((s) => setTimeout(s, 100));
+      }
+      const fullWall = Date.now() - t0;
+      check('千文件全量构建 < 10s', st.lastFullMs < 10000, JSON.stringify(st));
+      console.log(`  ℹ 性能：全量构建 wall=${fullWall}ms 计算=${st.lastFullMs}ms 词条=${st.terms} 链接=${st.links} 文件=${st.files}`);
+      // 增量：向一个文档追加另一文档标题的提及（词条表不变 → 仅重提该文件）
+      const target = path.join(PERF, '分区00', '组0', '文档0000.md');
+      const before = fs.readFileSync(target, 'utf8');
+      fs.appendFileSync(target, '\n另见：性能测试文档 1。\n');
+      const t1 = Date.now();
+      let seq = st.buildSeq;
+      let updated = null;
+      for (;;) {
+        const s2 = (await j16('/api/links/status')).body;
+        if (s2.buildSeq > seq && s2.lastUpdateMs !== st.lastUpdateMs) { updated = s2; break; }
+        if (Date.now() - t1 > 8000) break;
+        await new Promise((s) => setTimeout(s, 50));
+      }
+      const incWall = Date.now() - t1;
+      check('单文件增量更新 < 500ms（计算耗时）', !!updated && updated.lastUpdateMs < 500, JSON.stringify(updated));
+      check('增量后链接计数增加', !!updated && updated.links > st.links, `${st.links} -> ${updated && updated.links}`);
+      console.log(`  ℹ 性能：单文件增量 wall=${incWall}ms（含监听去抖） 计算=${updated ? updated.lastUpdateMs : '?'}ms`);
+      fs.writeFileSync(target, before); // 还原，保持副本可重复验收
+    }
+  } finally {
+    await stop16();
+    fs.rmSync(tmp16, { recursive: true, force: true });
+  }
+}
+
+
+console.log('== 17. 多资料库工作区 ==');
+// 独立服务 + 临时数据目录 + test-data 临时副本：多库并行、ds 定位、隔离、移除恢复、v1 迁移
+{
+  const PORT17 = 7497;
+  const B17 = 'http://127.0.0.1:' + PORT17;
+  const tmp17 = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-multilib-'));
+  const corpus17 = path.join(tmp17, 'test-data');
+  fs.cpSync(path.join(ROOT, 'test-data', 'ds-a'), path.join(corpus17, 'ds-a'), { recursive: true });
+  fs.cpSync(path.join(ROOT, 'test-data', 'ds-b'), path.join(corpus17, 'ds-b'), { recursive: true });
+  const DSA = path.join(corpus17, 'ds-a');
+  const DSB = path.join(corpus17, 'ds-b');
+  const dataDir17 = path.join(tmp17, 'data');
+  const j17 = async (url, init) => {
+    const r = await fetch(B17 + url, init);
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  };
+  const post17 = (url, body) => j17(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let child17 = null;
+  const spawn17 = async (migrateFixture) => {
+    fs.mkdirSync(dataDir17, { recursive: true });
+    if (migrateFixture) {
+      fs.writeFileSync(path.join(dataDir17, 'config.json'), JSON.stringify({ baseDir: DSA, savedAt: '2026-10-01T00:00:00Z' }));
+    }
+    child17 = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
+      env: { ...process.env, WORKBENCH_PORT: String(PORT17), WORKBENCH_HOST: '127.0.0.1', WORKBENCH_DATA_DIR: dataDir17 },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    child17.stderr.on('data', (d) => process.stderr.write('[srv17] ' + d));
+    const t0 = Date.now();
+    for (;;) {
+      try { const r = await fetch(B17 + '/api/config'); if (r.ok) return; } catch { /* 未就绪 */ }
+      if (Date.now() - t0 > 20000) throw new Error('§17 服务等待超时');
+      await new Promise((s) => setTimeout(s, 200));
+    }
+  };
+  const stop17 = async () => {
+    if (child17 && !child17.killed) {
+      try { child17.kill('SIGKILL'); } catch { /* ignore */ }
+      child17 = null;
+      await new Promise((s) => setTimeout(s, 300));
+    }
+  };
+  const treePaths = (body) => {
+    const out = [];
+    (function walk(n) { (n.files || []).forEach((f) => out.push(f.path)); (n.dirs || []).forEach(walk); })(body.tree || {});
+    return out;
+  };
+
+  try {
+    // (a) v1 配置迁移：旧单库 config.json → v2 单库
+    await spawn17(true);
+    let r17 = await j17('/api/config');
+    check('v1 config 迁移为单库', r17.body.configured === true && r17.body.libraries.length === 1 &&
+      r17.body.libraries[0].id === r17.body.dsId, JSON.stringify(r17.body.libraries));
+    check('迁移后状态可用（11 文件）', r17.body.status.counts && r17.body.status.counts.files === 11, JSON.stringify(r17.body.status.counts));
+    const cfgDisk = JSON.parse(fs.readFileSync(path.join(dataDir17, 'config.json'), 'utf8'));
+    check('磁盘配置已是 v2', cfgDisk.version === 2 && Array.isArray(cfgDisk.libraries) && cfgDisk.libraries.length === 1, JSON.stringify(cfgDisk));
+    await stop17();
+
+    // (b) 多库并行
+    await spawn17(false);
+    r17 = await post17('/api/config', { baseDir: DSA });
+    const dsA17 = r17.body.dsId;
+    check('添加 A 成功且返回库清单', r17.body.ok === true && r17.body.libraries.length === 1 && r17.body.libraries[0].name === 'ds-a', JSON.stringify(r17.body.libraries));
+    r17 = await post17('/api/config', { baseDir: DSB });
+    const dsB17 = r17.body.dsId;
+    check('添加 B 后两库并存且 B 为当前', r17.body.libraries.length === 2 && r17.body.activeId === dsB17 && r17.body.dsId === dsB17, JSON.stringify(r17.body.libraries.map((l) => l.name)));
+    check('A/B id 不同', dsA17 !== dsB17);
+
+    // (c) ds 定位与隔离
+    const curPaths = treePaths((await j17('/api/tree')).body);
+    const aPaths = treePaths((await j17('/api/tree?ds=' + dsA17)).body);
+    check('当前(B)树只含 B 文件', curPaths.includes('配置.json') && !curPaths.some((p) => p.startsWith('笔记/子目录')), curPaths.join(','));
+    check('?ds=A 树只含 A 文件', aPaths.includes('笔记/子目录/第10章 总结.md') && !aPaths.some((p) => p === '配置.json'), aPaths.join(','));
+    r17 = await j17('/api/tree?ds=notopen00000');
+    check('未打开的 ds 返回 404', r17.status === 404 && r17.body.error === '资料库未打开', String(r17.status));
+
+    // (d) 状态含各库
+    r17 = await j17('/api/status');
+    check('status.libs 覆盖全部库', r17.body.libs && r17.body.libs[dsA17] && r17.body.libs[dsB17] &&
+      r17.body.libs[dsA17].scannedAt && r17.body.libs[dsB17].watching === true, JSON.stringify(r17.body.libs));
+
+    // (e) 检索隔离（雪拥蓝关为 ds-a 独有词）
+    r17 = await j17('/api/search?q=' + encodeURIComponent('雪拥蓝关') + '&ds=' + dsA17);
+    check('?ds=A 搜索命中 A 内容', r17.body.total >= 1, JSON.stringify(r17.body.total));
+    r17 = await j17('/api/search?q=' + encodeURIComponent('雪拥蓝关') + '&ds=' + dsB17);
+    check('?ds=B 搜索无 A 内容', r17.body.total === 0, JSON.stringify(r17.body.total));
+
+    // (f) 移除 → 派生数据保留 → 重加恢复
+    await post17('/api/recents?ds=' + dsA17, { path: '笔记/第1章 入门.md' });
+    r17 = await post17('/api/library/remove', { ds: dsA17 });
+    check('移除 A 后回落 B 为当前', r17.body.ok === true && r17.body.activeId === dsB17 && r17.body.libraries.length === 1, JSON.stringify(r17.body.libraries));
+    r17 = await j17('/api/tree?ds=' + dsA17);
+    check('移除后 ?ds=A 404', r17.status === 404);
+    r17 = await j17('/api/config');
+    check('配置清单只剩 B', r17.body.libraries.length === 1 && r17.body.dsId === dsB17);
+    check('A 的派生数据仍在磁盘', fs.existsSync(path.join(dataDir17, 'sources', dsA17, 'recents.json')));
+    r17 = await post17('/api/config', { baseDir: DSA });
+    check('重新添加 A 成功（同 id）', r17.body.ok === true && r17.body.dsId === dsA17 && r17.body.libraries.length === 2);
+    r17 = await j17('/api/recents?ds=' + dsA17);
+    check('重加后最近记录恢复', r17.body.recents.length === 1 && r17.body.recents[0].path === '笔记/第1章 入门.md' && r17.body.recents[0].exists === true, JSON.stringify(r17.body.recents));
+
+    // (g) 激活切换
+    r17 = await post17('/api/library/activate', { ds: dsB17 });
+    check('激活 B 后 config 指向 B', r17.body.ok === true && r17.body.dsId === dsB17 && r17.body.activeId === dsB17);
+    r17 = await post17('/api/library/activate', { ds: 'notopen00000' });
+    check('激活未打开库 404', r17.status === 404);
+
+    // (h) 同目录重复添加 = 仅激活，不重复
+    r17 = await post17('/api/config', { baseDir: DSB });
+    check('重复添加 B 不产生重复库', r17.body.libraries.length === 2 && r17.body.libraries.filter((l) => l.id === dsB17).length === 1, JSON.stringify(r17.body.libraries.map((l) => l.name)));
+  } finally {
+    await stop17();
+    fs.rmSync(tmp17, { recursive: true, force: true });
+  }
 }
 
 console.log(`\n结果：${pass} 通过，${fail} 失败`);

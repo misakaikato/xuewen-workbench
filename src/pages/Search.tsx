@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
 import type { SearchResult } from '@/lib/types';
-import { extIcon } from '@/components/RefChip';
+import { extIcon } from '@/lib/extIcon';
 import { SearchX, Loader2 } from 'lucide-react';
 
 const TYPE_OPTIONS = [
@@ -148,7 +148,7 @@ export default function Search() {
 
       {!q && (
         <div className="text-xs text-muted-foreground border border-dashed border-border rounded-lg p-4">
-          检索范围：当前数据源的文件名、相对路径、Markdown 正文、JSON 键和值、Word 提取正文。
+          检索范围：当前资料库的文件名、相对路径、Markdown 正文、JSON 键和值、Word 提取正文。
           {loading && <Loader2 className="w-3.5 h-3.5 animate-spin inline ml-1" />}
         </div>
       )}

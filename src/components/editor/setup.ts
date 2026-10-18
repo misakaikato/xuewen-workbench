@@ -21,7 +21,9 @@ const SPECIALS_NO_CR = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00
 // 换行（lineWrapping）：所有模式（实时预览 / 源码 / 分栏 / JSON）长行一律折行，
 // 编辑器本身不出现横向滚动条（表格部件 / 图片等块内自有滚动见 livePreview 主题）。
 export const editorBaseThemeSpec = {
-  '&': { color: 'hsl(var(--foreground))', backgroundColor: 'hsl(var(--background))' },
+  // 高度 100%：编辑器受宿主约束、内部滚动（CM 默认不设高度，会随内容增长被裁剪）。
+  // 阅读态在 makeLpTheme 的 readOnly 分支覆盖为 auto（随内容增长，页面滚动）。
+  '&': { color: 'hsl(var(--foreground))', backgroundColor: 'hsl(var(--background))', height: '100%' },
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': { fontFamily: 'var(--rd-font)', fontSize: 'var(--rd-size)', lineHeight: 'var(--rd-line)' },
   '.cm-line': { padding: '0 14px' },

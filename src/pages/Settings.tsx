@@ -4,10 +4,13 @@ import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { useReadingPrefs, DEFAULT_PREFS } from '@/lib/prefs';
 import type { Collection, MetadataMapping, TreeNode } from '@/lib/types';
-import { Plus, Trash2, Eye } from 'lucide-react';
+import { Plus, Trash2, Eye, ShieldBan } from 'lucide-react';
 import MetaImport from '@/components/MetaImport';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
+import {
+  Select as UISelect, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 import { useTheme, type Theme } from '@/lib/theme';
 
 function collectDirs(node: TreeNode, out: string[]) {
@@ -33,11 +36,19 @@ export default function Settings() {
   const [mappings, setMappings] = useState<MetadataMapping[]>([]);
   const [msg, setMsg] = useState('');
   const [inspect, setInspect] = useState<Record<string, string>>({});
+  const [blocklistRaw, setBlocklistRaw] = useState('');
+  const [ignoredCount, setIgnoredCount] = useState<number | null>(null);
 
   useEffect(() => {
     if (!dsId) return;
     api.collections().then((r) => setCollections(r.collections)).catch(() => {});
     api.metadata().then((r) => setMappings(r.mappings)).catch(() => {});
+    api.linksBlocklist()
+      .then((r) => {
+        setBlocklistRaw(r.terms.join('\n'));
+        setIgnoredCount(r.ignoredCount);
+      })
+      .catch(() => setBlocklistRaw(''));
   }, [dsId]);
 
   const allDirs = useMemo(() => {
@@ -116,26 +127,28 @@ export default function Settings() {
         <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
           <label className="flex items-center gap-2">
             <span className="w-24 text-muted-foreground">正文字体</span>
-            <select
-              value={prefs.font}
-              onChange={(e) => update({ font: e.target.value as typeof prefs.font })}
-              className="flex-1 px-2 py-1.5 rounded border border-input bg-background text-sm"
-            >
-              <option value="serif">衬线（宋体系）</option>
-              <option value="sans">无衬线（黑体系）</option>
-              <option value="mono">等宽</option>
-            </select>
+            <UISelect value={prefs.font} onValueChange={(v) => update({ font: v as typeof prefs.font })}>
+              <SelectTrigger className="flex-1 h-8 w-auto text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="serif">衬线（宋体系）</SelectItem>
+                <SelectItem value="sans">无衬线（黑体系）</SelectItem>
+                <SelectItem value="mono">等宽</SelectItem>
+              </SelectContent>
+            </UISelect>
           </label>
           <label className="flex items-center gap-2">
             <span className="w-24 text-muted-foreground">主题</span>
-            <select
-              value={prefs.theme}
-              onChange={(e) => update({ theme: e.target.value as typeof prefs.theme })}
-              className="flex-1 px-2 py-1.5 rounded border border-input bg-background text-sm"
-            >
-              <option value="light">浅色</option>
-              <option value="dark">深色</option>
-            </select>
+            <UISelect value={prefs.theme} onValueChange={(v) => update({ theme: v as typeof prefs.theme })}>
+              <SelectTrigger className="flex-1 h-8 w-auto text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="light">浅色</SelectItem>
+                <SelectItem value="dark">深色</SelectItem>
+              </SelectContent>
+            </UISelect>
           </label>
           <label className="flex items-center gap-2">
             <span className="w-24 text-muted-foreground">字号 (px)</span>
@@ -172,7 +185,62 @@ export default function Settings() {
           <button className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent" onClick={reset}>
             恢复默认（{DEFAULT_PREFS.fontSize}px / {DEFAULT_PREFS.lineHeight} 行距 / 浅色）
           </button>
-          <span className="text-xs text-muted-foreground">仅影响界面呈现，不修改源文件，不清除数据源与草稿。</span>
+          <span className="text-xs text-muted-foreground">仅影响界面呈现，不修改源文件，不清除资料库与草稿。</span>
+        </div>
+      </section>
+
+      {/* 屏蔽词表（自动内链） */}
+      <section className="bg-card border border-border rounded-lg p-4">
+        <h2 className="font-medium text-sm mb-1 flex items-center gap-1.5">
+          <ShieldBan className="w-3.5 h-3.5" /> 屏蔽词表
+        </h2>
+        <p className="text-xs text-muted-foreground mb-3">
+          列在表中的词条不再自动加链接（[[…]] 显式链接不受影响）。每行一个词，保存后立即生效，只影响显示，不修改源文件。
+        </p>
+        <textarea
+          className="w-full h-28 px-2 py-1.5 rounded border border-input bg-background text-sm mono resize-y"
+          value={blocklistRaw}
+          placeholder={'例如：\n天\n道\n心'}
+          onChange={(e) => setBlocklistRaw(e.target.value)}
+        />
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          <button
+            className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent"
+            onClick={async () => {
+              try {
+                const terms = blocklistRaw.split('\n').map((s) => s.trim()).filter(Boolean);
+                const r = await api.saveLinksBlocklist(terms);
+                setBlocklistRaw(r.terms.join('\n'));
+                setMsg('屏蔽词表已保存（重建链接后生效）');
+                setTimeout(() => setMsg(''), 2000);
+              } catch (e) {
+                setMsg('保存失败：' + (e as Error).message);
+              }
+            }}
+          >
+            保存屏蔽词表
+          </button>
+          {ignoredCount != null && ignoredCount > 0 && (
+            <>
+              <span className="text-xs text-muted-foreground">已忽略链接 {ignoredCount} 条（仅本篇生效）</span>
+              <button
+                className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent"
+                onClick={async () => {
+                  try {
+                    const r = await api.linksIgnore({ clearAll: true });
+                    setIgnoredCount(r.ignoredCount);
+                    window.dispatchEvent(new CustomEvent('wb-links-updated'));
+                    setMsg('已清除全部忽略');
+                    setTimeout(() => setMsg(''), 2000);
+                  } catch (e) {
+                    setMsg('清除失败：' + (e as Error).message);
+                  }
+                }}
+              >
+                清除忽略
+              </button>
+            </>
+          )}
         </div>
       </section>
 
