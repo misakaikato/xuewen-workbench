@@ -1,34 +1,38 @@
-# 发布流水线：打 tag 触发 mac + win 构建，产物上传为 draft release（人工核对后 Publish）
-# 注意：package.json 里 build.publish 的 owner/repo 占位符必须先替换为真实仓库
-# 串行执行（win needs mac）：electron-builder 的 getOrCreateReleaseByTag 非原子，
-# 双平台并行会在同一 tag 上各建一个 draft；串行时 win 会复用 mac 建好的 draft。
+# 发布流水线：打 tag 触发 mac + win 并行构建，产物上传为 draft release（人工核对后 Publish）
+# 注意：package.json 里 build.publish 的 owner/repo 必须是真实仓库
+#
+# draft 竞态的根治：electron-builder 每个发布目标（mac 的 zip/dmg、win 的 nsis）各持一套
+# 发布器，各自「查不到就建」——并行矩阵、甚至单 job 内双目标都会各建一个 draft。
+# prepare 先行预建唯一 draft，所有发布器 getOrCreateRelease 都能命中复用；
+# finalize 兜底删除带空格的历史命名差异资产。
 name: release
 
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 permissions:
   contents: write # 允许 GITHUB_TOKEN 创建 release 并上传资产
 
 jobs:
-  build-mac:
-    runs-on: macos-latest
+  prepare:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run release:mac
+      - name: 预建 draft release（幂等：已存在则跳过）
+        run: gh release view "$GITHUB_REF_NAME" || gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-win:
-    needs: build-mac
-    runs-on: windows-latest
+  build:
+    needs: prepare
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            script: release:mac
+          - os: windows-latest
+            script: release:win
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,6 +40,21 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run release:win
+      - run: npm run ${{ matrix.script }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  finalize:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 清理带空格的重复资产（mac 双发布器命名差异遗留）
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets \
+            --jq '.assets[] | select(.name | test(" ")) | .id' \
+            | while read -r id; do
+                gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/$id"
+                echo "deleted stray asset: $id"
+              done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
