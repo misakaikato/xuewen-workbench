@@ -9,9 +9,10 @@ import type { TreeNode, FileEntry, Collection } from '@/lib/types';
 import {
   ChevronRight, ChevronDown, Folder, FolderOpen, FilePlus, FolderPlus,
   ChevronsDownUp, ChevronsUpDown, Boxes, Eye, EyeOff, Link2, Lock, PenLine, AlertTriangle,
-  FolderInput, Trash2,
+  FolderInput, Trash2, ArrowUpDown,
 } from 'lucide-react';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { EntryActionDialogs, type EntryAction } from './EntryActionDialogs';
 import { MetaIssuesBadge } from './MetaIssuesBadge';
 import { useApp } from '@/store/app';
@@ -55,25 +56,68 @@ function ancestorDirs(p: string): string[] {
 
 const fmtKB = (n: number) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB');
 
-// 文件夹聚合统计（悬浮提示用）：目录 -> { files, dirs, size }
-function computeStats(n: TreeNode, map: Map<string, { files: number; dirs: number; size: number }>) {
+// 文件夹聚合统计（悬浮提示 + 时间/大小排序用）：目录 -> { files, dirs, size, mtime }
+// mtime = 目录（含子目录）内最新文件的修改时间
+interface DirStat { files: number; dirs: number; size: number; mtime: number }
+
+function computeStats(n: TreeNode, map: Map<string, DirStat>) {
   let files = n.files.length;
   let dirs = n.dirs.length;
   let size = n.files.reduce((s, f) => s + f.size, 0);
+  let mtime = n.files.reduce((m, f) => Math.max(m, f.mtimeMs), 0);
   for (const d of n.dirs) {
     const st = computeStats(d, map);
     files += st.files;
     dirs += st.dirs;
     size += st.size;
+    mtime = Math.max(mtime, st.mtime);
   }
-  map.set(n.path, { files, dirs, size });
-  return { files, dirs, size };
+  map.set(n.path, { files, dirs, size, mtime });
+  return { files, dirs, size, mtime };
 }
 
 function collectFiles(n: TreeNode, out: FileEntry[] = []): FileEntry[] {
   out.push(...n.files);
   for (const d of n.dirs) collectFiles(d, out);
   return out;
+}
+
+// ---- 排序：名称（中文自然序，与服务端扫描一致）/ 修改时间 / 大小，各可选升降 ----
+
+type SortKey = 'name' | 'mtime' | 'size';
+type SortSpec = { key: SortKey; dir: 'asc' | 'desc' };
+const DEFAULT_SORT: SortSpec = { key: 'name', dir: 'asc' };
+const SORT_KEY_LABEL: Record<SortKey, string> = { name: '名称', mtime: '修改时间', size: '大小' };
+// 方向的可读提示（因维度而异）
+const dirHint = (key: SortKey, dir: 'asc' | 'desc') =>
+  key === 'name' ? (dir === 'asc' ? 'A→Z' : 'Z→A')
+  : key === 'mtime' ? (dir === 'asc' ? '旧→新' : '新→旧')
+  : (dir === 'asc' ? '小→大' : '大→小');
+
+const cmpName = (a: string, b: string) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
+const cmpPath = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+// 文件排序（返回新数组）：非名称维度以名称作次级排序，保证稳定
+function sortFiles(files: FileEntry[], sort: SortSpec): FileEntry[] {
+  const mul = sort.dir === 'asc' ? 1 : -1;
+  return [...files].sort((a, b) => {
+    if (sort.key === 'mtime') return mul * (a.mtimeMs - b.mtimeMs) || cmpName(a.name, b.name);
+    if (sort.key === 'size') return mul * (a.size - b.size) || cmpName(a.name, b.name);
+    return mul * cmpName(a.name, b.name) || cmpPath(a.path, b.path);
+  });
+}
+
+// 目录排序（返回新数组）：时间/大小按聚合值（DirStat），名称自然序
+function sortDirs(dirs: TreeNode[], sort: SortSpec, stats: Map<string, DirStat>): TreeNode[] {
+  const mul = sort.dir === 'asc' ? 1 : -1;
+  const val = (d: TreeNode) => {
+    const st = stats.get(d.path);
+    return sort.key === 'mtime' ? (st?.mtime ?? 0) : (st?.size ?? 0);
+  };
+  return [...dirs].sort((a, b) => {
+    if (sort.key === 'name') return mul * cmpName(a.name, b.name);
+    return mul * (val(a) - val(b)) || cmpName(a.name, b.name);
+  });
 }
 
 // ---- 按库持久化的小存取 ----
@@ -123,18 +167,18 @@ interface Row {
   count?: number; // head 成员数
 }
 
-function buildTreeRows(node: TreeNode, depth: number, openSet: Set<string>, stats: Map<string, { files: number; dirs: number; size: number }>, out: Row[]) {
-  for (const d of node.dirs) {
-    const st = stats.get(d.path) ?? { files: 0, dirs: 0, size: 0 };
+function buildTreeRows(node: TreeNode, depth: number, openSet: Set<string>, stats: Map<string, DirStat>, sort: SortSpec, out: Row[]) {
+  for (const d of sortDirs(node.dirs, sort, stats)) {
+    const st = stats.get(d.path) ?? { files: 0, dirs: 0, size: 0, mtime: 0 };
     const open = openSet.has(d.path);
     out.push({
       key: d.path, kind: 'dir', path: d.path, name: d.name, depth, isDir: true, open,
       entry: { path: d.path, name: d.name, isDir: true },
       title: `${st.files} 个文件 · ${st.dirs} 个子目录 · ${fmtKB(st.size)}`,
     });
-    if (open) buildTreeRows(d, depth + 1, openSet, stats, out);
+    if (open) buildTreeRows(d, depth + 1, openSet, stats, sort, out);
   }
-  for (const f of node.files) {
+  for (const f of sortFiles(node.files, sort)) {
     out.push({
       key: f.path, kind: 'file', path: f.path, name: f.name, depth, isDir: false, file: f,
       entry: { path: f.path, name: f.name, isDir: false },
@@ -150,7 +194,7 @@ function buildFlatRows(files: FileEntry[]): Row[] {
 }
 
 // 集合视图：按集合分组平铺成员（文件可属多个集合时归第一个）；未归入任何集合的收进「未归入集合」
-function buildCollectionRows(collections: Collection[], allFiles: FileEntry[], closed: Set<string>): Row[] {
+function buildCollectionRows(collections: Collection[], allFiles: FileEntry[], closed: Set<string>, sort: SortSpec): Row[] {
   const claimed = new Map<string, string>(); // path -> 第一个认领它的集合名
   const groups: { name: string; files: FileEntry[] }[] = [];
   for (const c of collections) {
@@ -167,7 +211,7 @@ function buildCollectionRows(collections: Collection[], allFiles: FileEntry[], c
       title: `${files.length} 个文档`, count: files.length,
     });
     if (open) {
-      for (const f of files) {
+      for (const f of sortFiles(files, sort)) {
         out.push({
           key: key + '/' + f.path, kind: 'file', path: f.path, name: f.name, depth: depth + 1, isDir: false,
           file: f, entry: { path: f.path, name: f.name, isDir: false }, dirLabel: f.dir,
@@ -477,10 +521,16 @@ export function FileTree({
   // 视图与选项（按库持久化）
   const [view, setViewState] = useState<'tree' | 'cols'>('tree');
   const [opts, setOpts] = useState<{ badges: boolean; refs: boolean }>({ badges: true, refs: true });
+  const [sort, setSortSpec] = useState<SortSpec>(DEFAULT_SORT);
   useEffect(() => {
     if (!dsId) return;
     setViewState(loadJson<'tree' | 'cols'>(`wb.filetree.view.${dsId}`, 'tree') === 'cols' ? 'cols' : 'tree');
     setOpts(loadJson(`wb.filetree.opts.${dsId}`, { badges: true, refs: true }));
+    const raw = loadJson<Partial<SortSpec>>(`wb.filetree.sort.${dsId}`, {});
+    setSortSpec({
+      key: raw.key === 'mtime' || raw.key === 'size' ? raw.key : 'name',
+      dir: raw.dir === 'desc' ? 'desc' : 'asc',
+    });
   }, [dsId]);
   const setView = (v: 'tree' | 'cols') => {
     setViewState(v);
@@ -491,6 +541,23 @@ export function FileTree({
     setOpts((prev) => {
       const next = { ...prev, [k]: !prev[k] };
       if (dsId) saveJson(`wb.filetree.opts.${dsId}`, next);
+      return next;
+    });
+  };
+  // 切排序维度时选常用方向：时间/大小默认降序（新→旧 / 大→小），名称升序；方向也可单独切
+  const setSortKey = (key: SortKey) => {
+    setSortSpec((prev) => {
+      if (prev.key === key) return prev;
+      const next: SortSpec = { key, dir: key === 'name' ? 'asc' : 'desc' };
+      if (dsId) saveJson(`wb.filetree.sort.${dsId}`, next);
+      return next;
+    });
+  };
+  const setSortDir = (dir: 'asc' | 'desc') => {
+    setSortSpec((prev) => {
+      if (prev.dir === dir) return prev;
+      const next = { ...prev, dir };
+      if (dsId) saveJson(`wb.filetree.sort.${dsId}`, next);
       return next;
     });
   };
@@ -552,7 +619,7 @@ export function FileTree({
   // ---- 行数据装配 ----
   const q = filter.trim().toLowerCase();
   const stats = useMemo(() => {
-    const m = new Map<string, { files: number; dirs: number; size: number }>();
+    const m = new Map<string, DirStat>();
     computeStats(tree, m);
     return m;
   }, [tree]);
@@ -560,18 +627,17 @@ export function FileTree({
   const rows = useMemo<Row[]>(() => {
     if (q) {
       const out = allFiles.filter((f) => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
-      out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-      return buildFlatRows(out);
+      return buildFlatRows(sortFiles(out, sort));
     }
     if (view === 'cols') {
       if (!collections.length) return [];
-      return buildCollectionRows(collections, allFiles, closedCols.dsId === dsId ? closedCols.set : new Set());
+      return buildCollectionRows(collections, allFiles, closedCols.dsId === dsId ? closedCols.set : new Set(), sort);
     }
     const openSet = openState.dsId === dsId ? openState.set : new Set(tree.dirs.map((d) => d.path));
     const out: Row[] = [];
-    buildTreeRows(tree, 0, openSet, stats, out);
+    buildTreeRows(tree, 0, openSet, stats, sort, out);
     return out;
-  }, [tree, q, view, openState, closedCols, collections, allFiles, stats, dsId]);
+  }, [tree, q, view, openState, closedCols, collections, allFiles, stats, dsId, sort]);
 
   // ---- 虚拟滚动 ----
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -950,6 +1016,32 @@ export function FileTree({
             <FolderPlus className="w-3.5 h-3.5" />新建文件夹
           </button>
           <span className="ml-auto flex items-center gap-0.5">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="p-1 rounded hover:bg-sidebar-accent text-muted-foreground"
+                  title={`排序：${SORT_KEY_LABEL[sort.key]} · ${sort.dir === 'asc' ? '升序' : '降序'}（${dirHint(sort.key, sort.dir)}），对目录树/过滤结果/集合分组均生效`}
+                >
+                  <ArrowUpDown className="w-3.5 h-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuRadioGroup value={sort.key} onValueChange={(v) => setSortKey(v as SortKey)}>
+                  <DropdownMenuRadioItem value="name">名称</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="mtime">修改时间</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="size">大小</DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuRadioGroup value={sort.dir} onValueChange={(v) => setSortDir(v as 'asc' | 'desc')}>
+                  <DropdownMenuRadioItem value="asc">
+                    升序<span className="ml-auto pl-4 text-xs text-muted-foreground">{dirHint(sort.key, 'asc')}</span>
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="desc">
+                    降序<span className="ml-auto pl-4 text-xs text-muted-foreground">{dirHint(sort.key, 'desc')}</span>
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
             {view === 'tree' && !filtering && (
               <>
                 <button
