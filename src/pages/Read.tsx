@@ -495,10 +495,13 @@ export default function Read() {
       {/* 阅读纸面：A 主题下带纸纹侧影（见 themes.css .wb-paper） */}
       <div className="flex-1 min-w-0 overflow-auto wb-paper" ref={scrollRef}>
         <div className="max-w-5xl mx-auto px-4 py-5">
-          {/* 面包屑与操作行（原位编辑时替换为格式工具栏 + 保存控件，行高不变、页面零位移） */}
+          {/* 顶部工具栏区（sticky，不随正文滚走）：阅读态=面包屑+操作行，
+              原位编辑态=格式工具栏+保存控件；查找条与偏好面板也收在同一 sticky 区，
+              避免多个 sticky 互相重叠 */}
+          <div className="sticky top-0 z-20 mb-3 space-y-2">
           {editing ? (
             <div
-              className="sticky top-0 z-20 mb-3 bg-card border border-border rounded-lg shadow-sm p-1 flex items-center gap-2"
+              className="bg-card border border-border rounded-lg shadow-sm p-1 flex items-center gap-2"
               data-wb-inplace-bar
             >
               <div className="flex-1 min-w-0">
@@ -558,7 +561,7 @@ export default function Read() {
               </button>
             </div>
           ) : (
-          <div className="flex items-center gap-2 flex-wrap mb-4">
+          <div className="bg-card border border-border rounded-lg shadow-sm p-1.5 flex items-center gap-2 flex-wrap">
             <nav className="text-xs text-muted-foreground flex items-center gap-1 flex-wrap min-w-0">
               {crumbs.map((seg, i) => (
                 <span key={i} className="flex items-center gap-1">
@@ -612,9 +615,9 @@ export default function Read() {
           </div>
           )}
 
-          {/* 文内查找条 */}
+          {/* 文内查找条（随 sticky 顶栏区） */}
           {findOpen && (
-            <div className="sticky top-0 z-10 bg-card border border-border rounded-lg shadow-sm p-2 mb-3 flex items-center gap-2">
+            <div className="bg-card border border-border rounded-lg shadow-sm p-2 flex items-center gap-2">
               <Search className="w-4 h-4 text-muted-foreground" />
               <input
                 autoFocus
@@ -635,9 +638,9 @@ export default function Read() {
             </div>
           )}
 
-          {/* 阅读偏好快捷面板 */}
-          {showPrefs && (
-            <div className="sticky top-0 z-10 bg-card border border-border rounded-lg shadow-sm p-3 mb-3 text-xs space-y-2">
+          {/* 阅读偏好快捷面板（随 sticky 顶栏区，仅阅读态） */}
+          {!editing && showPrefs && (
+            <div className="bg-card border border-border rounded-lg shadow-sm p-3 text-xs space-y-2">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-muted-foreground w-14">字体</span>
                 {(['serif', 'sans', 'mono'] as const).map((f) => (
@@ -694,6 +697,7 @@ export default function Read() {
               <div className="text-muted-foreground">阅读偏好即时生效，仅影响界面呈现，不会修改源文件。切换文档与重启后保留。</div>
             </div>
           )}
+          </div>
 
           {/* 正文 */}
           <div ref={contentRef} data-wb-content-card className="bg-card border border-border rounded-lg p-6 md:p-8 min-h-[40vh]">

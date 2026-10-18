@@ -456,6 +456,9 @@ async function main() {
   await exec(`(() => { const b = [...document.querySelectorAll('aside button')].find((x) => x.textContent.trim() === '三级标题'); if (b) { b.click(); return true; } return false; })()`);
   await sleep(150);
   check('TOC 点击滚动正文', await exec(`(() => { const sc = document.querySelector('.wb-paper'); return !!sc && sc.scrollTop > 0; })()`));
+  await exec(`(() => { const sc = document.querySelector('.wb-paper'); if (sc) sc.scrollTop = sc.scrollHeight; return true; })()`);
+  await sleep(120);
+  check('阅读态工具栏滚动后仍钉顶', await exec(`(() => { const bar = document.querySelector('.max-w-5xl > div.sticky'); const sc = document.querySelector('.wb-paper'); if (!bar || !sc) return false; const r = bar.getBoundingClientRect(); const sr = sc.getBoundingClientRect(); return sc.scrollTop > 100 && r.top - sr.top >= -1 && r.top - sr.top <= 2; })()`));
   await win.loadURL(BASE + '/read/' + encodeURIComponent('rich.md') + '#' + encodeURIComponent('三级标题'));
   await waitFor('!!document.querySelector(".ro-doc .cm-content")', '锚点阅读页就绪');
   await sleep(600);
