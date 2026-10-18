@@ -160,6 +160,11 @@ export default function Read() {
 
   const enterEdit = useCallback(() => {
     if (!file || !dsId || file.readonly || editingRef.current) return;
+    if (file.type === 'text') {
+      // 纯文本无原位渲染编辑（ReadOnlyDoc 为 markdown 实例），进编辑页源码模式
+      navigate('/edit/' + relPath.split('/').map(encodeURIComponent).join('/'));
+      return;
+    }
     const text = file.content || '';
     setLineSep(detectLineSeparator(text));
     baseTextRef.current = text;
@@ -761,6 +766,11 @@ export default function Read() {
                   setViewReady((s) => s + 1);
                 }}
               />
+            )}
+            {file.type === 'text' && (
+              <div className="text-[0.97rem] leading-[1.9] whitespace-pre-wrap break-words font-[inherit]">
+                {file.content || ''}
+              </div>
             )}
             {file.type === 'json' && <JsonViewer content={file.content || ''} />}
             {file.type === 'word' && (

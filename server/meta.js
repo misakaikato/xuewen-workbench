@@ -65,7 +65,7 @@ export function validateImportLine(obj) {
 
 const EDITABLE_FIELDS = ['title', 'type', 'date', 'source_url', 'aliases', 'tags'];
 const META_KEY_ORDER = ['id', 'title', 'type', 'date', 'source_url', 'aliases', 'tags', 'content_hash', 'created_at'];
-const DOC_EXTS = ['.md', '.docx', '.doc'];
+const DOC_EXTS = ['.md', '.txt', '.docx', '.doc'];
 
 function deepEqual(a, b) {
   if (a === b) return true;
@@ -126,7 +126,7 @@ export function planImport({ baseDir, text, overwrite, resolveDocPath }) {
     if (parts.some((s) => s.startsWith('.'))) { fail('path 位于隐藏目录或回收站', p); continue; }
     if (isSidecar(parts[parts.length - 1])) { fail('path 不能是元数据文件本身', p); continue; }
     const ext = path.posix.extname(p).toLowerCase();
-    if (!DOC_EXTS.includes(ext)) { fail('path 不是受支持的文档（.md/.docx/.doc）', p); continue; }
+    if (!DOC_EXTS.includes(ext)) { fail('path 不是受支持的文档（.md/.txt/.docx/.doc）', p); continue; }
     let st;
     try { st = fs.statSync(abs); } catch { fail('文件不存在', p); continue; }
     if (!st.isFile()) { fail('不是常规文件', p); continue; }

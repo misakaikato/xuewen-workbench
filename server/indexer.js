@@ -30,7 +30,7 @@ export class Indexer {
         const f = queue.shift();
         const abs = path.join(this.baseDir, f.path);
         try {
-          if (f.ext === '.md' || f.ext === '.json') {
+          if (f.ext === '.md' || f.ext === '.json' || f.ext === '.txt') {
             this.texts.set(f.path, fs.readFileSync(abs, 'utf8'));
           } else {
             const t = await extractWordText(this.dsId, abs, f.path, f.mtimeMs);

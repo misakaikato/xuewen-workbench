@@ -137,6 +137,7 @@ class RagIndex {
 function kindOf(ext) {
   if (ext === '.md') return 'md';
   if (ext === '.json') return 'json';
+  if (ext === '.txt') return 'txt';
   return 'word';
 }
 

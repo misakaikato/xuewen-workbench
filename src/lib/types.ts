@@ -3,7 +3,7 @@ export interface FileEntry {
   path: string; // 规范化相对路径（posix 分隔符）
   name: string;
   base: string;
-  ext: '.md' | '.json' | '.doc' | '.docx';
+  ext: '.md' | '.json' | '.txt' | '.doc' | '.docx';
   dir: string;
   size: number;
   mtimeMs: number;
@@ -23,7 +23,7 @@ export interface ScanStatus {
   watching: boolean;
   generation: number;
   scannedAt: string | null;
-  counts: { files: number; dirs: number; md: number; json: number; doc: number; docx: number } | null;
+  counts: { files: number; dirs: number; md: number; json: number; txt: number; doc: number; docx: number } | null;
   dirErrors: { path: string; reason: string }[];
   fileErrors: { path: string; reason: string }[];
 }
@@ -69,7 +69,7 @@ export interface FilePayload {
   path: string;
   name: string;
   ext: string;
-  type: 'markdown' | 'json' | 'word';
+  type: 'markdown' | 'json' | 'text' | 'word';
   content?: string;
   bom?: boolean;
   html?: string;
@@ -112,7 +112,7 @@ export interface StatsResponse {
   dsId: string;
   scannedAt: string;
   counts: {
-    total: number; md: number; json: number; doc: number; docx: number;
+    total: number; md: number; json: number; txt: number; doc: number; docx: number;
     dirs: number; dirErrors: number; fileErrors: number;
   };
   distribution: { dir: string; count: number }[];

@@ -414,6 +414,7 @@ app.get('/api/stats', (req, res) => {
       total: files.length,
       md: files.filter((f) => f.ext === '.md').length,
       json: files.filter((f) => f.ext === '.json').length,
+      txt: files.filter((f) => f.ext === '.txt').length,
       doc: files.filter((f) => f.ext === '.doc').length,
       docx: files.filter((f) => f.ext === '.docx').length,
       dirs: lib.scanner.snapshot.dirCount,
@@ -438,10 +439,11 @@ app.get('/api/file', async (req, res) => {
     const f = findFile(lib, rel);
     if (!f) return res.status(404).json({ error: '文件不在当前扫描结果中（可能已被移动或删除）', missing: true });
     const ext = f.ext;
-    if (ext === '.md' || ext === '.json') {
+    if (ext === '.md' || ext === '.json' || ext === '.txt') {
       const { content, bom } = readTextPreserve(abs);
       return res.json({
-        dsId: lib.id, path: rel, name: f.name, ext, type: ext === '.md' ? 'markdown' : 'json',
+        dsId: lib.id, path: rel, name: f.name, ext,
+        type: ext === '.md' ? 'markdown' : ext === '.json' ? 'json' : 'text',
         content, bom, mtimeMs: f.mtimeMs, size: f.size, readonly: false,
       });
     }
@@ -511,7 +513,7 @@ app.put('/api/file', async (req, res) => {
   }
   const f = findFile(lib, rel);
   const ext = path.posix.extname(String(rel)).toLowerCase();
-  if (!['.md', '.json'].includes(ext)) {
+  if (!['.md', '.json', '.txt'].includes(ext)) {
     return res.status(400).json({ error: '该格式不支持直接写回，请使用另存副本' });
   }
   try {

@@ -661,6 +661,40 @@ async function main() {
     check('无关词显示「没有找到相关内容」', emptyShown);
   }
 
+  // ---------- E6. TXT 纯文本全链路 ----------
+  console.log('== E6. TXT 纯文本 ==');
+  {
+    await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-a') });
+    await sleep(1500);
+    const TXT = '笔记/纯文本笔记.txt';
+    // 文件 API：type=text 且可编辑
+    const fr = await j('/api/file?path=' + encodeURIComponent(TXT));
+    check('txt 读取 type=text 可编辑', fr.body?.type === 'text' && fr.body?.readonly === false, JSON.stringify({ type: fr.body?.type }));
+    // 精确检索覆盖 txt 正文
+    const sr = await j('/api/search?q=' + encodeURIComponent('txt 独有的短语'));
+    check('精确检索覆盖 txt 正文', (sr.body?.results || []).some((r) => r.file.path === TXT), JSON.stringify((sr.body?.results || []).map((r) => r.file.path)));
+    // 编辑器往返：输入、保存、字节核对
+    await openEditor(TXT);
+    await exec('window.__wb.editor().focus()');
+    await exec('window.__wb.editor().dispatch({selection: {anchor: window.__wb.editor().state.doc.length}})');
+    await win.webContents.insertText('甲txt输入');
+    await waitFor('window.__wb.isDirty() === true', 'txt 输入变脏');
+    await exec('window.__wb.save()');
+    await waitFor('window.__wb.isDirty() === false', 'txt 保存完成');
+    check('txt 保存落盘', fs.readFileSync(path.join(tmpCorpus, 'ds-a', '笔记', '纯文本笔记.txt'), 'utf8').includes('甲txt输入'));
+    // RAG：重建索引后智能检索覆盖 txt
+    await post('/api/rag/index/build', { rebuild: true });
+    let txtReady = false;
+    for (let i = 0; i < 40; i++) {
+      await sleep(200);
+      const st = await j('/api/rag/status');
+      if (st.body?.index?.state === 'ready') { txtReady = true; break; }
+    }
+    check('含 txt 的索引重建完成', txtReady);
+    const rs = await post('/api/rag/search', { q: '雪拥蓝关马不前' });
+    check('智能检索覆盖 txt 块', (rs.body?.hits || []).some((h) => h.path === TXT), JSON.stringify((rs.body?.hits || []).map((h) => h.path)));
+  }
+
   console.log('== F. 自动内链与反向链接 ==');
   await post('/api/config', { baseDir: path.join(tmpCorpus, 'ds-links') });
 

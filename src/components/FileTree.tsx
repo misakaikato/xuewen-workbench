@@ -1124,7 +1124,7 @@ export function FileTree({
               <button className="text-primary hover:underline" onClick={() => navigate('/settings')}>去设置 →</button>
             </div>
           ) : emptyTree ? (
-            <div className="text-xs text-muted-foreground p-3">资料库中没有可支持的文件（.md / .json / .doc / .docx）</div>
+            <div className="text-xs text-muted-foreground p-3">资料库中没有可支持的文件（.md / .txt / .json / .doc / .docx）</div>
           ) : null
         ) : (
           <div style={{ height: rows.length * ROW_H }} className="relative">

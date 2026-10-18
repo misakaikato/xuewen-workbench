@@ -107,7 +107,8 @@ export default function Edit() {
   );
 
   const isJson = file?.type === 'json';
-  const effMode: 'source' | 'preview' | 'split' | 'live' = isJson ? 'source' : mode;
+  const isTxt = file?.type === 'text'; // 纯文本：与 JSON 同待遇恒源码，无格式校验
+  const effMode: 'source' | 'preview' | 'split' | 'live' = isJson || isTxt ? 'source' : mode;
   const isLive = effMode === 'live';
   const dirty = saveState === 'dirty' || saveState === 'error';
   dirtyRef.current = dirty;
@@ -488,6 +489,8 @@ export default function Edit() {
     ];
     if (isJson) {
       list.push(json(), jsonTheme(prefs.codeFontSize));
+    } else if (isTxt) {
+      list.push(plainTheme);
     } else {
       // 自动内链标记只在 md 模式挂载（实时预览与源码都有下划线；JSON 不适用）
       list.push(...linksExtensionFor(relPath, {
@@ -570,7 +573,7 @@ export default function Edit() {
           {saveState === 'clean' && '无修改'}
         </span>
         <div className="flex-1" />
-        {!isJson && (
+        {!isJson && !isTxt && (
           <div className="inline-flex rounded border border-border overflow-hidden text-xs">
             {([['live', Wand2, '实时预览'], ['source', Code2, '源码'], ['preview', Eye, '预览'], ['split', Columns2, '分栏']] as const).map(([m, Icon, label]) => (
               <button

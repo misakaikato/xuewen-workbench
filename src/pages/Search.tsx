@@ -10,6 +10,7 @@ import { SearchX, Loader2, Sparkles } from 'lucide-react';
 
 const TYPE_OPTIONS = [
   { v: '.md', label: 'Markdown' },
+  { v: '.txt', label: 'TXT' },
   { v: '.json', label: 'JSON' },
   { v: '.docx', label: 'DOCX' },
   { v: '.doc', label: 'DOC' },

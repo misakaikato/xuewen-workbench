@@ -92,6 +92,7 @@ export default function Dashboard() {
           { label: '全部文档', value: c?.total, to: '/browse' },
           { label: 'Markdown', value: c?.md, to: '/browse?type=.md' },
           { label: 'JSON', value: c?.json, to: '/browse?type=.json' },
+          { label: 'TXT', value: c?.txt, to: '/browse?type=.txt' },
           { label: 'Word (docx)', value: c?.docx, to: '/browse?type=.docx' },
           { label: 'Word (doc)', value: c?.doc, to: '/browse?type=.doc' },
           { label: '目录', value: c?.dirs, to: '/browse' },

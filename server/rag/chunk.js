@@ -154,7 +154,7 @@ export function chunkJson(text) {
 export function chunkFile(ext, text) {
   if (ext === '.md') return chunkMarkdown(text);
   if (ext === '.json') return chunkJson(text);
-  return chunkPlainText(text); // .doc / .docx 提取文本
+  return chunkPlainText(text); // .txt / .doc / .docx 提取文本
 }
 
 // 块的嵌入文本：标题路径 + 正文（给向量与 FTS 提供语境）
