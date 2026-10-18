@@ -461,6 +461,7 @@ export default function Edit() {
       dragover: (event) => {
         if (event.dataTransfer && Array.from(event.dataTransfer.types).includes('application/x-wb-file')) {
           event.preventDefault();
+          event.dataTransfer.dropEffect = 'copy'; // 插入引用是复制语义（源行 effectAllowed=copyMove）
         }
         return false;
       },

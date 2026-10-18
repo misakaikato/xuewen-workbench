@@ -270,7 +270,9 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
           if (ctx.selected.has(row.path) && ctx.selected.size > 1) {
             e.dataTransfer.setData('application/x-wb-multi', JSON.stringify([...ctx.selected]));
           }
-          e.dataTransfer.effectAllowed = 'copy';
+          // copyMove：拖进编辑器=copy（插引用），拖到目录=move；
+          // 若只允许 copy，目录行的 dropEffect='move' 会被浏览器判为非法目标，drop 不触发
+          e.dataTransfer.effectAllowed = 'copyMove';
         }}
         title={row.path}
       >
@@ -310,6 +312,15 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
       }`}
       style={{ paddingLeft: row.depth * 14 + 4 }}
       onClick={(e) => ctx.onToggle(row, e)}
+      draggable={!isHead}
+      onDragStart={(e) => {
+        if (isHead) return;
+        e.dataTransfer.setData('application/x-wb-file', row.path);
+        if (ctx.selected.has(row.path) && ctx.selected.size > 1) {
+          e.dataTransfer.setData('application/x-wb-multi', JSON.stringify([...ctx.selected]));
+        }
+        e.dataTransfer.effectAllowed = 'copyMove';
+      }}
       onDragOver={(e) => {
         if (isHead) return;
         const types = Array.from(e.dataTransfer.types);
