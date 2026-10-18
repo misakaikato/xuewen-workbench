@@ -73,3 +73,29 @@ npm run dev:server # 仅后端；npm run dev:client 仅前端
 - 浏览器端实测：Dashboard 统计与主题/概念聚合正确；文件名/集合/候选/缺失引用跳转正常；搜索定位后默认阅读模式；编辑保存写回磁盘且自动生成链接未混入源码；草稿恢复提示与未保存拦截生效；`.doc`/`.docx` 阅读与检索可用；阅读偏好即时生效并持久化。
 - 目录树 Electron 冾烟（`./node_modules/.bin/electron scripts/e2e-filetree.mjs`，先 `npm run build`）：53/53 通过——reveal/持久化/键盘（含 F2/首字母/End 跨窗口聚焦）、右键复制到剪贴板、`/api/reveal` 越界拒绝、平铺过滤与 Esc、虚拟滚动（总行数摊铺与窗口化）、集合视图、被引用数徽标与开关、拖入编辑器插引用、创建副本与剪切/粘贴移动、Browse 共享菜单、侧栏宽度拖拽与持久化、`>` 前缀转全文检索、新建模板。注：`acceptance.mjs` 第 6 段「备份文件已生成」硬编码了仓库内 `server/data` 备份路径，在干净检出 + `WORKBENCH_DATA_DIR` 环境下必误报（主树历史残留数据掩盖了它）。
 - 未验证项：LibreOffice 完整排版转换（本机未安装，已验证回退路径与诊断提示）；真实用户语料。
+
+## 应用更新与发布（GitHub Releases）
+
+客户端（打包版）启动后自动检查更新（可在设置里关闭），发现新版本时页面顶部出现横幅：
+- **Windows**：下载（blockmap 差量，只传变更块）→ 重启并安装，全自动；
+- **macOS**（当前未签名）：应用内下载 DMG → 打开安装包并退出，拖入 Applications 完成（Gatekeeper 首次需右键打开）。
+
+### 首次启用（一次性）
+
+1. 把 `package.json` 里 `build.publish` 的 `owner`/`repo` 占位符替换为真实 GitHub 仓库坐标；
+2. `git remote add origin <仓库地址>` 并推送。
+
+### 发布新版本
+
+```bash
+npm version patch   # 或 minor（改 package.json version 并打 tag）
+git push --follow-tags
+# CI（.github/workflows/release.yml）自动构建 mac+win 并上传为 draft release
+# 到 GitHub Releases 页人工核对后点 Publish —— 对客户端可见，横幅开始出现
+```
+
+本地兜底（跳过 CI）：`GH_TOKEN=<token> npm run release:mac`（或 `release:win`）。
+
+### 调试
+
+electron-updater 日志随主进程控制台输出；更新缓存（差量基准包）在系统缓存目录的 `*-updater` 下（macOS `~/Library/Caches/`，Windows `%LOCALAPPDATA%/`），删除后会回退全量下载。
