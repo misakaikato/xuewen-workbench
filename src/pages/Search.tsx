@@ -332,7 +332,13 @@ export default function Search() {
                   const heading = h.headingPath ? h.headingPath.split(' > ').pop() : '';
                   const base = '/read/' + h.path.split('/').map(encodeURIComponent).join('/');
                   const term = input.trim().split(/\s+/)[0] || '';
-                  navigate(base + (term ? '?h=' + encodeURIComponent(term) : '') + (heading ? '#' + encodeURIComponent(heading) : ''));
+                  const query = new URLSearchParams();
+                  if (term) query.set('h', term);
+                  if (h.location) {
+                    query.set('hit', h.location.text);
+                    query.set('occ', String(h.location.occurrence));
+                  }
+                  navigate(base + (query.size ? '?' + query.toString() : '') + (heading ? '#' + encodeURIComponent(heading) : ''));
                 }}
               >
                 {extIcon(h.path.includes('.') ? ('.' + h.name.split('.').pop() as string) : '')}

@@ -337,6 +337,7 @@ export interface RagSearchResponse {
     ordinal: number;
     kind: string;
     snippet: string;
+    location?: { text: string; occurrence: number };
     score: number;
     bm25: boolean;
     cos: number | null;

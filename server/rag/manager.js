@@ -322,6 +322,13 @@ export class RagManager {
           ordinal: c.ordinal,
           kind: c.kind,
           snippet: snippetOf(c.text, qs),
+          // 定位使用索引里的原文片段，不能使用可能不在正文中的语义查询词。
+          location: {
+            text: c.text.slice(0, 160),
+            occurrence: store.db.prepare('SELECT text FROM chunks WHERE path=? AND ordinal<? ORDER BY ordinal')
+              .all(c.path, c.ordinal)
+              .reduce((n, row) => n + row.text.replace(/\s/g, '').split(c.text.slice(0, 160).replace(/\s/g, '')).length - 1, 0),
+          },
           score: x.score,
           bm25: bm25Ids.has(c.id),
           cos: cosIds.has(c.id) ? Math.round(cosIds.get(c.id) * 1e4) / 1e4 : null,

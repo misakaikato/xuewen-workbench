@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams, Link, useSearchParams, useBlocker, useNavigationType } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { findSearchLocation, searchLocationRange } from '@/lib/searchLocation';
 import { useApp } from '@/store/app';
 import { useReadingPrefs } from '@/lib/prefs';
 import { loadReadPos, saveReadPos, loadDraft, saveDraft, clearDraft } from '@/lib/drafts';
@@ -59,6 +60,8 @@ export default function Read() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const highlightTerm = searchParams.get('h') || '';
+  const hitText = searchParams.get('hit') || '';
+  const hitOccurrence = Math.max(0, Number(searchParams.get('occ')) || 0);
 
   const [file, setFile] = useState<FilePayload | null>(null);
   const [error, setError] = useState<{ message: string; missing?: boolean } | null>(null);
@@ -332,7 +335,24 @@ export default function Read() {
     const sc = scrollRef.current;
     if (!sc) return;
     const apply = (allowFallback: boolean): boolean => {
-      // 搜索命中定位优先：?h= 词落到首个命中处（高亮已由装饰/DOM walker 生成）
+      // 优先定位点击的结果块；查询词只负责高亮，避免总跳到全文第一次命中。
+      if (hitText) {
+        const target = { text: hitText, occurrence: hitOccurrence };
+        if (file.type === 'markdown') {
+          const v = viewRef.current;
+          if (!v) return false;
+          const hit = findSearchLocation(v.state.sliceDoc(0), target);
+          if (hit && scrollDocToPos(v, hit.from, sc, Math.round(sc.clientHeight / 3))) return true;
+        } else if (contentRef.current) {
+          const range = searchLocationRange(contentRef.current, target);
+          if (range) {
+            const rect = range.getBoundingClientRect();
+            sc.scrollTop += rect.top - sc.getBoundingClientRect().top - sc.clientHeight / 3;
+            return true;
+          }
+        }
+      }
+      // 旧链接兼容：?h= 词落到首个命中处（高亮已由装饰/DOM walker 生成）
       if (highlightTerm) {
         if (file.type === 'markdown') {
           const v = viewRef.current;
@@ -344,7 +364,7 @@ export default function Read() {
         } else {
           const mark = contentRef.current?.querySelector('mark');
           if (mark) {
-            sc.scrollTop = Math.max(0, (mark as HTMLElement).offsetTop - sc.clientHeight / 3);
+            sc.scrollTop += mark.getBoundingClientRect().top - sc.getBoundingClientRect().top - sc.clientHeight / 3;
             return true;
           }
           if (!allowFallback) return false; // 高亮尚未生成（渲染滞后），稍后重试
@@ -390,7 +410,7 @@ export default function Read() {
     timer = setTimeout(attempt, 60);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file, viewReady, location.hash, dsId, relPath, highlightTerm]);
+  }, [file, viewReady, location.hash, dsId, relPath, highlightTerm, hitText, hitOccurrence]);
 
   // 记录阅读位置
   useEffect(() => {
