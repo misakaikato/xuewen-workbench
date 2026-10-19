@@ -154,10 +154,28 @@ export default function AgentChat() {
     if (cmd === '/export') { doExport(); return; }
   };
 
+  // 流式输出时自动滚动到底部（用户没有手动向上滚时才跟随）
+  const autoScrollRef = useRef(true);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+  useEffect(() => {
+    if (autoScrollRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [msgs]);
+
   const send = async () => {
     const text = input.trim();
     if (!text || !active) return;
     setInput('');
+    autoScrollRef.current = true; // 发送时重置为跟随
     setBusy(true); streamRef.current = true; aiRef.current = -1;
     setMsgs((m) => { const next = [...m, { role: 'user' as const, text }, { role: 'assistant' as const, text: '', tools: [], streaming: true, thinking: '' }]; aiRef.current = next.length - 1; return next; });
     const patch = (fn: (msg: Msg) => Msg) => setMsgs((m) => { const next = [...m]; const i = aiRef.current; if (i >= 0 && next[i]) next[i] = fn(next[i]); return next; });
@@ -380,10 +398,8 @@ export default function AgentChat() {
             {/* 模型选择 */}
             <div className="relative">
               <button className="flex items-center gap-1 px-2 py-1 rounded-lg border border-border hover:border-primary/40 text-muted-foreground font-mono" onClick={async () => {
-                if (!modelList.length) {
-                  const r = await api.agentModels().catch(() => ({ models: [] }));
-                  setModelList(r.models || []);
-                }
+                const r = await api.agentModels().catch(() => ({ models: [] }));
+                setModelList(r.models || []);
                 setModelOpen((v) => !v);
               }}>
                 {ep?.model || '选择模型'} <ChevronDown className="w-3 h-3" />
