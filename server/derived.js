@@ -12,12 +12,14 @@
 //   {"kind":"node","id":"本体","label":"本体","type":"概念","desc":"…"}
 //   {"kind":"edge","from":"本体","to":"心性","rel":"包含"}
 import fs from 'node:fs';
+import { XMLParser } from 'fast-xml-parser';
 import path from 'node:path';
 
 export const DERIVED_DIR = '.derived';
 export const LEGACY_DERIVED_DIR = '.xuewen';
 const CONCEPTS_FILE = 'concepts.jsonl';
 const GRAPH_FILE = 'graph.jsonl';
+const GRAPHML_FILE = 'graph.graphml';
 const TOPICS_FILE = 'topics.jsonl';
 
 let migrated = new Set();
@@ -83,8 +85,89 @@ export function loadConcepts(baseDir) {
   return { concepts: out, errors: errors || [], missing };
 }
 
-/** 读取并规范化图谱（节点 + 边） */
+function readGraphml(file) {
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return { nodes: [], edges: [], missing: true };
+  }
+  try {
+    const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@', removeNSPrefix: true });
+    const doc = parser.parse(raw);
+    const g = doc?.graphml?.graph;
+    if (!g) return { nodes: [], edges: [], errors: ['graphml 结构不合法：缺少 graph'] };
+    // key 定义：id -> 属性名（attr.name）
+    const keyMap = {};
+    const keys = Array.isArray(doc.graphml.key) ? doc.graphml.key : doc.graphml.key ? [doc.graphml.key] : [];
+    for (const k of keys) {
+      const id = k['@id'];
+      const name = k['@attr.name'] || id;
+      if (id) keyMap[id] = name;
+    }
+    const dataToObj = (data) => {
+      const o = {};
+      const arr = Array.isArray(data) ? data : data ? [data] : [];
+      for (const d of arr) {
+        const key = d['@key'];
+        const name = keyMap[key] || key;
+        const val = typeof d === 'object' ? (d['#text'] ?? '') : String(d ?? '');
+        if (name && val !== '') o[name] = String(val);
+      }
+      return o;
+    };
+    const nodes = [];
+    const edges = [];
+    const nodeArr = Array.isArray(g.node) ? g.node : g.node ? [g.node] : [];
+    for (const n of nodeArr) {
+      const attrs = dataToObj(n.data);
+      const id = String(attrs.name ?? attrs.label ?? n['@id'] ?? '').trim();
+      if (!id) continue;
+      nodes.push({ id, label: String(attrs.label ?? attrs.name ?? id), type: String(attrs.type ?? '概念'), desc: String(attrs.desc ?? attrs.description ?? '') });
+    }
+    const nodeIds = new Set(nodes.map((x) => x.id));
+    const edgeArr = Array.isArray(g.edge) ? g.edge : g.edge ? [g.edge] : [];
+    for (const e of edgeArr) {
+      const attrs = dataToObj(e.data);
+      const from = String(attrs.from ?? attrs.source ?? e['@source'] ?? '').trim();
+      const to = String(attrs.to ?? attrs.target ?? e['@target'] ?? '').trim();
+      if (!from || !to) continue;
+      edges.push({ from, to, rel: String(attrs.rel ?? attrs.relation ?? attrs.label ?? '') });
+      // 边端点若是内部 id（n1/n0），尝试映射到节点 name；否则补占位节点
+    }
+    // 若边端点不是节点 id 而是内部编号，做一次映射
+    const idByInternal = new Map();
+    for (const n of nodeArr) {
+      const internal = String(n['@id'] ?? '').trim();
+      const attrs = dataToObj(n.data);
+      const realId = String(attrs.name ?? attrs.label ?? internal).trim();
+      if (internal && realId && internal !== realId) idByInternal.set(internal, realId);
+    }
+    for (const e of edges) {
+      if (idByInternal.has(e.from)) e.from = idByInternal.get(e.from);
+      if (idByInternal.has(e.to)) e.to = idByInternal.get(e.to);
+    }
+    return { nodes, edges, missing: false };
+  } catch (e) {
+    return { nodes: [], edges: [], errors: ['graphml 解析失败: ' + e.message], missing: false };
+  }
+}
+
+/** 读取并规范化图谱（节点 + 边）：优先 graph.graphml，回退 graph.jsonl */
 export function loadGraph(baseDir) {
+  migrateLegacyDir(baseDir);
+  const gm = readGraphml(path.join(baseDir, DERIVED_DIR, GRAPHML_FILE));
+  if (!gm.missing) {
+    // 补占位节点（只给 id 的边端点）
+    const nodeIds = new Set(gm.nodes.map((n) => n.id));
+    for (const e of gm.edges) {
+      for (const id of [e.from, e.to]) {
+        if (!nodeIds.has(id)) { gm.nodes.push({ id, label: id, type: '概念', desc: '' }); nodeIds.add(id); }
+      }
+    }
+    return { nodes: gm.nodes, edges: gm.edges, errors: gm.errors || [], missing: false, format: 'graphml' };
+  }
+  // 回退 JSONL
   const { items, errors, missing } = readJsonl(path.join(baseDir, DERIVED_DIR, GRAPH_FILE));
   const nodes = new Map();
   const edges = [];

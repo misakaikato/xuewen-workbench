@@ -10,7 +10,7 @@
 └── .derived/
     ├── concepts.jsonl   # 概念 / 人物 / 书名 等条目
     ├── topics.jsonl     # 文档 → 主题标注
-    └── graph.jsonl      # 知识图谱（节点 + 边）
+    └── graph.graphml    # 知识图谱（GraphML，行业标准格式）
 ```
 
 两文件均为 **JSONL**：一行一个 JSON 对象，空行与 `//` 开头的行忽略。文件编码 UTF-8，无 BOM。
@@ -69,52 +69,45 @@
 - 知识库概览的「主题分布」按主题聚合全文档数。
 - 删除 `.derived/topics.jsonl` 即回到无标注状态，文档本身不受影响。
 
-## graph.jsonl
+## graph.graphml
 
-图节点与边混放，用 `kind` 区分（无 `kind` 但有 `from`/`to` 视为边）。
+**行业标准 GraphML**，不转换，直接读。AI 生成的 graphml 放进 `.derived/` 即可用。
 
-**节点**
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `kind` | string | 否 | `node` |
-| `id` | string | 是 | 节点 id，通常与概念名一致 |
-| `label` | string | 否 | 显示名，默认取 `id` |
-| `type` | string | 否 | 节点类型，默认 `概念` |
-| `desc` | string | 否 | 描述 |
-
-**边**
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `kind` | string | 否 | `edge` |
-| `from` | string | 是 | 起点节点 id |
-| `to` | string | 是 | 终点节点 id |
-| `rel` | string | 否 | 关系名（`包含` / `属于` / `引用` …） |
-
-示例：
-
-```jsonl
-{"kind":"node","id":"本体","label":"本体","type":"概念","desc":"存在的根本"}
-{"kind":"node","id":"心性","type":"概念"}
-{"kind":"edge","from":"本体","to":"心性","rel":"包含"}
-{"kind":"edge","from":"心性","to":"礼","rel":"发用"}
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <key id="name" for="node" attr.name="name" attr.type="string"/>
+  <key id="type" for="node" attr.name="type" attr.type="string"/>
+  <key id="desc" for="node" attr.name="desc" attr.type="string"/>
+  <key id="rel"  for="edge" attr.name="rel"  attr.type="string"/>
+  <graph edgedefault="directed">
+    <node id="n0">
+      <data key="name">本体</data>
+      <data key="type">概念</data>
+      <data key="desc">存在的根本依据</data>
+    </node>
+    <node id="n1"><data key="name">心性</data></node>
+    <edge source="n0" target="n1"><data key="rel">包含</data></edge>
+  </graph>
+</graphml>
 ```
 
-边端点若未声明为节点，自动补占位节点。概念弹层的「相关概念」列出与该条目相连的所有边，方向用 `→`（出）/`←`（入）标出。
+### 约定
 
-## 从 GraphML 转换
-
-GraphML 只作**导入/导出格式**，系统内部统一用 JSONL。转换要点：
-
-| GraphML | JSONL |
+| 元素 | 说明 |
 |---|---|
-| `<node id="n1"><data key="name">本体</data></node>` | `{"kind":"node","id":"本体"}` |
-| `<edge source="n1" target="n2"><data key="rel">包含</data></edge>` | `{"kind":"edge","from":"本体","to":"心性","rel":"包含"}` |
-| `<key ... attr.name="type">` | 映射到 `type` |
-| `<key ... attr.name="desc">` | 映射到 `desc` |
+| `<node id="...">` | 内部 id 任意（`n0`/`n1` 就行），**显示名来自 `<data key="name">`** |
+| `<data key="name">` | 节点名（必填，作为内链词条） |
+| `<data key="type">` | 节点类型，默认 `概念` |
+| `<data key="desc">` | 节点描述 |
+| `<edge source target>` | 边的 `source`/`target` 写**节点内部 id**（系统自动映射到 name） |
+| `<data key="rel">` | 关系名（包含 / 属于 / 引用 …） |
 
-GraphML 的 `id` 常是不可读的内部编号（`n1`、`n0`），转换时**取 `name`/`label` 属性作为 `id`**，边端点同步替换；否则弹层里会显示 `n1 包含 n2`。
+边端点只给内部 id 而未声明节点时，自动补占位节点。
+
+### 兼容
+
+若 `.derived/graph.graphml` 不存在，系统回退读 `.derived/graph.jsonl`（旧格式，仍支持）。两者都存在时以 graphml 为准。
 
 ## 前端接口
 
