@@ -94,6 +94,8 @@ const agentHub = new AgentHub({
   getLib: () => libs.get(activeId) || null,
   ragManager,
   getRagConfig: () => ragManager.llm,
+  addOrActivateLibrary: (baseDir) => addOrActivateLibrary(baseDir),
+  removeLibrary: (dsId) => (dsId ? removeLibraryById(dsId) : { ok: false, error: '需要 dsId' }),
 });
 ragManager.onLlmChanged = () => agentHub._syncModelsJson();
 app.use('/api/agent', mountAgent(agentHub, resolveLib));
@@ -225,15 +227,15 @@ app.get('/api/config', (req, res) => {
 });
 
 // 新增/打开资料库；同目录已打开则仅激活（老语义的“切换”兼容：末次指定者为当前）
-app.post('/api/config', async (req, res) => {
-  const { baseDir } = req.body || {};
+// 添加或激活资料库（路由与 agent 设置工具共用）
+async function addOrActivateLibrary(baseDir) {
   const p = path.normalize(String(baseDir || '').trim().replace(/^["']|["']$/g, ''));
   try {
     const st = fs.statSync(p);
     if (!st.isDirectory()) throw new Error('不是目录');
     fs.accessSync(p, fs.constants.R_OK);
   } catch (e) {
-    return res.status(400).json({ error: '目录不可访问: ' + e.message });
+    return { ok: false, error: '目录不可访问: ' + e.message };
   }
   const lib = upsertLib(p);
   if (!libs.has(lib.id)) {
@@ -252,6 +254,26 @@ app.post('/api/config', async (req, res) => {
     libVersion++;
     agentHub.onLibSwitch();
   }
+  return { ok: true, dsId: lib.id, name: lib.name, baseDir: lib.baseDir };
+}
+
+// 从工作区移除资料库（不删磁盘文件）
+function removeLibraryById(dsId) {
+  const lib = libs.get(dsId);
+  if (!lib) return { ok: false, error: '资料库未打开' };
+  try { lib.stop(); } catch { /* ignore */ }
+  libs.delete(dsId);
+  ragManager.remove(dsId);
+  const { activeId: nextActive } = removeLibFromStore(dsId);
+  if (activeId === dsId) activeId = nextActive;
+  libVersion++;
+  agentHub.onLibSwitch();
+  return { ok: true, activeId };
+}
+
+app.post('/api/config', async (req, res) => {
+  const r = await addOrActivateLibrary(req.body?.baseDir);
+  if (!r.ok) return res.status(400).json({ error: r.error });
   res.json({ ok: true, ...configResponse() });
 });
 
@@ -273,17 +295,8 @@ app.post('/api/library/activate', (req, res) => {
 // 从工作区移除：停监听、卸内存实例；磁盘语料与派生数据（草稿/最近/集合/备份）全保留
 app.post('/api/library/remove', async (req, res) => {
   const id = String(req.body?.ds || req.body?.dsId || '');
-  const lib = libs.get(id);
-  if (!lib) return res.status(404).json({ error: '资料库未打开' });
-  try {
-    lib.stop();
-  } catch { /* ignore */ }
-  libs.delete(id);
-  ragManager.remove(id);
-  const { activeId: nextActive } = removeLibFromStore(id);
-  if (activeId === id) activeId = nextActive;
-  libVersion++;
-  agentHub.onLibSwitch(); // 库变更：清理不属于当前库的 session
+  const r = removeLibraryById(id);
+  if (!r.ok) return res.status(404).json({ error: r.error });
   res.json({ ok: true, activeId, libraries: [...libs.values()].map(libMeta) });
 });
 

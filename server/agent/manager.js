@@ -8,19 +8,20 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { Type } from '@sinclair/typebox';
 import { agentFailure } from './failure.js';
 import { MemoryStore, buildMemorySection, memoryDir, FACTS_LIMIT, PINNED_LIMIT } from './memory.js';
+import { applySettings, readSettings, SETTABLE, buildPatch, normalizeCategory } from './settings.js';
 
 const CONV_META = 'conversations.json';
 // 运行模式：auto=全自动 / confirm=破坏性工具需确认 / readonly=仅检索阅读
 const READONLY_TOOLS = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status'];
-const DESTRUCTIVE_TOOLS = ['save_note', 'word_to_markdown', 'rag_manage', 'open_doc', 'rename_entry', 'move_entry'];
-const TOOL_NAMES = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc', 'remember', 'forget', 'recall', 'consolidate', 'rename_entry', 'move_entry'];
+const DESTRUCTIVE_TOOLS = ['save_note', 'word_to_markdown', 'rag_manage', 'open_doc', 'rename_entry', 'move_entry', 'settings_set'];
+const TOOL_NAMES = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc', 'remember', 'forget', 'recall', 'consolidate', 'rename_entry', 'move_entry', 'settings_get', 'settings_set'];
 
 function nowIso() {
   return new Date().toISOString();
 }
 
 export class AgentHub {
-  constructor({ dataDir, getLib, ragManager, getRagConfig }) {
+  constructor({ dataDir, getLib, ragManager, getRagConfig, addOrActivateLibrary, removeLibrary }) {
     this.dataDir = dataDir;
     this.agentId = 'default';
     // Agent 定义目录：agents/<id>/（AGENTS.md / skills / mcp.json / memory）
@@ -35,6 +36,8 @@ export class AgentHub {
     this.getLib = getLib; // (dsId?) => Lib | null（当前库）
     this.ragManager = ragManager;
     this.getRagConfig = getRagConfig; // () => llm 配置 {enabled, baseUrl, model, apiKey}
+    this.addOrActivateLibrary = addOrActivateLibrary; // (baseDir) => {ok,...}
+    this.removeLibrary = removeLibrary; // (dsId) => {ok,...}
     this.live = new Map(); // convId
     this.mode = 'auto'; // auto | confirm | readonly
     this._confirmCb = new Map(); // confirmId → (ok) => void → { session, sse:Set, busy, seq }
@@ -493,7 +496,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       pi.registerTool({
         name: 'rag_manage',
         label: '管理 RAG 索引',
-        description: '管理语义索引：build（增量构建/续建）、rebuild（全量重建）、pause（暂停）。构建是后台任务，用 corpus_status 查进度。',
+        description: '管理语义索引**构建**：build（增量构建/续建）、rebuild（全量重建）、pause（暂停）。构建是后台任务，用 corpus_status 查进度。注意：本工具不能修改任何检索/切块参数——改参数要用 settings_set(category="rag", ...)。',
         parameters: Type.Object({ action: Type.Union([Type.Literal('build'), Type.Literal('rebuild'), Type.Literal('pause')]) }),
         execute: async (_id, params) => {
           const l = lib();
@@ -653,6 +656,101 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
         },
       });
 
+      // ---------- 软件设置 ----------
+      const settingsCtx = () => ({
+        hub,
+        lib: lib(),
+        ragManager: hub.ragManager,
+        emit: (obj) => hub._emit(convId, obj),
+        addOrActivateLibrary: hub.addOrActivateLibrary,
+        removeLibrary: hub.removeLibrary,
+      });
+
+      pi.registerTool({
+        name: 'settings_get',
+        label: '读取设置',
+        description: `读取 Workbench 的当前设置。可选类别：${Object.keys(SETTABLE).join(' / ')}；留空返回全部。`,
+        parameters: Type.Object({
+          category: Type.Optional(Type.String({ description: `类别：${Object.keys(SETTABLE).join(' / ')}` })),
+        }),
+        execute: async (_id, params) => {
+          try {
+            const all = readSettings(settingsCtx());
+            const cat = params.category ? String(params.category) : '';
+            if (!cat) return { content: [{ type: 'text', text: JSON.stringify(all, null, 2) }] };
+            if (!(cat in all)) throw new Error('未知类别: ' + cat);
+            return { content: [{ type: 'text', text: JSON.stringify({ [cat]: all[cat] }, null, 2) }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '读取失败：' + (e.message || e) }], isError: true };
+          }
+        },
+      });
+
+      pi.registerTool({
+        name: 'settings_set',
+        label: '修改设置',
+        description: [
+          '修改 Workbench 设置。**所有参数类修改都用这个工具**（改检索参数不要用 rag_manage，那个只管构建索引）。先用 settings_get 查看当前值，再只填要改的字段。',
+          'category 与可用字段：',
+          '- theme：theme（\'A\'=宣纸 / \'B\'=极简 / \'C\'=夜读）',
+          '- reading：font、fontSize、lineHeight、paraSpacing、width、codeFontSize',
+          '- rag：chunkMaxChars、jsonValueLimit、headingContext、maxLength、topN、rrfK、rrfMin、cosFloor、cosSigma、semanticWeight',
+          '- agent：model、thinkingLevel、mode',
+          '- collections：action(add/update/remove)、name、dirs',
+          '- library：action(add/activate/remove)、baseDir、dsId',
+        ].join('\n'),
+        parameters: Type.Object({
+          category: Type.Union([
+            Type.Literal('theme'), Type.Literal('reading'), Type.Literal('rag'),
+            Type.Literal('agent'), Type.Literal('collections'), Type.Literal('library'),
+          ], { description: '设置类别' }),
+          // 外观
+          theme: Type.Optional(Type.Union([Type.Literal('A'), Type.Literal('B'), Type.Literal('C')], { description: 'theme 类别：主题' })),
+          // 阅读偏好
+          font: Type.Optional(Type.Union([Type.Literal('serif'), Type.Literal('sans'), Type.Literal('mono')], { description: 'reading 类别：正文字体' })),
+          fontSize: Type.Optional(Type.Number({ description: 'reading 类别：字号 14-32' })),
+          lineHeight: Type.Optional(Type.Number({ description: 'reading 类别：行距 1.4-2.4' })),
+          paraSpacing: Type.Optional(Type.Number({ description: 'reading 类别：段距 0-2（em）' })),
+          width: Type.Optional(Type.Number({ description: 'reading 类别：正文宽度 560-1080（px）' })),
+          codeFontSize: Type.Optional(Type.Number({ description: 'reading 类别：代码字号 12-20' })),
+          // RAG 参数（扁平）
+          chunkMaxChars: Type.Optional(Type.Number({ description: 'rag 类别：单块字数上限 80-4000' })),
+          jsonValueLimit: Type.Optional(Type.Number({ description: 'rag 类别：JSON 单值截断 200-10000' })),
+          headingContext: Type.Optional(Type.Boolean({ description: 'rag 类别：标题路径是否拼入嵌入文本' })),
+          maxLength: Type.Optional(Type.Number({ description: 'rag 类别：嵌入截断 token 128-8192' })),
+          topN: Type.Optional(Type.Number({ description: 'rag 类别：每路检索 top-N 5-200' })),
+          rrfK: Type.Optional(Type.Number({ description: 'rag 类别：RRF 常数 10-200' })),
+          rrfMin: Type.Optional(Type.Number({ description: 'rag 类别：最低融合分 0-0.05' })),
+          cosFloor: Type.Optional(Type.Number({ description: 'rag 类别：余弦下限 0-1' })),
+          cosSigma: Type.Optional(Type.Number({ description: 'rag 类别：余弦 σ 倍数 0.5-6' })),
+          semanticWeight: Type.Optional(Type.Number({ description: 'rag 类别：语义路权重 0.5-3' })),
+          // Agent
+          model: Type.Optional(Type.String({ description: 'agent 类别：模型名' })),
+          thinkingLevel: Type.Optional(Type.Union([Type.Literal('off'), Type.Literal('low'), Type.Literal('medium'), Type.Literal('high')], { description: 'agent 类别：思考强度' })),
+          mode: Type.Optional(Type.Union([Type.Literal('auto'), Type.Literal('confirm'), Type.Literal('readonly')], { description: 'agent 类别：运行模式' })),
+          // 集合 / 资料库
+          action: Type.Optional(Type.String({ description: 'collections/library 类别：add / update / remove / activate' })),
+          name: Type.Optional(Type.String({ description: 'collections 类别：集合名' })),
+          dirs: Type.Optional(Type.Array(Type.String(), { description: 'collections 类别：映射目录数组' })),
+          baseDir: Type.Optional(Type.String({ description: 'library 类别：库根目录绝对路径' })),
+          dsId: Type.Optional(Type.String({ description: 'library 类别：要移除的库 id' })),
+        }),
+        execute: async (_id, params) => {
+          if (!(await hub._confirm(convId, 'settings_set', params))) {
+            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
+          }
+          try {
+            const { category, ...rest } = params;
+            const cat = normalizeCategory(category);
+            const patch = buildPatch(cat, rest);
+            const r = applySettings(settingsCtx(), cat, patch);
+            return { content: [{ type: 'text', text: '已应用：' + JSON.stringify(r.applied) + (r.note ? `（${r.note}）` : '') }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '修改失败：' + (e.message || e) }] };
+          }
+        },
+      });
+
       // ---------- 记忆工具（对用户透明） ----------
       const memCtx = () => ({ agentId: hub.agentId, dsId: hub.currentDsId() });
 
@@ -805,6 +903,14 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
         '  · scope=agent：你自己的工作习性（比如总是先查索引再回答）',
         '  · scope=library（默认）：只与当前资料库内容有关的知识',
         '- 拿不准时：涉及「用户希望我怎么回答」→ global；涉及「这个库里有什么」→ library。',
+        '',
+        '## 软件设置',
+        '- 用户要改界面/阅读/检索/Agent 设置时，用 settings_set（改前可先 settings_get 查看当前值）。',
+        '- 常用：改主题 → settings_set(category="theme", theme="A|B|C")；改字号 → settings_set(category="reading", fontSize=20)；',
+        '  改检索条数/切块大小等**参数** → settings_set(category="rag", topN=50)；注意：rag_manage 只用于重建/暂停索引，不用于改参数；',
+        '  改模型 → settings_set(category="agent", model="...")；',
+        '  改运行模式 → settings_set(category="agent", mode="auto|confirm|readonly")。',
+        '- 改完直接告诉用户「已切换/已调整」，不要复述参数。',
         '',
         '## Skills 使用规则',
         '- 如果用户的任务匹配某个 skill（如分析文档、生成报告等），可以读取该 skill 的 SKILL.md 了解如何执行，然后按 skill 指引操作。',

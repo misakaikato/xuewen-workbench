@@ -5,6 +5,8 @@ import { api } from '@/lib/api';
 import type { AgentStatus, AgentMessage, AgentFailure } from '@/lib/api';
 import { readAgentStream, streamFailure } from '@/lib/agentStream';
 import { useApp } from '@/store/app';
+import { useTheme } from '@/lib/theme';
+import { useReadingPrefs } from '@/lib/prefs';
 import { MarkdownMsg } from '@/components/agent/MarkdownMsg';
 import { ChatInput } from '@/components/agent/ChatInput';
 import { ToolCard, type ToolItem } from '@/components/agent/ToolCard';
@@ -43,6 +45,8 @@ const TEMPLATES = [
 
 export default function AgentChat() {
   const { dsId } = useApp();
+  const { setTheme } = useTheme();
+  const { update: updatePrefs } = useReadingPrefs();
   const navigate = useNavigate();
   
   const [active, setActive] = useState<string | null>(() => new URLSearchParams(window.location.search).get('c'));
@@ -252,6 +256,15 @@ export default function AgentChat() {
                 at: new Date().toISOString(),
               }],
             }));
+          }
+          else if (d.t === 'settings_changed') {
+            // agent 通过工具改了设置：前端立即应用
+            if (d.category === 'theme') {
+              const t = String(d.value || '');
+              if (['A', 'B', 'C'].includes(t)) setTheme(t as 'A' | 'B' | 'C');
+            } else if (d.category === 'reading' && d.value && typeof d.value === 'object') {
+              updatePrefs(d.value as Record<string, never>);
+            }
           }
           else if (d.t === 'open_doc') navigate('/read/' + encPath(d.path as string) + ((d.term as string) ? '?h=' + encodeURIComponent(d.term as string) : ''));
           else if (d.t === 'confirm') { setConfirmReq({ id: d.id as string, tool: d.tool as string, args: d.args }); }
