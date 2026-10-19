@@ -6,7 +6,8 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const APP_DIR = path.dirname(fileURLToPath(import.meta.url)); // 本文件所在目录（electron/）
+const ROOT = path.dirname(APP_DIR);
 const DEV = process.argv.includes('--dev') || process.env.WORKBENCH_ELECTRON_DEV === '1';
 const HOST = '127.0.0.1';
 let win = null;
@@ -116,7 +117,7 @@ function createWindow(url) {
     icon: path.join(ROOT, 'assets', 'icons', 'icon.png'),
     // macOS：隐藏式标题栏，红绿灯内嵌顶栏（渲染侧顶栏做拖拽区，见 Layout wb-drag）
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: path.join(__dirname, 'preload.cjs') },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: path.join(APP_DIR, 'preload.cjs') },
   });
   win.webContents.on('preload-error', (_e, p, err) => {
     console.error('[preload-error]', p, err && err.message ? err.message : err);
