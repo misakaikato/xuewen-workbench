@@ -53,6 +53,16 @@ export function mountAgent(hub, resolveLib) {
     }
   });
 
+  // 生成的图片：/api/agent/generated/<id>.png
+  r.get('/generated/:file', (req, res) => {
+    const name = String(req.params.file || '');
+    if (!/^[a-f0-9]{16}\.png$/.test(name)) return res.status(400).json({ error: '非法文件名' });
+    const file = path.join(hub.dataDir, 'generated', name);
+    if (!fs.existsSync(file)) return res.status(404).json({ error: '图片不存在' });
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(file);
+  });
+
   // ---------- 对话文件夹 ----------
   r.post('/folder', (req, res) => {
     try {

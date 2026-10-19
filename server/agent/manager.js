@@ -9,12 +9,13 @@ import { Type } from '@sinclair/typebox';
 import { agentFailure } from './failure.js';
 import { MemoryStore, buildMemorySection, memoryDir, FACTS_LIMIT, PINNED_LIMIT } from './memory.js';
 import { applySettings, readSettings, SETTABLE, buildPatch, normalizeCategory } from './settings.js';
+import { generateImage, uniapiKey } from './imagegen.js';
 
 const CONV_META = 'conversations.json';
 // 运行模式：auto=全自动 / confirm=破坏性工具需确认 / readonly=仅检索阅读
 const READONLY_TOOLS = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status'];
-const DESTRUCTIVE_TOOLS = ['save_note', 'word_to_markdown', 'rag_manage', 'open_doc', 'rename_entry', 'move_entry', 'settings_set'];
-const TOOL_NAMES = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc', 'remember', 'forget', 'recall', 'consolidate', 'rename_entry', 'move_entry', 'settings_get', 'settings_set'];
+const DESTRUCTIVE_TOOLS = ['save_note', 'word_to_markdown', 'rag_manage', 'open_doc', 'rename_entry', 'move_entry', 'settings_set', 'generate_image'];
+const TOOL_NAMES = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc', 'remember', 'forget', 'recall', 'consolidate', 'rename_entry', 'move_entry', 'settings_get', 'settings_set', 'generate_image'];
 
 function nowIso() {
   return new Date().toISOString();
@@ -656,6 +657,42 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
         },
       });
 
+      // ---------- 图像生成 ----------
+      pi.registerTool({
+        name: 'generate_image',
+        label: '生成图片',
+        description: [
+          '根据文字描述生成图片（调用 UniAPI 图像模型），生成后返回图片 URL，界面会直接显示。',
+          '适用：配图、插图、封面、示意图。不适用：图表、UI 界面、带精确数值的图。',
+          '若画面需要文字，把文字原样写进 prompt 并加引号；不需要文字时明确写「画面中不要出现任何文字」。',
+        ].join(' '),
+        parameters: Type.Object({
+          prompt: Type.String({ description: '画面描述（越具体越好：主体、风格、配色、构图、光照）' }),
+          size: Type.Optional(Type.Union([Type.Literal('1024x1024'), Type.Literal('1024x1536'), Type.Literal('1536x1024'), Type.Literal('auto')], { description: '尺寸：方形/竖版/横版/自动，默认方形' })),
+        }),
+        execute: async (_id, params) => {
+          if (!(await hub._confirm(convId, 'generate_image', params))) {
+            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
+          }
+          if (!uniapiKey()) {
+            return { content: [{ type: 'text', text: '图像生成未配置：缺少 UniAPI 密钥（~/.config/uniapi/config.json 或 UNIAPI_API_KEY）' }] };
+          }
+          try {
+            const r = await generateImage({
+              prompt: params.prompt,
+              size: params.size || '1024x1024',
+              dataDir: hub.dataDir,
+            });
+            // 返回 markdown 图片，前端 MarkdownMsg 直接渲染
+            return {
+              content: [{ type: 'text', text: `已生成图片（${Math.round(r.bytes / 1024)} KB）：\n\n![${params.prompt.slice(0, 40)}](${r.url})` }],
+            };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '生成失败：' + (e.message || e) }], isError: true };
+          }
+        },
+      });
+
       // ---------- 软件设置 ----------
       const settingsCtx = () => ({
         hub,
@@ -903,6 +940,10 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
         '  · scope=agent：你自己的工作习性（比如总是先查索引再回答）',
         '  · scope=library（默认）：只与当前资料库内容有关的知识',
         '- 拿不准时：涉及「用户希望我怎么回答」→ global；涉及「这个库里有什么」→ library。',
+        '',
+        '## 图像生成',
+        '- 用户要配图/插图/封面时，用 generate_image 生成（描述要具体：主体、风格、配色、构图）。',
+        '- 生成后直接说「已生成」并给出图片，不要复述 prompt。',
         '',
         '## 软件设置',
         '- 用户要改界面/阅读/检索/Agent 设置时，用 settings_set（改前可先 settings_get 查看当前值）。',

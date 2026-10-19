@@ -126,15 +126,14 @@ export default function AgentChat() {
   }, []);
 
   // 切换知识库：当前对话若不属于新库，立即清空（后端也会拒绝跨库对话，这里避免界面误导）
+  const convLoadedRef = useRef(false);
   useEffect(() => {
-    if (!active) return;
+    if (!active || !conversations.length) return; // 列表未加载完时不误判
+    convLoadedRef.current = true;
     const belongs = conversations.some((c) => c.id === active);
-    if (!belongs && conversations.length >= 0) {
-      // 对话列表已按新库刷新过，说明 active 不属于新库
-      openConv(null);
-    }
+    if (!belongs) openConv(null); // 列表已加载且不含当前对话 → 属于别的库
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dsId]);
+  }, [dsId, conversations.length]);
 
   useEffect(() => {
     if (!active) { setMsgs([]); setUsage(null); return; }

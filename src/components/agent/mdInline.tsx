@@ -9,8 +9,23 @@ export function inline(text: string, keyPrefix: string): React.ReactNode[] {
   const mk = () => keyPrefix + '-i' + (key++);
 
   while (rest) {
+    // 图片 ![alt](url) —— 必须先于链接匹配
+    let m = /^!\[([^\]]*)\]\(([^)\s]+)\)/.exec(rest);
+    if (m) {
+      push(
+        <img
+          key={mk()}
+          src={m[2]}
+          alt={m[1]}
+          className="my-2 max-w-full rounded-lg border border-border"
+          loading="lazy"
+        />
+      );
+      rest = rest.slice(m[0].length);
+      continue;
+    }
     // 行内代码
-    let m = /^`([^`]+)`/.exec(rest);
+    m = /^`([^`]+)`/.exec(rest);
     if (m) {
       push(<code key={mk()} className="px-1 py-0.5 rounded bg-muted text-[0.88em] font-mono">{m[1]}</code>);
       rest = rest.slice(m[0].length);
@@ -42,7 +57,7 @@ export function inline(text: string, keyPrefix: string): React.ReactNode[] {
       continue;
     }
     // 普通字符（到下一个特殊标记）
-    const next = rest.slice(1).search(/[`*[]/);
+    const next = rest.slice(1).search(/[`*[!]/);
     if (next < 0) {
       push(rest);
       break;
