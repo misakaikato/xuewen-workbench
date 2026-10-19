@@ -6,7 +6,8 @@
 <语料根>/
 ├── 笔记/…
 └── .xuewen/
-    ├── concepts.jsonl   # 概念 / 人物 / 书名 / 主题 等条目
+    ├── concepts.jsonl   # 概念 / 人物 / 书名 等条目
+    ├── topics.jsonl     # 文档 → 主题标注
     └── graph.jsonl      # 知识图谱（节点 + 边）
 ```
 
@@ -43,6 +44,28 @@
 - 词条表对确认条目**放行单字规则**——`道`、`性`、`礼` 这类单字概念也能链接（文档标题/别名仍适用单字过滤）。
 - 概念词条优先级低于文档词条：同名时以文档为准（`buildAutoIndex` 判为歧义，不生成链接）。
 - `related` 只在概念弹层展示；弹层的「相关概念」以 graph.jsonl 的边为准。
+
+## topics.jsonl
+
+一行一篇文档的主题标注。与 `.meta.json` 里**人工标注**的 `tags` 相互独立，展示时合并（AI 标注带 ✨ 标记）。
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `path` | string | 是 | 文档相对路径（相对语料根） |
+| `topics` | string[] | 是 | 主题名列表，也可写作 `tags` |
+
+示例：
+
+```jsonl
+{"path":"笔记/第1章 入门.md","topics":["基础","本体论"]}
+{"path":"笔记/第2章 进阶.md","topics":["进阶","方法"]}
+```
+
+### 行为
+
+- 阅读页正文上方显示该文档的主题徽章，AI 标注的带 ✨ 图标，点击展开同主题文档列表。
+- 知识库概览的「主题分布」按主题聚合全文档数。
+- 删除 `.xuewen/topics.jsonl` 即回到无标注状态，文档本身不受影响。
 
 ## graph.jsonl
 
@@ -97,6 +120,8 @@ GraphML 的 `id` 常是不可读的内部编号（`n1`、`n0`），转换时**�
 |---|---|
 | `GET /api/concepts` | 条目列表 + 图谱节点/边计数 + 解析错误 |
 | `GET /api/concept?name=` | 单条目详情 + 图上邻居 |
+| `GET /api/tags` | 主题聚合（人工 tags + AI 标注，含来源标记） |
+| `GET /api/tags/doc?path=` | 单文档的主题 |
 
 `/api/concepts` 里的 `conceptsMissing` / `graphMissing` 用于判断 `.xuewen` 是否就位；`errors` 返回前 5 条 JSONL 解析错误（行号 + 原因），便于排查 AI 产出格式问题。
 

@@ -17,7 +17,7 @@ import { mountAgent } from './agent/routes.js';
 import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
 import { LinkIndex } from './links.js';
-import { loadDerived, DERIVED_DIR } from './derived.js';
+import { loadDerived, loadTopics, DERIVED_DIR } from './derived.js';
 
 const PORT = process.env.WORKBENCH_PORT || 7410;
 const HOST = process.env.WORKBENCH_HOST || undefined; // 未设置时保持原行为（监听所有地址）
@@ -1561,6 +1561,72 @@ app.get('/api/concept', (req, res) => {
     .filter((e) => e.from === c.name || e.to === c.name)
     .map((e) => ({ rel: e.rel, dir: e.from === c.name ? 'out' : 'in', other: e.from === c.name ? e.to : e.from }));
   res.json({ concept: c, neighbors });
+});
+
+// 主题标签：合并 .meta.json 的人工 tags 与 .xuewen/topics.jsonl 的 AI 标注
+app.get('/api/tags', (req, res) => {
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const snap = lib.scanner.snapshot || { files: [], sidecars: [] };
+  const ai = loadTopics(lib.baseDir);
+  const byTag = new Map(); // tag -> { tag, files: [{path, title, source}] }
+  const counts = { manual: 0, ai: 0 };
+  for (const f of snap.files || []) {
+    if (f.ext !== '.md' && f.ext !== '.json' && f.ext !== '.txt') continue;
+    const manual = [];
+    const metaRel = f.path + SIDECAR_SUFFIX;
+    if ((snap.sidecars || []).includes(metaRel)) {
+      try {
+        const m = JSON.parse(fs.readFileSync(path.join(lib.baseDir, metaRel), 'utf8'));
+        if (Array.isArray(m?.tags)) for (const t of m.tags) if (typeof t === 'string' && t.trim()) manual.push(t.trim());
+      } catch { /* 非法旁注跳过 */ }
+    }
+    const auto = ai.byPath.get(f.path) || [];
+    if (!manual.length && !auto.length) continue;
+    const title = (() => {
+      try {
+        const m = JSON.parse(fs.readFileSync(path.join(lib.baseDir, metaRel), 'utf8'));
+        if (typeof m?.title === 'string' && m.title.trim()) return m.title.trim();
+      } catch { /* 忽略 */ }
+      const base = f.name;
+      return base.slice(0, base.length - f.ext.length);
+    })();
+    const push = (tag, source) => {
+      if (!byTag.has(tag)) byTag.set(tag, { tag, files: [] });
+      const e = byTag.get(tag);
+      if (!e.files.some((x) => x.path === f.path)) {
+        e.files.push({ path: f.path, title, source });
+        counts[source === 'manual' ? 'manual' : 'ai']++;
+      }
+    };
+    for (const t of manual) push(t, 'manual');
+    for (const t of auto) push(t, 'ai');
+  }
+  const tags = [...byTag.values()]
+    .map((e) => ({
+      tag: e.tag,
+      count: e.files.length,
+      files: e.files,
+      source: e.files.every((x) => x.source === 'ai') ? 'ai' : e.files.every((x) => x.source === 'manual') ? 'manual' : 'mixed',
+    }))
+    .sort((a, b) => b.count - a.count || (a.tag < b.tag ? -1 : 1));
+  res.json({ dsId: lib.id, dir: DERIVED_DIR, tags, topicsMissing: ai.missing, errors: ai.errors, counts });
+});
+
+// 单文档的主题：人工 tags + AI 标注
+app.get('/api/tags/doc', (req, res) => {
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const target = String(req.query.path || '');
+  if (!target) return res.status(400).json({ error: '缺少 path' });
+  let manual = [];
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(lib.baseDir, target + SIDECAR_SUFFIX), 'utf8'));
+    if (Array.isArray(m?.tags)) manual = m.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim());
+  } catch { /* 无旁注 */ }
+  const ai = loadTopics(lib.baseDir);
+  const auto = ai.byPath.get(target) || [];
+  res.json({ dsId: lib.id, path: target, manual, ai: auto, all: [...new Set([...manual, ...auto])] });
 });
 
 app.get('/api/word-capability', async (req, res) => {

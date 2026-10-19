@@ -14,6 +14,7 @@ import path from 'node:path';
 export const DERIVED_DIR = '.xuewen';
 const CONCEPTS_FILE = 'concepts.jsonl';
 const GRAPH_FILE = 'graph.jsonl';
+const TOPICS_FILE = 'topics.jsonl';
 
 function readJsonl(file) {
   let raw;
@@ -96,4 +97,19 @@ export function loadDerived(baseDir) {
   const c = loadConcepts(baseDir);
   const g = loadGraph(baseDir);
   return { concepts: c.concepts, graph: g, conceptErrors: c.errors, graphErrors: g.errors, conceptsMissing: c.missing, graphMissing: g.missing };
+}
+
+/** 读取 AI 标注的主题：{ path -> topics[] }。与 .meta.json 里人工标注的 tags 相互独立，展示时合并 */
+export function loadTopics(baseDir) {
+  const { items, errors, missing } = readJsonl(path.join(baseDir, DERIVED_DIR, TOPICS_FILE));
+  const byPath = new Map();
+  for (const it of items) {
+    const p = typeof it.path === 'string' ? it.path.trim() : '';
+    if (!p) continue;
+    const topics = strArr(it.topics ?? it.tags);
+    if (!topics.length) continue;
+    if (!byPath.has(p)) byPath.set(p, []);
+    for (const t of topics) if (!byPath.get(p).includes(t)) byPath.get(p).push(t);
+  }
+  return { byPath, errors: errors || [], missing };
 }

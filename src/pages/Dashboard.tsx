@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
+import type { TagEntry, ConceptItem } from '@/lib/api';
+import { ConceptCard } from '@/components/ConceptCard';
 import { useApp } from '@/store/app';
 import type { StatsResponse, TopicEntry, ConceptEntry, FileEntry } from '@/lib/types';
 import { extIcon } from '@/lib/extIcon';
@@ -19,6 +21,9 @@ export default function Dashboard() {
   const [pins, setPins] = useState<{ path: string; at: number; exists: boolean }[]>([]);
   const [topics, setTopics] = useState<TopicEntry[]>([]);
   const [concepts, setConcepts] = useState<ConceptEntry[]>([]);
+  const [tags, setTags] = useState<TagEntry[]>([]);
+  const [derivedConcepts, setDerivedConcepts] = useState<ConceptItem[]>([]);
+  const [openConcept, setOpenConcept] = useState<string | null>(null);
   const [metaConfigured, setMetaConfigured] = useState(false);
   const navigate = useNavigate();
 
@@ -26,8 +31,8 @@ export default function Dashboard() {
     if (!config?.configured) return;
     let dead = false;
     const myDs = config.dsId;
-    Promise.all([api.stats(), api.recents(), api.pins(), api.topics()])
-      .then(([s, r, p, t]) => {
+    Promise.all([api.stats(), api.recents(), api.pins(), api.topics(), api.tags().catch(() => null), api.concepts().catch(() => null)])
+      .then(([s, r, p, t, tg, cp]) => {
         if (dead || s.dsId !== myDs) return; // 旧数据源响应不覆盖
         setStats(s);
         setRecents(r.recents);
@@ -35,6 +40,8 @@ export default function Dashboard() {
         setTopics(t.topics);
         setConcepts(t.concepts);
         setMetaConfigured(t.configured);
+        if (tg && tg.dsId === myDs) setTags(tg.tags);
+        if (cp && cp.dsId === myDs) setDerivedConcepts(cp.concepts);
       })
       .catch(() => {});
     return () => {
@@ -215,8 +222,55 @@ export default function Dashboard() {
         </section>
       </div>
 
-      {/* 主题与概念（配置了元数据映射时） */}
-      {metaConfigured ? (
+      {/* 主题与概念：优先用 .xuewen 加工数据与人工标签，退化到元数据映射 */}
+      {tags.length || derivedConcepts.length ? (
+        <div className="grid md:grid-cols-2 gap-4">
+          <section className="bg-card border border-border rounded-lg p-4">
+            <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              主题分布 <span className="text-[10px] font-normal text-muted-foreground">{tags.length} 个主题</span>
+            </h2>
+            {tags.length ? (
+              <div className="flex flex-wrap gap-1.5">
+                {tags.slice(0, 40).map((t) => (
+                  <button
+                    key={t.tag}
+                    className="text-xs px-2 py-1 rounded-full border border-border hover:border-primary hover:text-primary flex items-center gap-1"
+                    onClick={() => navigate('/search?q=' + encodeURIComponent(t.tag))}
+                    title={t.files.slice(0, 5).map((f) => f.title).join('\n')}
+                  >
+                    {t.tag} <span className="stat-num text-muted-foreground">{t.count}</span>
+                    {t.source === 'ai' && <span className="text-[9px] text-muted-foreground">AI</span>}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">尚无主题标注（.xuewen/topics.jsonl 或文档 tags）</div>
+            )}
+          </section>
+          <section className="bg-card border border-border rounded-lg p-4">
+            <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              概念 <span className="text-[10px] font-normal text-muted-foreground">{derivedConcepts.length} 条</span>
+            </h2>
+            {derivedConcepts.length ? (
+              <div className="flex flex-wrap gap-1.5">
+                {derivedConcepts.slice(0, 40).map((c) => (
+                  <button
+                    key={c.name}
+                    className="text-xs px-2 py-1 rounded-full border border-border hover:border-primary hover:text-primary"
+                    onClick={() => setOpenConcept(c.name)}
+                    title={c.def.slice(0, 120)}
+                  >
+                    {c.name}
+                    {c.aliases.length > 0 && <span className="text-[9px] text-muted-foreground ml-1">+{c.aliases.length}</span>}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">尚无概念表（.xuewen/concepts.jsonl）</div>
+            )}
+          </section>
+        </div>
+      ) : metaConfigured ? (
         <div className="grid md:grid-cols-2 gap-4">
           <section className="bg-card border border-border rounded-lg p-4">
             <h2 className="text-sm font-semibold mb-3">主题分布</h2>
@@ -261,6 +315,16 @@ export default function Dashboard() {
         <div className="text-xs text-muted-foreground border border-dashed border-border rounded-lg p-3">
           未配置元数据映射。可在 <Link to="/settings" className="text-primary underline">设置</Link> 中选择索引/词表 JSON 并指定字段，以启用主题、概念与集合视图；基础阅读、检索与保存不受影响。
         </div>
+      )}
+
+      {openConcept && (
+        <ConceptCard
+          key={openConcept}
+          name={openConcept}
+          onClose={() => setOpenConcept(null)}
+          onOpenDoc={(p2) => { setOpenConcept(null); navigate('/read/' + p2.split('/').map(encodeURIComponent).join('/')); }}
+          onOpenConcept={(n) => setOpenConcept(n)}
+        />
       )}
     </div>
   );

@@ -23,6 +23,7 @@ import { WordReader } from '@/components/WordReader';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
 import { ReadAgentPanel } from '@/components/ReadAgentPanel';
 import { ConceptCard } from '@/components/ConceptCard';
+import { TagChips } from '@/components/TagChips';
 import { extIcon } from '@/lib/extIcon';
 import { Button } from '@/components/ui/button';
 import { PageLoading, PageError } from '@/components/ui-states';
@@ -1007,6 +1008,11 @@ export default function Read() {
               <div className="text-muted-foreground">阅读偏好即时生效，仅影响界面呈现，不会修改源文件。切换文档与重启后保留。</div>
             </div>
           )}
+          </div>
+
+          {/* 主题标签（人工 tags + AI 标注），点击看同主题文档 */}
+          <div className="mb-2">
+            <TagChips path={relPath} onOpenDoc={(p2) => navigate('/read/' + p2.split('/').map(encodeURIComponent).join('/'))} />
           </div>
 
           {/* 正文 */}
