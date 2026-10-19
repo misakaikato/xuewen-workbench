@@ -362,30 +362,45 @@ export default function Read() {
     // 划线笔记标记（纯文本/JSON/Word 走 DOM；markdown 由 livePreview 装饰处理）
     if (noteMarks.length) {
       for (const mk of noteMarks) {
-        const q = (mk.quote || '').split('\n')[0].slice(0, 80);
-        if (q.length < 2) continue;
+        // 候选定位串：引文的每个非空行（≥6 字），长的优先——多行引用总有某行能命中；
+        // 只取首行会在「首行是空行/短标题」时漏标或标错位置。
+        const cands = (mk.quote || '')
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l.length >= 6)
+          .map((l) => l.slice(0, 80))
+          .sort((a, b) => b.length - a.length);
+        if (!cands.length) continue;
+        // 只接受长度接近最长候选的行：引文主体命中失败时，不要退到「第一章」这种到处都有的短串去误标
+        const floor = Math.max(6, Math.floor(cands[0].length * 0.6));
+        const usable = cands.filter((q) => q.length >= floor);
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
         const nodes: Text[] = [];
         let n2: Node | null;
         while ((n2 = walker.nextNode())) nodes.push(n2 as Text);
-        for (const t of nodes) {
-          const idx = t.data.indexOf(q);
-          if (idx < 0 || !t.parentElement) continue;
-          if (['SCRIPT', 'STYLE', 'MARK', 'A'].includes(t.parentElement.tagName)) continue;
-          const after = t.splitText(idx);
-          after.splitText(q.length);
-          const a = document.createElement('a');
-          a.className = 'cm-note-mark';
-          a.setAttribute('data-note-href', mk.href);
-          a.setAttribute('title', '此处有笔记，点击查看');
-          a.href = mk.href;
-          a.textContent = after.data;
-          a.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            navigate(mk.href);
-          });
-          after.parentNode?.replaceChild(a, after);
-          break; // 每段原文只标第一处
+        let done = false;
+        for (const q of usable) {
+          if (done) break;
+          for (const t of nodes) {
+            const idx = t.data.indexOf(q);
+            if (idx < 0 || !t.parentElement) continue;
+            if (['SCRIPT', 'STYLE', 'MARK', 'A'].includes(t.parentElement.tagName)) continue;
+            const after = t.splitText(idx);
+            after.splitText(q.length);
+            const a = document.createElement('a');
+            a.className = 'cm-note-mark';
+            a.setAttribute('data-note-href', mk.href);
+            a.setAttribute('title', '此处有笔记，点击查看');
+            a.href = mk.href;
+            a.textContent = after.data;
+            a.addEventListener('click', (ev) => {
+              ev.preventDefault();
+              navigate(mk.href);
+            });
+            after.parentNode?.replaceChild(a, after);
+            done = true;
+            break; // 每段原文只标第一处
+          }
         }
       }
     }
