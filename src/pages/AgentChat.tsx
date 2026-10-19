@@ -1,4 +1,4 @@
-// 智能助手聊天页（M4 全量）：Kimi/Claude 风格 UI + token 追踪 + thinking + 分叉 + 导出 + 搜索 + 模型快切
+// 智能助手 M4.1：可折叠侧栏 + 上下文指示在输入框上方 + 可编辑消息 + 设置面板 + 模型快切
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
@@ -8,28 +8,27 @@ import { MarkdownMsg } from '@/components/agent/MarkdownMsg';
 import { ChatInput } from '@/components/agent/ChatInput';
 import { ToolCard, type ToolItem } from '@/components/agent/ToolCard';
 import { ThinkingBlock, ContextBar } from '@/components/agent/Extras';
+import { AgentSettingsPanel } from '@/components/agent/AgentSettingsPanel';
 import {
   Plus, Trash2, Bot, Sparkles, Copy, Check, FileText, Zap,
-  GitBranch, Download, Search, X, ChevronDown, MessageSquareQuote,
-  Brain, Gauge, ListChecks,
+  GitBranch, Download, Search, X, MessageSquareQuote, Brain, Gauge, ListChecks,
+  PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash,
 } from 'lucide-react';
 
 interface Conv { id: string; title: string; updatedAt: string; busy?: boolean }
-interface Msg extends AgentMessage { streaming?: boolean; error?: boolean }
+interface Msg extends AgentMessage { streaming?: boolean; error?: boolean; editing?: boolean }
 
 const encPath = (p: string) => p.split('/').map(encodeURIComponent).join('/');
 const CTX_WINDOW = 128000;
-
 const SLASH_COMMANDS = [
   { cmd: '/clear', desc: '开始新对话' },
-  { cmd: '/skills', desc: '列出可用 skills' },
-  { cmd: '/mcp', desc: 'MCP 服务器状态' },
-  { cmd: '/model', desc: '当前模型与端点' },
-  { cmd: '/status', desc: '语料库与索引状态' },
-  { cmd: '/export', desc: '导出为 Markdown' },
-  { cmd: '/help', desc: '显示所有命令' },
+  { cmd: '/skills', desc: '列出 skills' },
+  { cmd: '/mcp', desc: 'MCP 状态' },
+  { cmd: '/model', desc: '打开设置面板' },
+  { cmd: '/status', desc: '语料库状态' },
+  { cmd: '/export', desc: '导出 Markdown' },
+  { cmd: '/help', desc: '所有命令' },
 ];
-
 const TEMPLATES = [
   { icon: Zap, title: '语料概览', prompt: '这套语料主要讲了什么？检索后按主题分类概述' },
   { icon: FileText, title: '找段落', prompt: '帮我找到讲「安全边际」的段落并列出出处文件' },
@@ -52,19 +51,17 @@ export default function AgentChat() {
   const [copied, setCopied] = useState<number | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQ, setSearchQ] = useState('');
-  const [modelOpen, setModelOpen] = useState(false);
-  const [models, setModels] = useState<string[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarW, setSidebarW] = useState(240);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef(false);
   const aiRef = useRef(-1);
+  const dragRef = useRef(false);
 
   const refresh = useCallback(async () => {
-    try {
-      const st = await api.agentStatus();
-      setStatus(st);
-      setConvs(st.conversations || []);
-    } catch { /* */ }
+    try { const st = await api.agentStatus(); setStatus(st); setConvs(st.conversations || []); } catch { /* */ }
   }, []);
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [refresh, dsId]);
 
@@ -78,46 +75,39 @@ export default function AgentChat() {
     }).catch(() => setMsgs([]));
   }, [active]);
 
+  // 侧栏拖拽调宽
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (dragRef.current) setSidebarW(Math.max(180, Math.min(400, e.clientX)));
+    };
+    const onUp = () => { dragRef.current = false; document.body.style.cursor = ''; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, []);
+
   const open = (id: string) => { if (!streamRef.current) setActive(id); };
   const newConv = async () => { const c = await api.agentNewSession(); await refresh(); setActive(c.id); setInput(''); };
   const del = async (id: string) => { if (!window.confirm('删除这个对话？')) return; await api.agentDeleteSession(id); if (active === id) setActive(null); refresh(); };
-  const fork = async (msgIndex: number) => {
-    const c = await api.agentFork(active!, msgIndex);
-    await refresh();
-    setActive(c.id);
-  };
+  const fork = async (msgIndex: number) => { const c = await api.agentFork(active!, msgIndex); await refresh(); setActive(c.id); };
   const doExport = () => { if (active) window.open(api.agentExport(active), '_blank'); };
 
-  const loadModels = async () => {
-    if (!models.length) {
-      const r = await api.agentModels().catch(() => ({ models: [] }));
-      setModels(r.models || []);
-    }
-    setModelOpen((v) => !v);
+  // 消息编辑/删除
+  const editMsg = async (idx: number, text: string) => {
+    setMsgs((m) => m.map((x, i) => (i === idx ? { ...x, text, editing: false } : x)));
+    if (active) await api.agentEditMessage(active, idx, text).catch(() => {});
   };
-  const switchModel = async (m: string) => {
-    await api.ragLlmSave({ model: m });
-    setModelOpen(false);
-    refresh();
+  const deleteMsg = async (idx: number) => {
+    setMsgs((m) => m.filter((_, i) => i !== idx));
+    if (active) await api.agentDeleteMessage(active, idx).catch(() => {});
   };
 
   const doCommand = (cmd: string) => {
-    if (cmd === '/clear' || cmd === '/new') { newConv(); return; }
-    if (cmd === '/help') {
-      setMsgs((m) => [...m, { role: 'user', text: cmd }, { role: 'assistant', text: SLASH_COMMANDS.map((c: { cmd: string; desc: string }) => `- \`${c.cmd}\` — ${c.desc}`).join('\n') }]);
-      return;
-    }
-    if (cmd === '/model') { loadModels(); return; }
-    if (cmd === '/skills') {
-      const sk = status?.skills || [];
-      setMsgs((m) => [...m, { role: 'user', text: cmd }, { role: 'assistant', text: sk.length ? `可用 skills：\n${sk.map((s) => `- \`${s}\``).join('\n')}` : '暂无。放 SKILL.md 到应用数据 `agent/skills/<名称>/` 即可。' }]);
-      return;
-    }
-    if (cmd === '/mcp') {
-      const mcp = status?.mcp || [];
-      setMsgs((m) => [...m, { role: 'user', text: cmd }, { role: 'assistant', text: mcp.length ? `MCP 服务器：\n${mcp.map((s) => `- \`${s.name}\` (${s.type}) ${s.enabled ? '✅' : '⏸'}`).join('\n')}` : '暂无。配置 `agent/mcp.json` 即可。' }]);
-      return;
-    }
+    if (cmd === '/clear') { newConv(); return; }
+    if (cmd === '/help') { setMsgs((m) => [...m, { role: 'user', text: cmd }, { role: 'assistant', text: SLASH_COMMANDS.map((c: { cmd: string; desc: string }) => `- \`${c.cmd}\` — ${c.desc}`).join('\n') }]); return; }
+    if (cmd === '/model') { setSettingsOpen(true); return; }
+    if (cmd === '/skills') { const sk = status?.skills || []; setMsgs((m) => [...m, { role: 'user', text: cmd }, { role: 'assistant', text: sk.length ? `可用 skills：\n${sk.map((s) => `- \`${s}\``).join('\n')}` : '暂无。放 SKILL.md 到应用数据 agent/skills/<名称>/ 即可。' }]); return; }
+    if (cmd === '/mcp') { const mcp = status?.mcp || []; setMsgs((m) => [...m, { role: 'user', text: cmd }, { role: 'assistant', text: mcp.length ? `MCP：\n${mcp.map((s) => `- \`${s.name}\` (${s.type}) ${s.enabled ? '✅' : '⏸'}`).join('\n')}` : '暂无。配置 agent/mcp.json 即可。' }]); return; }
     if (cmd === '/status') { setInput('用 corpus_status 查看资料库状态并简要报告'); return; }
     if (cmd === '/export') { doExport(); return; }
   };
@@ -146,12 +136,11 @@ export default function AgentChat() {
           try { d = JSON.parse(line.slice(6)); } catch { continue; }
           if (d.t === 'delta') patch((msg) => ({ ...msg, text: msg.text + (d.v as string) }));
           else if (d.t === 'thinking') patch((msg) => ({ ...msg, thinking: (msg.thinking || '') + (d.v as string) }));
-          else if (d.t === 'usage') { setUsage(d.usage as Msg['usage']); }
+          else if (d.t === 'usage') setUsage(d.usage as Msg['usage']);
           else if (d.t === 'tool_start') patch((msg) => ({ ...msg, tools: [...(msg.tools || []), { name: d.name as string, args: d.args, durationMs: 0 }] }));
-          else if (d.t === 'tool_end') patch((msg) => ({ ...msg, tools: (msg.tools || []).map((t) => (t as ToolItem).name === d.name && !(t as ToolItem).summary ? { ...t, summary: d.summary as string, isError: d.isError as boolean, durationMs: d.durationMs as number } : t) }));
-          else if (d.t === 'open_doc') { navigate('/read/' + encPath(d.path as string) + ((d.term as string) ? '?h=' + encodeURIComponent(d.term as string) : '')); }
+          else if (d.t === 'tool_end') patch((msg) => ({ ...msg, tools: (msg.tools || []).map((t) => ((t as ToolItem).name === d.name && !(t as ToolItem).summary ? { ...t, summary: d.summary as string, isError: d.isError as boolean, durationMs: d.durationMs as number } : t)) }));
+          else if (d.t === 'open_doc') navigate('/read/' + encPath(d.path as string) + ((d.term as string) ? '?h=' + encodeURIComponent(d.term as string) : ''));
           else if (d.t === 'error') patch((msg) => ({ ...msg, text: msg.text + `\n\n**错误**：${d.message}`, error: true }));
-          else if (d.t === 'steered') patch((msg) => ({ ...msg, text: msg.text + '\n\n> 📎 已插入指令，当前轮结束后处理\n' }));
         }
       }
     } catch (e) {
@@ -161,7 +150,6 @@ export default function AgentChat() {
       setBusy(false); streamRef.current = false; abortRef.current = null; refresh();
     }
   };
-
   const stop = () => { abortRef.current?.abort(); if (active) api.agentAbort(active).catch(() => {}); };
   const copyMsg = (i: number) => { navigator.clipboard.writeText(msgs[i].text).then(() => { setCopied(i); setTimeout(() => setCopied(null), 1200); }); };
 
@@ -183,97 +171,96 @@ export default function AgentChat() {
     });
   };
 
-  const searchHits = searchQ ? msgs.map((m, i) => ({ i, m })).filter(({ m }) => m.text.toLowerCase().includes(searchQ.toLowerCase())) : [];
   const ep = status?.endpoint;
-  const sk = status?.skills || [];
-  const mcp = status?.mcp || [];
-  const tools = status?.tools || [];
+  const searchHits = searchQ ? msgs.filter((m) => m.text?.toLowerCase().includes(searchQ.toLowerCase())).length : 0;
 
   return (
     <div className="h-full flex min-h-0 bg-background">
-      {/* 左侧：深色会话栏（Claude 风格） */}
-      <aside className="w-60 shrink-0 border-r border-border flex flex-col min-h-0 bg-sidebar">
-        <div className="p-3 border-b border-sidebar-border">
-          <button className="w-full flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:opacity-90 font-medium" onClick={newConv}>
-            <Plus className="w-4 h-4" />新对话
-          </button>
-        </div>
-        <div className="flex-1 overflow-auto p-2 space-y-0.5">
-          {convs.map((c) => (
-            <div key={c.id} className={`group flex items-center gap-1.5 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${active === c.id ? 'bg-sidebar-accent text-primary font-medium' : 'hover:bg-sidebar-accent text-sidebar-foreground'}`} onClick={() => open(c.id)}>
-              <div className="truncate flex-1">{c.title || '新对话'}</div>
-              <button className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-background shrink-0" onClick={(e) => { e.stopPropagation(); del(c.id); }}>
-                <Trash2 className="w-3 h-3" />
+      {/* 可折叠可调宽侧栏 */}
+      {sidebarOpen ? (
+        <>
+          <aside className="shrink-0 border-r border-border flex flex-col min-h-0 bg-sidebar" style={{ width: sidebarW }}>
+            <div className="p-3 border-b border-sidebar-border flex items-center gap-2">
+              <button className="flex-1 flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:opacity-90 font-medium" onClick={newConv}>
+                <Plus className="w-4 h-4" />新对话
+              </button>
+              <button className="p-1.5 rounded-lg hover:bg-sidebar-accent text-muted-foreground" onClick={() => setSidebarOpen(false)} title="折叠侧栏">
+                <PanelLeftClose className="w-4 h-4" />
               </button>
             </div>
-          ))}
-          {!convs.length && <div className="text-xs text-muted-foreground p-3 text-center">还没有对话</div>}
-        </div>
-        <div className="p-3 border-t border-sidebar-border space-y-1.5 text-[11px] text-muted-foreground">
-          {sk.length > 0 && <div><span className="text-primary font-medium">{sk.length}</span> 个 skills</div>}
-          {mcp.length > 0 && <div><span className="text-primary font-medium">{mcp.filter((m) => m.enabled).length}/{mcp.length}</span> 个 MCP</div>}
-          {tools.length > 0 && <div title={tools.join(' · ')}><span className="text-primary font-medium">{tools.length}</span> 个工具</div>}
-          {usage && <ContextBar usage={usage} contextWindow={CTX_WINDOW} />}
-        </div>
-      </aside>
+            <div className="flex-1 overflow-auto p-2 space-y-0.5">
+              {convs.map((c) => (
+                <div key={c.id} className={`group flex items-center gap-1.5 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${active === c.id ? 'bg-sidebar-accent text-primary font-medium' : 'hover:bg-sidebar-accent'}`} onClick={() => open(c.id)}>
+                  <div className="truncate flex-1">{c.title || '新对话'}</div>
+                  <button className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-background shrink-0" onClick={(e) => { e.stopPropagation(); del(c.id); }}>
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+              {!convs.length && <div className="text-xs text-muted-foreground p-3 text-center">还没有对话</div>}
+            </div>
+            <div className="p-3 border-t border-sidebar-border text-[11px] text-muted-foreground space-y-0.5">
+              {(status?.skills || []).length > 0 && <div><span className="text-primary font-medium">{status!.skills.length}</span> skills</div>}
+              {(status?.mcp || []).length > 0 && <div><span className="text-primary font-medium">{status!.mcp!.filter((m) => m.enabled).length}/{status!.mcp!.length}</span> MCP</div>}
+              <div><span className="text-primary font-medium">{status?.tools?.length || 0}</span> 工具</div>
+            </div>
+          </aside>
+          {/* 拖拽条 */}
+          <div className="w-1 cursor-col-resize hover:bg-primary/30 transition-colors shrink-0" onMouseDown={() => { dragRef.current = true; document.body.style.cursor = 'col-resize'; }} />
+        </>
+      ) : (
+        <button className="shrink-0 p-2 border-r border-border hover:bg-accent text-muted-foreground" onClick={() => setSidebarOpen(true)}>
+          <PanelLeftOpen className="w-4 h-4" />
+        </button>
+      )}
 
       {/* 主区域 */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* 顶栏：模型 + 上下文 + 操作 */}
-        <div className="shrink-0 px-4 py-2.5 border-b border-border flex items-center gap-3 flex-wrap bg-card">
+        {/* 顶栏 */}
+        <div className="shrink-0 px-4 py-2.5 border-b border-border flex items-center gap-2.5 flex-wrap bg-card">
           <div className="flex items-center gap-1.5">
             <Sparkles className="w-4 h-4 text-primary" />
             <span className="text-sm font-semibold">智能助手</span>
           </div>
-          {/* 模型快切 */}
-          <div className="relative">
-            <button className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-border hover:border-primary/50 text-muted-foreground font-mono" onClick={loadModels}>
-              {ep?.model || '未配置'} <ChevronDown className="w-3 h-3" />
-            </button>
-            {modelOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-card border border-border rounded-lg shadow-lg p-1 z-30 min-w-48 max-h-64 overflow-auto">
-                {models.length ? models.map((m) => (
-                  <button key={m} className={`w-full text-left px-3 py-1.5 rounded text-xs font-mono ${m === ep?.model ? 'bg-accent text-primary' : 'hover:bg-accent'}`} onClick={() => switchModel(m)}>{m}</button>
-                )) : <div className="px-3 py-2 text-xs text-muted-foreground">未获取到模型列表</div>}
-              </div>
-            )}
-          </div>
+          <span className={`text-xs px-2 py-0.5 rounded-full font-mono ${ep?.ready ? 'bg-primary/10 text-primary' : 'bg-amber-500/10 text-amber-600'}`}>
+            {ep?.model || '未配置'}
+          </span>
+          {ep?.thinkingLevel && ep.thinkingLevel !== 'off' && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-500/10 text-violet-600 flex items-center gap-0.5">
+              <Brain className="w-2.5 h-2.5" />{ep.thinkingLevel}
+            </span>
+          )}
           {!ep?.ready && <Link to="/rag" className="text-xs text-amber-600 underline">去配置</Link>}
           <span className="flex-1" />
           {active && (
             <>
-              <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="搜索对话 (Ctrl+F)" onClick={() => setSearchOpen(true)}>
-                <Search className="w-3.5 h-3.5" />
-              </button>
-              <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="导出为 Markdown" onClick={doExport}>
-                <Download className="w-3.5 h-3.5" />
-              </button>
+              <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="搜索 (Ctrl+F)" onClick={() => setSearchOpen(true)}><Search className="w-3.5 h-3.5" /></button>
+              <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="导出" onClick={doExport}><Download className="w-3.5 h-3.5" /></button>
             </>
           )}
-          <span className="text-[11px] text-muted-foreground hidden lg:inline">/ 命令 · @ 文件</span>
+          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="Agent 设置" onClick={() => setSettingsOpen(true)}>
+            <Settings2 className="w-3.5 h-3.5" />
+          </button>
         </div>
 
-        {/* 搜索浮层 */}
+        {/* 搜索 */}
         {searchOpen && (
           <div className="shrink-0 border-b border-border px-4 py-2 flex items-center gap-2 bg-muted/30">
             <Search className="w-3.5 h-3.5 text-muted-foreground" />
-            <input autoFocus value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="在对话中搜索…" className="flex-1 bg-transparent text-sm outline-none" />
-            <span className="text-xs text-muted-foreground tabular-nums">{searchHits.length} 条命中</span>
+            <input autoFocus value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="搜索…" className="flex-1 bg-transparent text-sm outline-none" />
+            <span className="text-xs text-muted-foreground">{searchHits} 条</span>
             <button onClick={() => { setSearchOpen(false); setSearchQ(''); }} className="p-1 rounded hover:bg-accent"><X className="w-3.5 h-3.5" /></button>
           </div>
         )}
 
-        {/* 消息区 */}
+        {/* 消息 */}
         <div ref={scrollRef} className="flex-1 overflow-auto px-4 py-6">
           {!active && (
             <div className="h-full flex flex-col items-center justify-center gap-6">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Bot className="w-8 h-8" />
-                <span className="text-lg font-medium">智能助手</span>
-              </div>
+              <div className="flex items-center gap-2 text-muted-foreground"><Bot className="w-8 h-8" /><span className="text-lg font-medium">智能助手</span></div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-w-2xl">
                 {TEMPLATES.map((t, i) => (
-                  <button key={i} className="flex flex-col gap-2 border border-border rounded-xl p-4 text-left hover:border-primary/50 hover:shadow-sm transition-all group" onClick={() => { newConv().then(() => setInput(t.prompt)); }}>
+                  <button key={i} className="flex flex-col gap-2 border rounded-xl p-4 text-left hover:border-primary/50 hover:shadow-sm transition-all group" onClick={() => { newConv().then(() => setInput(t.prompt)); }}>
                     <t.icon className="w-5 h-5 text-primary/70 group-hover:text-primary" />
                     <div className="text-sm font-medium">{t.title}</div>
                     <div className="text-xs text-muted-foreground line-clamp-2">{t.prompt}</div>
@@ -284,24 +271,36 @@ export default function AgentChat() {
           )}
           <div className="max-w-3xl mx-auto space-y-5">
             {msgs.map((m, i) => {
-              const isSearchHit = searchQ && m.text.toLowerCase().includes(searchQ.toLowerCase());
+              const isHit = searchQ && m.text?.toLowerCase().includes(searchQ.toLowerCase());
               return (
                 <div key={i} className={m.role === 'user' ? 'flex justify-end' : ''}>
                   {m.role === 'user' ? (
-                    <div className={`max-w-[80%] rounded-2xl rounded-br-md px-4 py-2.5 text-sm whitespace-pre-wrap break-words ${isSearchHit ? 'bg-primary/80 ring-2 ring-amber-400' : 'bg-primary'} text-primary-foreground leading-relaxed`}>
-                      {m.text}
+                    <div className={`max-w-[80%] group/msg ${isHit ? 'ring-2 ring-amber-400 rounded-2xl' : ''}`}>
+                      {m.editing ? (
+                        <div className="rounded-2xl border border-primary/40 bg-card p-3">
+                          <textarea autoFocus defaultValue={m.text} rows={3} className="w-full text-sm bg-transparent outline-none resize-none" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); editMsg(i, (e.target as HTMLTextAreaElement).value); } if (e.key === 'Escape') setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x))); }} />
+                          <div className="flex gap-1.5 justify-end mt-1">
+                            <button className="text-xs px-2 py-1 rounded border" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x)))}>取消</button>
+                            <button className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground" onClick={(e) => editMsg(i, (e.target as HTMLElement).parentElement?.previousElementSibling?.textContent || '')}>保存</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="rounded-2xl rounded-br-md px-4 py-2.5 text-sm whitespace-pre-wrap break-words bg-primary text-primary-foreground leading-relaxed">{m.text}</div>
+                          <div className="opacity-0 group-hover/msg:opacity-100 flex justify-end gap-0.5 mt-0.5 transition-opacity">
+                            <button className="p-1 rounded hover:bg-accent text-muted-foreground" title="编辑" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: true } : x)))}><Pencil className="w-3 h-3" /></button>
+                            <button className="p-1 rounded hover:bg-accent text-muted-foreground" title="删除" onClick={() => deleteMsg(i)}><Trash className="w-3 h-3" /></button>
+                          </div>
+                        </>
+                      )}
                     </div>
                   ) : (
-                    <div className={`max-w-full group/msg rounded-lg ${isSearchHit ? 'ring-2 ring-amber-400 ring-offset-2' : ''}`}>
+                    <div className={`max-w-full group/msg rounded-lg ${isHit ? 'ring-2 ring-amber-400 ring-offset-2' : ''}`}>
                       {m.thinking && <ThinkingBlock text={m.thinking} streaming={m.streaming && !m.text} />}
                       {(m.tools || []).map((t, j) => <ToolCard key={j} t={t as ToolItem} />)}
-                      {m.text && (
-                        <div className={m.error ? 'text-red-600' : 'text-foreground'}>
-                          <MarkdownMsg text={m.text} richRefs={richRefs} />
-                        </div>
-                      )}
+                      {m.text && <div className={m.error ? 'text-red-600' : ''}><MarkdownMsg text={m.text} richRefs={richRefs} /></div>}
                       {m.streaming && !m.text && !m.thinking && !(m.tools || []).length && (
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground py-1">
+                        <div className="flex items-center gap-1.5 py-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
                           <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse [animation-delay:200ms]" />
                           <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse [animation-delay:400ms]" />
@@ -312,9 +311,18 @@ export default function AgentChat() {
                           <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="复制" onClick={() => copyMsg(i)}>
                             {copied === i ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
                           </button>
-                          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="从这里分叉" onClick={() => fork(i)}>
-                            <GitBranch className="w-3.5 h-3.5" />
-                          </button>
+                          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="分叉" onClick={() => fork(i)}><GitBranch className="w-3.5 h-3.5" /></button>
+                          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="编辑" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: true } : x)))}><Pencil className="w-3.5 h-3.5" /></button>
+                          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="删除" onClick={() => deleteMsg(i)}><Trash className="w-3.5 h-3.5" /></button>
+                        </div>
+                      )}
+                      {m.editing && (
+                        <div className="mt-2 rounded-lg border border-primary/40 bg-card p-3">
+                          <textarea autoFocus defaultValue={m.text} rows={6} className="w-full text-sm bg-transparent outline-none resize-none font-mono" onKeyDown={(e) => { if (e.key === 'Escape') setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x))); }} />
+                          <div className="flex gap-1.5 justify-end mt-1">
+                            <button className="text-xs px-2 py-1 rounded border" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x)))}>取消</button>
+                            <button className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground" onClick={(e) => editMsg(i, (e.target as HTMLElement).parentElement?.previousElementSibling?.textContent || '')}>保存</button>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -325,13 +333,21 @@ export default function AgentChat() {
           </div>
         </div>
 
-        {/* 输入区 */}
-        <div className="shrink-0 border-t border-border p-4 bg-card">
-          <div className="max-w-3xl mx-auto">
-            <ChatInput value={input} onChange={setInput} onSend={send} onStop={stop} busy={busy} disabled={!active || !ep?.ready} placeholder={active ? '提问 / 命令 · @文件 · Enter 发送 · Ctrl+F 搜索' : '先新建对话'} onCommand={doCommand} />
+        {/* 输入区（含上下文指示） */}
+        <div className="shrink-0 border-t border-border bg-card">
+          <div className="max-w-3xl mx-auto px-4 pt-2">
+            {usage && <ContextBar usage={usage} contextWindow={CTX_WINDOW} />}
+          </div>
+          <div className="max-w-3xl mx-auto p-3">
+            <ChatInput value={input} onChange={setInput} onSend={send} onStop={stop} busy={busy} disabled={!active || !ep?.ready} placeholder={active ? '提问 · / 命令 · @ 文件 · Enter 发送' : '先新建对话'} onCommand={doCommand} />
           </div>
         </div>
       </div>
+
+      {/* 设置面板 */}
+      {settingsOpen && status && (
+        <AgentSettingsPanel status={status} onClose={() => setSettingsOpen(false)} onSaved={() => { refresh(); }} />
+      )}
     </div>
   );
 }

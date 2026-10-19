@@ -248,6 +248,9 @@ export const api = {
   agentFork: (id: string, uptoIndex: number) => req<{ id: string; title: string }>('/api/agent/fork', json('POST', { sessionId: id, uptoIndex })),
   agentExport: (id: string) => '/api/agent/export/' + encodeURIComponent(id),
   agentModels: () => req<{ models: string[] }>('/api/agent/models'),
+  agentSettings: (patch: Partial<AgentSettingsPatch>) => req<AgentStatus>('/api/agent/settings', json('PUT', patch)),
+  agentEditMessage: (id: string, idx: number, text: string) => req<{ ok: boolean }>(`/api/agent/session/${encodeURIComponent(id)}/message/${idx}`, json('PUT', { text })),
+  agentDeleteMessage: (id: string, idx: number) => req<{ ok: boolean }>(`/api/agent/session/${encodeURIComponent(id)}/message/${idx}`, json('DELETE', {})),
 };
 
 export interface RagConfig {
@@ -265,8 +268,16 @@ export interface AgentMessage {
   at?: string;
 }
 
+export interface AgentSettingsPatch {
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+  thinkingLevel?: 'off' | 'low' | 'medium' | 'high';
+  enabled?: boolean;
+}
+
 export interface AgentStatus {
-  endpoint: { baseUrl: string; model: string; ready: boolean; enabled: boolean };
+  endpoint: { baseUrl: string; model: string; ready: boolean; enabled: boolean; thinkingLevel?: string };
   agentDir: string;
   skills: string[];
   mcp?: { name: string; type: string; url?: string; enabled: boolean }[];

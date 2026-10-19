@@ -37,6 +37,36 @@ export function mountAgent(hub, resolveLib) {
     res.send(md);
   });
 
+  r.put('/settings', (req, res) => {
+    res.json(hub.updateSettings(req.body || {}));
+  });
+
+  // 编辑/删除投影中的消息（display 层——LLM 上下文不回滚，仅 UI 展示变化）
+  r.put('/session/:id/message/:idx', (req, res) => {
+    const { text } = req.body || {};
+    const id = req.params.id;
+    const idx = Number(req.params.idx);
+    const hist = hub.history(id);
+    if (idx < 0 || idx >= hist.length) return res.status(404).json({ error: '消息不存在' });
+    hist[idx].text = String(text || '');
+    // 重写整个投影文件
+    const fs = require('node:fs');
+    const path = require('node:path');
+    fs.writeFileSync(hub._convFile(id), hist.map((m) => JSON.stringify(m)).join('\n') + '\n');
+    res.json({ ok: true });
+  });
+
+  r.delete('/session/:id/message/:idx', (req, res) => {
+    const id = req.params.id;
+    const idx = Number(req.params.idx);
+    const hist = hub.history(id);
+    if (idx < 0 || idx >= hist.length) return res.status(404).json({ error: '消息不存在' });
+    hist.splice(idx, 1);
+    const fs = require('node:fs');
+    fs.writeFileSync(hub._convFile(id), hist.map((m) => JSON.stringify(m)).join('\n') + '\n');
+    res.json({ ok: true });
+  });
+
   r.get('/models', async (_req, res) => {
     res.json(await hub.listModels());
   });

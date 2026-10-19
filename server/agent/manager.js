@@ -48,6 +48,8 @@ export class AgentHub {
     const p = path.join(this.agentDir, 'models.json');
     if (!this.endpointReady()) {
       try { fs.unlinkSync(p); } catch { /* 无文件 */ }
+      this._disposeAllSessions();
+      this._modelRuntime = null;
       return;
     }
     const json = {
@@ -62,7 +64,16 @@ export class AgentHub {
       },
     };
     fs.writeFileSync(p, JSON.stringify(json, null, 2));
-    this._modelRuntime = null; // 端点变了重建 runtime
+    this._disposeAllSessions(); // 模型/端点变了：现有会话的上下文绑定旧模型，需重建
+    this._modelRuntime = null;
+  }
+
+  _disposeAllSessions() {
+    for (const [id, entry] of this.live) {
+      try { if (entry.unsubscribe) entry.unsubscribe(); } catch { /* */ }
+      try { entry.session.dispose(); } catch { /* */ }
+    }
+    this.live.clear();
   }
 
   async _runtime() {
@@ -370,7 +381,7 @@ export class AgentHub {
   async _ensureSession(convId) {
     let entry = this.live.get(convId);
     if (entry) return entry;
-    if (!this.endpointReady()) throw new Error('生成端点未配置（去 RAG 管理页配置 OpenAI 兼容端点）');
+    if (!this.endpointReady()) throw new Error('生成端点未配置（去 Agent 设置页配置）');
     const runtime = await this._runtime();
     const model = runtime.getModel('workbench', this.llm().model);
     if (!model) throw new Error(`模型 ${this.llm().model} 未注册（检查端点配置）`);
@@ -399,7 +410,7 @@ export class AgentHub {
       resourceLoader: loader,
       settingsManager: settings,
       sessionManager,
-      thinkingLevel: 'off',
+      thinkingLevel: this.llm().thinkingLevel || 'off',
     });
     entry = { session, sse: new Set(), busy: false, curText: '', curTools: [], curThinking: '', curUsage: null };
     // 会话级事件订阅：所有轮次（含 steering 追加轮）的事件都经此转发
@@ -604,13 +615,30 @@ ${m.text}
   status() {
     const llm = this.llm();
     return {
-      endpoint: { baseUrl: llm.baseUrl || '', model: llm.model || '', ready: this.endpointReady(), enabled: !!llm.enabled },
+      endpoint: {
+        baseUrl: llm.baseUrl || '', model: llm.model || '',
+        ready: this.endpointReady(), enabled: !!llm.enabled,
+        thinkingLevel: llm.thinkingLevel || 'off',
+      },
       agentDir: this.agentDir,
       skills: this._listSkills(),
       mcp: this._mcpStatus(),
       tools: TOOL_NAMES,
       conversations: this.listConversations(),
     };
+  }
+
+  /** 更新设置（model/baseUrl/apiKey/thinkingLevel） */
+  updateSettings(patch) {
+    const c = this.llm();
+    const next = { ...c };
+    for (const k of ['baseUrl', 'model', 'apiKey', 'thinkingLevel', 'enabled']) {
+      if (k in patch) next[k] = patch[k];
+    }
+    if (!['off', 'low', 'medium', 'high'].includes(next.thinkingLevel)) next.thinkingLevel = 'off';
+    Object.assign(c, next); // ragManager.llm 是引用，直接改
+    this._syncModelsJson();
+    return this.status();
   }
 
   _mcpStatus() {
