@@ -587,11 +587,13 @@ export default function Read() {
   // 划线：选中正文后在选区旁浮出「记笔记」按钮
   useEffect(() => {
     const onUp = (e: MouseEvent) => {
-      // 点在选区旁的浮动操作条上：保留选区，否则按钮会在 click 之前被卸载
       const t = e.target as Element | null;
-      if (t && typeof t.closest === 'function' && t.closest('[data-wb-selbar]')) return;
+      // 浮动操作条 / 笔记弹窗 / AI 面板内的点击：保留 sel，否则依赖它的浮层会被卸载
+      if (t && typeof t.closest === 'function' && t.closest('[data-wb-selbar], [data-wb-overlay]')) return;
       const card = contentRef.current;
-      if (!card || !card.contains(e.target as Node)) { setSel(null); return; }
+      if (!card) return;
+      // 点在正文之外（且不在上述浮层内）：清空选区浮层
+      if (!card.contains(t as Node)) { setSel(null); return; }
       const selection = window.getSelection();
       const text = (selection?.toString() || '').trim();
       if (!text || text.length < 2) { setSel(null); return; }
@@ -964,7 +966,7 @@ export default function Read() {
 
       {/* 右侧：AI 助手（优先） */}
       {aiOpen && file && (
-        <aside className="hidden lg:flex w-80 shrink-0">
+        <aside data-wb-overlay className="hidden lg:flex w-80 shrink-0">
           <ReadAgentPanel
             docPath={relPath}
             docName={file.name}
@@ -1070,7 +1072,7 @@ export default function Read() {
 
       {/* 划线笔记：编辑弹窗 */}
       {noteOpen && sel && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setNoteOpen(false)}>
+        <div data-wb-overlay className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setNoteOpen(false)}>
           <div className="bg-card border border-border rounded-lg p-5 max-w-2xl w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-sm font-semibold mb-2 flex items-center gap-1.5"><NotebookPen className="w-4 h-4 text-primary" />添加到阅读笔记</h3>
             <blockquote className="text-xs text-muted-foreground border-l-2 border-primary/50 pl-2 mb-3 max-h-24 overflow-auto whitespace-pre-wrap">
