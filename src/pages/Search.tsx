@@ -250,7 +250,9 @@ export default function Search() {
           </button>
         )}
         <span className="text-muted-foreground ml-auto stat-num">
-          {loading ? '检索中…' : q ? `${total} 个文件命中` : ''}
+          {loading ? (
+            <span className="inline-flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" />检索中…</span>
+          ) : q ? `${total} 个文件命中` : ''}
         </span>
       </div>
       )}
@@ -272,6 +274,14 @@ export default function Search() {
         <div className="text-sm text-destructive border border-destructive/40 bg-destructive/10 rounded p-3 mb-3">
           检索失败：{err}
           <button className="ml-2 underline" onClick={() => doSearch(input, types, dir, 'exact')}>重试</button>
+        </div>
+      )}
+
+      {/* 结果区加载态：检索中在结果区顶部给出明确提示，旧结果淡出保留（防闪烁） */}
+      {loading && q && (
+        <div className="mb-3 flex items-center gap-2 text-sm text-muted-foreground border border-border rounded-lg px-3 py-2.5 bg-card animate-fade-in" role="status">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          正在检索「{q}」…
         </div>
       )}
 

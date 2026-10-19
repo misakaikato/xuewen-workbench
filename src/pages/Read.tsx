@@ -12,6 +12,10 @@ import { FormatToolbar } from '@/components/editor/FormatToolbar';
 import { pushDocLinks } from '@/components/editor/autoLinks';
 import type { FilePayload, FileEntry } from '@/lib/types';
 import { ReadOnlyDoc, docHeadings, scrollDocToPos, findNextInDoc } from '@/components/ReadOnlyDoc';
+import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
+import { editorBaseExtensions, editorBaseThemeSpec } from '@/components/editor/setup';
+import { EditorState, type Extension } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import { JsonViewer } from '@/components/JsonViewer';
 import { WordReader } from '@/components/WordReader';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
@@ -19,13 +23,30 @@ import { extIcon } from '@/lib/extIcon';
 import { Button } from '@/components/ui/button';
 import { PageLoading, PageError } from '@/components/ui-states';
 import type { DocLink } from '@/lib/api';
-import type { EditorView } from '@codemirror/view';
+import type { EditorView as EditorViewType } from '@codemirror/view';
 import {
   Pencil, Pin, PinOff, ListTree, Link2, Search, X, Settings2, ChevronUp,
   Save, AlertTriangle, CheckCircle2, Columns2, ArrowLeft, ArrowRight,
 } from 'lucide-react';
 
 type EditSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
+
+// TXT 原位编辑主题：排版完全跟随阅读偏好（--rd-*），高度随内容增长、页面滚动，
+// 与阅读态的纯文本渲染零跳变（阅读态 div 与编辑态 CM 用同一组变量）
+const txtInPlaceTheme = EditorView.theme({
+  ...editorBaseThemeSpec,
+  '&': { ...editorBaseThemeSpec['&'], height: 'auto' },
+  '.cm-scroller': { ...editorBaseThemeSpec['.cm-scroller'], overflow: 'visible' },
+  '.cm-line': { padding: '0' },
+  '.cm-content': { ...editorBaseThemeSpec['.cm-content'], padding: '0' },
+});
+
+// TXT 阅读态排版：与 txtInPlaceTheme 同变量，保证阅读↔编辑一致
+const txtReaderStyle = {
+  fontFamily: 'var(--rd-font)',
+  fontSize: 'var(--rd-size)',
+  lineHeight: 'var(--rd-line)',
+} as const;
 
 interface TocItem { key: string; text: string; level: number; pos?: number; id?: string }
 
@@ -56,7 +77,7 @@ export default function Read() {
   const [navDepth, setNavDepth] = useState({ idx: 0, max: 0 });
   const contentRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<EditorView | null>(null);
+  const viewRef = useRef<EditorViewType | null>(null);
   const [viewReady, setViewReady] = useState(0);
   const lastFindRef = useRef<{ from: number; to: number } | null>(null);
 
@@ -162,11 +183,6 @@ export default function Read() {
 
   const enterEdit = useCallback(() => {
     if (!file || !dsId || file.readonly || editingRef.current) return;
-    if (file.type === 'text') {
-      // 纯文本无原位渲染编辑（ReadOnlyDoc 为 markdown 实例），进编辑页源码模式
-      navigate('/edit/' + relPath.split('/').map(encodeURIComponent).join('/'));
-      return;
-    }
     const text = file.content || '';
     setLineSep(detectLineSeparator(text));
     baseTextRef.current = text;
@@ -513,6 +529,17 @@ export default function Read() {
     setPinned(!pinned);
   }, [pinned, relPath]);
 
+  // TXT 原位编辑扩展：行分隔符锁定 + 基础扩展（无行号/折叠）+ 阅读排版主题
+  // 注意：必须在上方早退（error/loading return）之前声明，保持 hooks 顺序稳定
+  const txtExtensions = useMemo<Extension[]>(
+    () => [
+      EditorState.lineSeparator.of(lineSep),
+      ...editorBaseExtensions({ lineNumbers: false, foldGutter: false }),
+      txtInPlaceTheme,
+    ],
+    [lineSep]
+  );
+
   if (error) {
     return (
       <PageError
@@ -548,7 +575,7 @@ export default function Read() {
               data-wb-inplace-bar
             >
               <div className="flex-1 min-w-0">
-                <FormatToolbar view={viewRef.current} version={fmtVer} />
+                {file.type === 'markdown' && <FormatToolbar view={viewRef.current} version={fmtVer} />}
               </div>
               <span
                 className={`text-xs px-2 py-0.5 rounded-full border shrink-0 ${
@@ -786,11 +813,24 @@ export default function Read() {
                 }}
               />
             )}
-            {file.type === 'text' && (
-              <div className="text-[0.97rem] leading-[1.9] whitespace-pre-wrap break-words font-[inherit]">
-                {file.content || ''}
-              </div>
-            )}
+            {file.type === 'text' &&
+              (editing ? (
+                <CodeMirrorEditor
+                  key={relPath}
+                  initialDoc={file.content || ''}
+                  extensions={txtExtensions}
+                  height="auto"
+                  onDocChanged={onEditDocChanged}
+                  onCreate={(v) => {
+                    viewRef.current = v;
+                    setViewReady((s) => s + 1);
+                  }}
+                />
+              ) : (
+                <div className="whitespace-pre-wrap break-words" style={txtReaderStyle}>
+                  {file.content || ''}
+                </div>
+              ))}
             {file.type === 'json' && <JsonViewer content={file.content || ''} />}
             {file.type === 'word' && (
               <WordReader path={relPath} name={file.name} html={file.html || ''} text={file.text || ''} warning={file.warning} engine={file.engine} />
