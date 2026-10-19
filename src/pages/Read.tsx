@@ -587,6 +587,9 @@ export default function Read() {
   // 划线：选中正文后在选区旁浮出「记笔记」按钮
   useEffect(() => {
     const onUp = (e: MouseEvent) => {
+      // 点在选区旁的浮动操作条上：保留选区，否则按钮会在 click 之前被卸载
+      const t = e.target as Element | null;
+      if (t && typeof t.closest === 'function' && t.closest('[data-wb-selbar]')) return;
       const card = contentRef.current;
       if (!card || !card.contains(e.target as Node)) { setSel(null); return; }
       const selection = window.getSelection();
@@ -1036,6 +1039,7 @@ export default function Read() {
       {/* 选区旁的浮动操作：记笔记 / 问 AI */}
       {sel && !noteOpen && (
         <div
+          data-wb-selbar
           className="fixed z-40 -translate-x-1/2 flex items-center gap-1"
           style={{ left: sel.x, top: sel.y }}
           onMouseDown={(e) => e.preventDefault()}
