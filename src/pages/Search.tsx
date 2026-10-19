@@ -7,6 +7,7 @@ import { useApp } from '@/store/app';
 import type { SearchResult } from '@/lib/types';
 import { extIcon } from '@/lib/extIcon';
 import { SearchX, Loader2, Sparkles } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 // 搜索会话缓存：路由离开 Search 后返回时恢复结果与滚动位置，免去重新检索。
 // key = dsId|mode|q；筛选与智能 limit 一并随缓存恢复（不在 URL 里的状态也不丢）
@@ -268,7 +269,7 @@ export default function Search() {
       )}
 
       {err && (
-        <div className="text-sm text-red-700 dark:text-red-400 border border-red-300 rounded p-3 mb-3">
+        <div className="text-sm text-destructive border border-destructive/40 bg-destructive/10 rounded p-3 mb-3">
           检索失败：{err}
           <button className="ml-2 underline" onClick={() => doSearch(input, types, dir, 'exact')}>重试</button>
         </div>
@@ -292,7 +293,7 @@ export default function Search() {
       )}
 
       {mode === 'smart' && smartErr && q && (
-        <div className="text-sm text-red-700 dark:text-red-400 border border-red-300 rounded p-3 mb-3">
+        <div className="text-sm text-destructive border border-destructive/40 bg-destructive/10 rounded p-3 mb-3">
           {smartErr.includes('索引为空') ? (
             <>智能检索尚未建索引。去 <Link to="/rag" className="text-primary underline">RAG 管理</Link> 下载模型并构建索引。</>
           ) : (
@@ -340,12 +341,13 @@ export default function Search() {
         </ul>
       )}
       {mode === 'smart' && smart && (smart.total ?? smart.hits.length) > smart.hits.length && (
-        <button
-          className="mt-3 w-full text-xs px-3 py-2 rounded border border-border hover:bg-accent text-muted-foreground"
+        <Button
+          variant="outline"
+          className="mt-3 w-full text-xs text-muted-foreground"
           onClick={() => setSmartLimit((n) => Math.min(500, n * 2))}
         >
           显示更多（还有 {(smart.total ?? 0) - smart.hits.length} 段）
-        </button>
+        </Button>
       )}
 
       {mode === 'exact' && (

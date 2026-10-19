@@ -16,10 +16,12 @@ import { JsonViewer } from '@/components/JsonViewer';
 import { WordReader } from '@/components/WordReader';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
 import { extIcon } from '@/lib/extIcon';
+import { Button } from '@/components/ui/button';
+import { PageLoading, PageError } from '@/components/ui-states';
 import type { DocLink } from '@/lib/api';
 import type { EditorView } from '@codemirror/view';
 import {
-  Pencil, Pin, PinOff, ListTree, Link2, Search, X, Settings2, ChevronUp, AlertCircle,
+  Pencil, Pin, PinOff, ListTree, Link2, Search, X, Settings2, ChevronUp,
   Save, AlertTriangle, CheckCircle2, Columns2, ArrowLeft, ArrowRight,
 } from 'lucide-react';
 
@@ -513,23 +515,20 @@ export default function Read() {
 
   if (error) {
     return (
-      <div className="max-w-xl mx-auto py-16 px-4 text-center">
-        <AlertCircle className="w-10 h-10 mx-auto text-amber-600 mb-3" />
-        <h1 className="text-lg font-bold mb-2">无法打开文件</h1>
-        <p className="text-sm text-muted-foreground mb-1 mono">{relPath}</p>
-        <p className="text-sm text-muted-foreground mb-6">{error.message}</p>
-        <div className="flex gap-2 justify-center">
-          <Link to="/browse" className="px-4 py-2 rounded border border-border text-sm hover:bg-accent">浏览目录</Link>
-          <Link to={'/search?q=' + encodeURIComponent(relPath.split('/').pop() || '')} className="px-4 py-2 rounded bg-primary text-primary-foreground text-sm">
-            搜索同名文件
-          </Link>
-        </div>
-      </div>
+      <PageError
+        title="无法打开文件"
+        detail={<><p className="mono">{relPath}</p><p>{error.message}</p></>}
+      >
+        <Button variant="outline" asChild><Link to="/browse">浏览目录</Link></Button>
+        <Button asChild>
+          <Link to={'/search?q=' + encodeURIComponent(relPath.split('/').pop() || '')}>搜索同名文件</Link>
+        </Button>
+      </PageError>
     );
   }
 
   if (!file) {
-    return <div className="py-20 text-center text-sm text-muted-foreground">加载中…</div>;
+    return <PageLoading />;
   }
 
   const crumbs = relPath.split('/');
@@ -554,11 +553,11 @@ export default function Read() {
               <span
                 className={`text-xs px-2 py-0.5 rounded-full border shrink-0 ${
                   saveState === 'dirty'
-                    ? 'border-amber-400 text-amber-700 dark:text-amber-400'
+                    ? 'border-warning/60 text-warning'
                     : saveState === 'saved'
-                      ? 'border-green-400 text-green-700 dark:text-green-400'
+                      ? 'border-success/60 text-success'
                       : saveState === 'error'
-                        ? 'border-red-400 text-red-700 dark:text-red-400'
+                        ? 'border-destructive/60 text-destructive'
                         : 'border-border text-muted-foreground'
                 }`}
               >
@@ -568,31 +567,34 @@ export default function Read() {
                 {saveState === 'error' && '保存失败'}
                 {saveState === 'clean' && '编辑中'}
               </span>
-              <button
-                className="text-xs px-2.5 py-1.5 rounded border border-border hover:bg-accent disabled:opacity-40 flex items-center gap-1 shrink-0"
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs shrink-0"
                 disabled={!dirty}
                 onClick={() => doSave()}
                 title="Ctrl+S"
               >
                 <Save className="w-3.5 h-3.5" /> 保存
-              </button>
-              <button
-                className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 flex items-center gap-1 shrink-0"
+              </Button>
+              <Button
+                size="sm"
+                className="text-xs shrink-0"
                 onClick={() => finishEdit()}
                 title="保存并回到阅读 (Ctrl+E)"
               >
                 <CheckCircle2 className="w-3.5 h-3.5" /> 完成
-              </button>
+              </Button>
               {saveMsg && (
                 <span
-                  className={`text-xs shrink-0 max-w-[30vw] truncate ${saveState === 'saved' ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}
+                  className={`text-xs shrink-0 max-w-[30vw] truncate ${saveState === 'saved' ? 'text-success' : 'text-destructive'}`}
                   title={saveMsg}
                 >
                   {saveMsg}
                 </span>
               )}
               <button
-                className="p-1.5 rounded hover:bg-accent text-muted-foreground shrink-0"
+                className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground shrink-0"
                 title="打开完整编辑器（源码 / 分栏 / 预览）"
                 onClick={() => {
                   const sc = scrollRef.current;
@@ -607,7 +609,7 @@ export default function Read() {
           ) : (
           <div className="bg-card border border-border rounded-lg shadow-sm p-1.5 flex items-center gap-2 flex-wrap">
             <button
-              className="p-1.5 rounded hover:bg-accent text-muted-foreground disabled:opacity-30"
+              className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground disabled:opacity-30"
               disabled={navDepth.idx <= 0}
               onClick={() => navigate(-1)}
               title="后退：上一个文档（Alt+← / ⌘[）"
@@ -615,7 +617,7 @@ export default function Read() {
               <ArrowLeft className="w-4 h-4" />
             </button>
             <button
-              className="p-1.5 rounded hover:bg-accent text-muted-foreground disabled:opacity-30"
+              className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground disabled:opacity-30"
               disabled={navDepth.idx >= navDepth.max}
               onClick={() => navigate(1)}
               title="前进（Alt+→ / ⌘]）"
@@ -640,21 +642,21 @@ export default function Read() {
               ))}
             </nav>
             <div className="flex-1" />
-            <button className="p-1.5 rounded hover:bg-accent text-muted-foreground" title="文内查找 (Ctrl+F)" onClick={() => setFindOpen(true)}>
+            <button className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground" title="文内查找 (Ctrl+F)" onClick={() => setFindOpen(true)}>
               <Search className="w-4 h-4" />
             </button>
-            <button className="p-1.5 rounded hover:bg-accent text-muted-foreground" title="阅读设置" onClick={() => setShowPrefs(!showPrefs)}>
+            <button className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground" title="阅读设置" onClick={() => setShowPrefs(!showPrefs)}>
               <Settings2 className="w-4 h-4" />
             </button>
             <button
-              className="p-1.5 rounded hover:bg-accent text-muted-foreground"
+              className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground"
               title={pinned ? '取消固定' : '固定到常用入口'}
               onClick={togglePin}
             >
               {pinned ? <PinOff className="w-4 h-4 text-primary" /> : <Pin className="w-4 h-4" />}
             </button>
             <button
-              className="p-1.5 rounded hover:bg-accent text-muted-foreground"
+              className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground"
               title="反向引用"
               onClick={() => setShowBacklinks(!showBacklinks)}
             >
@@ -664,13 +666,15 @@ export default function Read() {
             {file.readonly ? (
               <span className="text-xs text-muted-foreground border border-dashed border-border rounded px-2 py-1">只读预览</span>
             ) : (
-              <button
-                className="text-xs px-3 py-1.5 rounded border border-border hover:border-primary hover:text-primary flex items-center gap-1"
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs hover:border-primary hover:text-primary"
                 onClick={enterEdit}
                 title="进入编辑 (Ctrl+E)"
               >
                 <Pencil className="w-3.5 h-3.5" /> 编辑
-              </button>
+              </Button>
             )}
           </div>
           )}
@@ -692,7 +696,7 @@ export default function Read() {
                 placeholder="在当前文档内查找…（回车下一个）"
                 className="flex-1 text-sm bg-transparent outline-none"
               />
-              <button className="p-1 rounded hover:bg-accent" onClick={() => { setFindOpen(false); setFindQ(''); }}>
+              <button className="p-1 rounded hover:bg-accent transition-colors" onClick={() => { setFindOpen(false); setFindQ(''); }}>
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -706,7 +710,7 @@ export default function Read() {
                 {(['serif', 'sans', 'mono'] as const).map((f) => (
                   <button
                     key={f}
-                    className={`px-2 py-1 rounded border ${prefs.font === f ? 'border-primary text-primary' : 'border-border hover:bg-accent'}`}
+                    className={`px-2 py-1 rounded border ${prefs.font === f ? 'border-primary text-primary' : 'border-border hover:bg-accent transition-colors'}`}
                     onClick={() => update({ font: f })}
                   >
                     {f === 'serif' ? '衬线' : f === 'sans' ? '无衬线' : '等宽'}
@@ -716,7 +720,7 @@ export default function Read() {
                 {(['light', 'dark'] as const).map((t) => (
                   <button
                     key={t}
-                    className={`px-2 py-1 rounded border ${prefs.theme === t ? 'border-primary text-primary' : 'border-border hover:bg-accent'}`}
+                    className={`px-2 py-1 rounded border ${prefs.theme === t ? 'border-primary text-primary' : 'border-border hover:bg-accent transition-colors'}`}
                     onClick={() => update({ theme: t })}
                   >
                     {t === 'light' ? '浅色' : '深色'}
@@ -725,9 +729,9 @@ export default function Read() {
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-muted-foreground w-14">字号</span>
-                <button className="px-2 py-1 rounded border border-border hover:bg-accent" onClick={() => update({ fontSize: Math.max(14, prefs.fontSize - 1) })}>A−</button>
+                <button className="px-2 py-1 rounded border border-border hover:bg-accent transition-colors" onClick={() => update({ fontSize: Math.max(14, prefs.fontSize - 1) })}>A−</button>
                 <span className="stat-num w-12 text-center">{prefs.fontSize}px</span>
-                <button className="px-2 py-1 rounded border border-border hover:bg-accent" onClick={() => update({ fontSize: Math.min(32, prefs.fontSize + 1) })}>A＋</button>
+                <button className="px-2 py-1 rounded border border-border hover:bg-accent transition-colors" onClick={() => update({ fontSize: Math.min(32, prefs.fontSize + 1) })}>A＋</button>
                 <input
                   type="number" min={14} max={32} value={prefs.fontSize}
                   onChange={(e) => update({ fontSize: Math.min(32, Math.max(14, Number(e.target.value) || 17)) })}
@@ -752,7 +756,7 @@ export default function Read() {
                   onChange={(e) => update({ codeFontSize: Number(e.target.value) })} className="w-24" />
                 <span className="stat-num">{prefs.codeFontSize}px</span>
                 <div className="flex-1" />
-                <button className="px-2 py-1 rounded border border-border hover:bg-accent" onClick={reset}>恢复默认</button>
+                <button className="px-2 py-1 rounded border border-border hover:bg-accent transition-colors" onClick={reset}>恢复默认</button>
               </div>
               <div className="text-muted-foreground">阅读偏好即时生效，仅影响界面呈现，不会修改源文件。切换文档与重启后保留。</div>
             </div>
@@ -808,7 +812,7 @@ export default function Read() {
             <div className="mb-4">
               <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground mb-2">
                 <ListTree className="w-3.5 h-3.5" /> 文档目录
-                <button className="ml-auto p-0.5 rounded hover:bg-accent" onClick={() => setShowToc(false)}>
+                <button className="ml-auto p-0.5 rounded hover:bg-accent transition-colors" onClick={() => setShowToc(false)}>
                   <X className="w-3 h-3" />
                 </button>
               </div>
@@ -816,7 +820,7 @@ export default function Read() {
                 {toc.map((t) => (
                   <li key={t.key}>
                     <button
-                      className="text-xs text-left w-full py-0.5 px-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground truncate"
+                      className="text-xs text-left w-full py-0.5 px-1.5 rounded hover:bg-accent transition-colors text-muted-foreground hover:text-foreground truncate"
                       style={{ paddingLeft: (t.level - 1) * 12 + 6 }}
                       onClick={() => {
                         const sc = scrollRef.current;
@@ -863,17 +867,18 @@ export default function Read() {
               本文件有一份 {new Date(draftPrompt.savedAt).toLocaleString('zh-CN')} 的本地草稿（来自上次未完成的编辑）。
             </p>
             <div className="flex gap-2 justify-end">
-              <button
-                className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent"
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => {
                   clearDraft(dsId!, relPath);
                   setDraftPrompt(null);
                 }}
               >
                 丢弃草稿
-              </button>
-              <button
-                className="px-3 py-1.5 rounded bg-primary text-primary-foreground text-sm"
+              </Button>
+              <Button
+                size="sm"
                 onClick={() => {
                   const v = viewRef.current;
                   if (v) {
@@ -884,7 +889,7 @@ export default function Read() {
                 }}
               >
                 恢复草稿
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -895,7 +900,7 @@ export default function Read() {
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
           <div className="bg-card border border-border rounded-lg p-5 max-w-2xl w-full shadow-xl max-h-[80vh] flex flex-col">
             <h3 className="font-medium mb-2 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-amber-600" /> 文件已被外部修改
+              <AlertTriangle className="w-4 h-4 text-warning" /> 文件已被外部修改
             </h3>
             <p className="text-sm text-muted-foreground mb-3">
               磁盘上的文件在你打开后发生了变化。选择处理方式（你的修改已作为草稿保留在本地）：
@@ -903,11 +908,12 @@ export default function Read() {
             <div className="text-xs text-muted-foreground mb-2">磁盘当前内容预览（前 800 字符）：</div>
             <pre className="text-xs bg-muted rounded p-3 overflow-auto flex-1 whitespace-pre-wrap">{conflict.current.slice(0, 800)}</pre>
             <div className="flex gap-2 justify-end mt-4 flex-wrap">
-              <button className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent" onClick={() => setConflict(null)}>
+              <Button variant="outline" size="sm" onClick={() => setConflict(null)}>
                 继续编辑（暂不保存）
-              </button>
-              <button
-                className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent"
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => {
                   const v = viewRef.current;
                   if (v) v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: conflict.current } });
@@ -920,16 +926,17 @@ export default function Read() {
                 }}
               >
                 重新加载磁盘版本（放弃我的修改）
-              </button>
-              <button
-                className="px-3 py-1.5 rounded bg-destructive text-destructive-foreground text-sm"
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
                 onClick={async () => {
                   const ok = await doSaveWithMtime(conflict.currentMtimeMs);
                   if (ok) setConflict(null);
                 }}
               >
                 用我的修改覆盖磁盘版本
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -944,21 +951,21 @@ export default function Read() {
               当前修改尚未保存。无论选择哪种方式，草稿都会保留在本地，下次进入编辑时可恢复。
             </p>
             <div className="flex gap-2 justify-end flex-wrap">
-              <button className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent" onClick={() => blocker.reset()}>
+              <Button variant="outline" size="sm" onClick={() => blocker.reset()}>
                 继续编辑
-              </button>
-              <button className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent" onClick={() => blocker.proceed()}>
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => blocker.proceed()}>
                 放弃并离开
-              </button>
-              <button
-                className="px-3 py-1.5 rounded bg-primary text-primary-foreground text-sm"
+              </Button>
+              <Button
+                size="sm"
                 onClick={async () => {
                   const ok = await doSave();
                   if (ok) blocker.proceed();
                 }}
               >
                 保存并离开
-              </button>
+              </Button>
             </div>
           </div>
         </div>

@@ -2,6 +2,7 @@
 // 按钮高亮由光标处语法树探测（在粗体里 B 高亮，再点一次取消）。
 // mousedown 一律阻默认：点按钮不抢编辑器焦点、不动光标。
 import { useState } from 'react';
+import { Button } from '@/components/ui/button';
 import type { EditorView } from '@codemirror/view';
 import { undo, redo } from '@codemirror/commands';
 import {
@@ -162,19 +163,19 @@ export function FormatToolbar({ view, version }: { view: EditorView | null; vers
                   移除链接
                 </button>
               )}
-              <button type="button" className="px-2.5 py-1 rounded border border-border text-sm hover:bg-accent" onClick={() => setMenu(null)}>
+              <Button type="button" variant="outline" size="sm" onClick={() => setMenu(null)}>
                 取消
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="px-2.5 py-1 rounded bg-primary text-primary-foreground text-sm"
+                size="sm"
                 onClick={() => {
                   if (view) applyLink(view, linkInfo, linkText || selText || '链接', linkUrl);
                   setMenu(null);
                 }}
               >
                 确定
-              </button>
+              </Button>
             </div>
           </div>
         </>
@@ -205,19 +206,19 @@ export function FormatToolbar({ view, version }: { view: EditorView | null; vers
               }}
             />
             <div className="flex gap-2 justify-end">
-              <button type="button" className="px-2.5 py-1 rounded border border-border text-sm hover:bg-accent" onClick={() => setMenu(null)}>
+              <Button type="button" variant="outline" size="sm" onClick={() => setMenu(null)}>
                 取消
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="px-2.5 py-1 rounded bg-primary text-primary-foreground text-sm"
+                size="sm"
                 onClick={() => {
                   if (view) insertImage(view, imgAlt, imgSrc);
                   setMenu(null);
                 }}
               >
                 确定
-              </button>
+              </Button>
             </div>
           </div>
         </>

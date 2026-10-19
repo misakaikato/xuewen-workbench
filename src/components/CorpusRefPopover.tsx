@@ -91,7 +91,7 @@ export function CorpusRefPopover({
       >
         {err ? (
           <div className="flex items-start gap-2 text-muted-foreground">
-            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-warning" />
             <div>解析请求失败：{err}</div>
           </div>
         ) : !res ? (
@@ -109,7 +109,7 @@ export function CorpusRefPopover({
           </div>
         ) : (
           <div className="flex items-start gap-2 text-muted-foreground">
-            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-warning" />
             <div>
               <div className="text-foreground mb-1">未找到引用目标</div>
               <div className="text-xs">{res.reason || '该名称不在当前语料库中。'}</div>

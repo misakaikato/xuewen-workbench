@@ -16,7 +16,7 @@ export function MetaIssuesBadge({ issues }: { issues: MetaIssue[] }) {
     <Popover>
       <PopoverTrigger asChild>
         <button
-          className="ml-auto flex items-center gap-1 text-xs px-1.5 py-1 rounded text-amber-700 hover:bg-sidebar-accent"
+          className="ml-auto flex items-center gap-1 text-xs px-1.5 py-1 rounded text-warning hover:bg-sidebar-accent transition-colors"
           title="元数据文件问题"
         >
           <AlertTriangle className="w-3.5 h-3.5" />{issues.length}
@@ -26,7 +26,7 @@ export function MetaIssuesBadge({ issues }: { issues: MetaIssue[] }) {
         <div className="font-medium">元数据文件问题（不会自动处理）</div>
         {issues.map((it, i) => (
           <div key={i} className="border-t border-border pt-1.5 break-all">
-            <div className="font-medium text-amber-700">{LABEL[it.kind] ?? it.kind}</div>
+            <div className="font-medium text-warning">{LABEL[it.kind] ?? it.kind}</div>
             <div className="text-muted-foreground">{it.message}</div>
             {it.sidecar && <div>元数据：{it.sidecar}</div>}
             {it.sidecars && <div>元数据：{it.sidecars.join('，')}</div>}

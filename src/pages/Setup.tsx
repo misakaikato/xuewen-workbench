@@ -9,6 +9,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Button } from '@/components/ui/button';
 
 export default function Setup() {
   const { config, libraries, refreshConfig, removeLib } = useApp();
@@ -91,27 +92,26 @@ export default function Setup() {
           路径指向<b>本服务端所在电脑</b>的目录。浏览器本身没有磁盘权限，读写由本应用后端完成。
         </p>
         <div className="flex gap-2 mt-3">
-          <button
-            className="px-4 py-2 rounded border border-border text-sm hover:bg-accent flex items-center gap-1.5 disabled:opacity-50"
+          <Button
+            variant="outline"
             onClick={test}
             disabled={testing || !baseDir.trim()}
           >
             {testing && <Loader2 className="w-3.5 h-3.5 animate-spin" />} 测试连接
-          </button>
-          <button
-            className="px-4 py-2 rounded bg-primary text-primary-foreground text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
+          </Button>
+          <Button
             onClick={save}
             disabled={saving || !baseDir.trim()}
           >
             {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />} 添加并打开
-          </button>
+          </Button>
         </div>
         {result && (
           <div
             className={`mt-3 text-sm rounded border p-3 flex items-start gap-2 ${
               result.ok
-                ? 'border-green-300 bg-green-50 text-green-800 dark:bg-green-950/40 dark:border-green-800 dark:text-green-300'
-                : 'border-red-300 bg-red-50 text-red-800 dark:bg-red-950/40 dark:border-red-800 dark:text-red-300'
+                ? 'border-success/40 bg-success-soft text-success-foreground'
+                : 'border-destructive/40 bg-destructive/10 text-destructive'
             }`}
           >
             {result.ok ? <CheckCircle2 className="w-4 h-4 mt-0.5" /> : <XCircle className="w-4 h-4 mt-0.5" />}
@@ -154,11 +154,11 @@ export default function Setup() {
                     <div className="text-xs text-muted-foreground truncate" title={l.baseDir}>{l.baseDir}</div>
                     <div className="text-xs text-muted-foreground mt-0.5">
                       {libStatusText(l)}
-                      {errs > 0 && <span className="text-amber-700 dark:text-amber-400"> · {errs} 项访问失败</span>}
+                      {errs > 0 && <span className="text-warning"> · {errs} 项访问失败</span>}
                     </div>
                   </div>
                   <button
-                    className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-destructive shrink-0"
+                    className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground hover:text-destructive shrink-0"
                     title="从工作区移除（不删除磁盘文件）"
                     onClick={() => setRemoveTarget({ id: l.id, name: l.name })}
                   >

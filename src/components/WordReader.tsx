@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { api, rawFileUrl } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { Download, FilePlus2, AlertCircle, ZoomIn, ZoomOut } from 'lucide-react';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 
 export function WordReader({
@@ -49,7 +50,7 @@ export function WordReader({
   return (
     <div>
       {warning && (
-        <div className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded p-3 mb-3">
+        <div className="flex items-start gap-2 text-sm text-warning-foreground bg-warning-soft border border-warning/40 rounded p-3 mb-3">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>{warning}</span>
         </div>
@@ -57,14 +58,14 @@ export function WordReader({
       <div className="flex items-center gap-2 mb-3 flex-wrap text-xs">
         <div className="inline-flex rounded border border-border overflow-hidden">
           <button
-            className={`px-2.5 py-1 ${mode === 'original' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
+            className={`px-2.5 py-1 ${mode === 'original' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent transition-colors'}`}
             onClick={() => setMode('original')}
             title="保留服务端转换的原始排版，可缩放"
           >
             原版式
           </button>
           <button
-            className={`px-2.5 py-1 ${mode === 'reflow' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
+            className={`px-2.5 py-1 ${mode === 'reflow' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent transition-colors'}`}
             onClick={() => setMode('reflow')}
             title="应用阅读偏好（字体/字号/行距）"
           >
@@ -73,11 +74,11 @@ export function WordReader({
         </div>
         {mode === 'original' && (
           <div className="flex items-center gap-1">
-            <button className="p-1 rounded hover:bg-accent" onClick={() => setZoom((z) => Math.max(50, z - 10))}>
+            <button className="p-1 rounded hover:bg-accent transition-colors" onClick={() => setZoom((z) => Math.max(50, z - 10))}>
               <ZoomOut className="w-4 h-4" />
             </button>
             <span className="stat-num w-10 text-center">{zoom}%</span>
-            <button className="p-1 rounded hover:bg-accent" onClick={() => setZoom((z) => Math.min(200, z + 10))}>
+            <button className="p-1 rounded hover:bg-accent transition-colors" onClick={() => setZoom((z) => Math.min(200, z + 10))}>
               <ZoomIn className="w-4 h-4" />
             </button>
           </div>
@@ -86,18 +87,20 @@ export function WordReader({
         <span className="flex-1" />
         <a
           href={rawFileUrl(path)}
-          className="px-2.5 py-1 rounded border border-border hover:bg-accent flex items-center gap-1"
+          className={buttonVariants({ variant: 'outline', size: 'sm', className: 'text-xs' })}
         >
           <Download className="w-3.5 h-3.5" /> 下载原文件
         </a>
-        <button
-          className="px-2.5 py-1 rounded border border-border hover:bg-accent flex items-center gap-1 disabled:opacity-50"
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-xs"
           disabled={saving}
           onClick={saveAsMarkdown}
           title="将提取的正文另存为新的 Markdown 文件，不修改原文件"
         >
           <FilePlus2 className="w-3.5 h-3.5" /> {saving ? '另存中…' : '另存为 Markdown 副本'}
-        </button>
+        </Button>
       </div>
       {msg && <div className="text-xs text-muted-foreground mb-2">{msg}</div>}
       <div className="text-xs text-muted-foreground mb-3 border border-dashed border-border rounded p-2">

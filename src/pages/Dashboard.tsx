@@ -6,6 +6,7 @@ import { useApp } from '@/store/app';
 import type { StatsResponse, TopicEntry, ConceptEntry, FileEntry } from '@/lib/types';
 import { extIcon } from '@/lib/extIcon';
 import { Pin, PinOff, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 function fmtTime(ms: number) {
   return new Date(ms).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -46,9 +47,9 @@ export default function Dashboard() {
       <div className="max-w-xl mx-auto py-16 px-4 text-center">
         <h1 className="text-2xl font-bold mb-3">欢迎使用Workbench</h1>
         <p className="text-muted-foreground mb-6">先打开一个资料库（本机的语料目录），应用将自动发现其中的 Markdown、JSON 与 Word 文件；之后可以同时打开多个。</p>
-        <Link to="/setup" className="inline-block px-5 py-2.5 rounded bg-primary text-primary-foreground">
-          打开资料库
-        </Link>
+        <Button asChild>
+          <Link to="/setup">打开资料库</Link>
+        </Button>
       </div>
     );
   }
@@ -66,17 +67,19 @@ export default function Dashboard() {
             {config.status.watching ? ' · 自动监听已开启' : ' · 可手动重扫'}
           </div>
         </div>
-        <button
-          className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent flex items-center gap-1"
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-xs"
           onClick={() => rescan()}
         >
           <RefreshCw className="w-3.5 h-3.5" /> 重新扫描
-        </button>
+        </Button>
       </div>
 
       {(config.status.dirErrors.length > 0 || config.status.fileErrors.length > 0) && (
-        <div className="text-xs rounded border border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 p-3 flex gap-2">
-          <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+        <div className="text-xs rounded border border-warning/40 bg-warning-soft text-warning-foreground p-3 flex gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0 text-warning" />
           <div>
             {config.status.dirErrors.length + config.status.fileErrors.length} 项扫描失败（其余内容正常）：
             {[...config.status.dirErrors, ...config.status.fileErrors].slice(0, 3).map((e) => (

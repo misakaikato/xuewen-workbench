@@ -1,6 +1,7 @@
 // 聊天输入框：@-mention 文件自动补全 + 斜杠命令提示
 import { useEffect, useRef, useState } from 'react';
 import { Send, Square, AtSign } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
 import type { TreeNode } from '@/lib/types';
 
@@ -201,13 +202,13 @@ export function ChatInput({
           className="flex-1 resize-none px-3 py-2 rounded-lg border border-input bg-card text-sm disabled:opacity-50"
         />
         {busy ? (
-          <button className="px-3 py-2 rounded-lg border border-border hover:bg-accent flex items-center gap-1 text-sm" onClick={onStop}>
+          <Button variant="outline" className="rounded-lg" onClick={onStop}>
             <Square className="w-3.5 h-3.5" />停止
-          </button>
+          </Button>
         ) : (
-          <button className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40 flex items-center gap-1 text-sm" disabled={disabled || !value.trim()} onClick={onSend}>
+          <Button className="rounded-lg" disabled={disabled || !value.trim()} onClick={onSend}>
             <Send className="w-3.5 h-3.5" />发送
-          </button>
+          </Button>
         )}
       </div>
     </div>

@@ -28,6 +28,16 @@ module.exports = {
           DEFAULT: "hsl(var(--destructive) / <alpha-value>)",
           foreground: "hsl(var(--destructive-foreground) / <alpha-value>)",
         },
+        warning: {
+          DEFAULT: "hsl(var(--warning) / <alpha-value>)",
+          foreground: "hsl(var(--warning-foreground) / <alpha-value>)",
+          soft: "hsl(var(--warning-soft) / <alpha-value>)",
+        },
+        success: {
+          DEFAULT: "hsl(var(--success) / <alpha-value>)",
+          foreground: "hsl(var(--success-foreground) / <alpha-value>)",
+          soft: "hsl(var(--success-soft) / <alpha-value>)",
+        },
         muted: {
           DEFAULT: "hsl(var(--muted))",
           foreground: "hsl(var(--muted-foreground))",
@@ -65,6 +75,14 @@ module.exports = {
       boxShadow: {
         xs: "0 1px 2px 0 rgb(0 0 0 / 0.05)",
       },
+      transitionDuration: {
+        fast: "var(--dur-fast)",
+        med: "var(--dur-med)",
+        slow: "var(--dur-slow)",
+      },
+      transitionTimingFunction: {
+        signature: "var(--ease-signature)",
+      },
       keyframes: {
         "accordion-down": {
           from: { height: "0" },
@@ -78,11 +96,27 @@ module.exports = {
           "0%,70%,100%": { opacity: "1" },
           "20%,50%": { opacity: "0" },
         },
+        "fade-in": {
+          from: { opacity: "0" },
+          to: { opacity: "1" },
+        },
+        /* 路由过渡：fade + 4px 上移（DESIGN.md §7：位移不超 8px） */
+        "page-enter": {
+          from: { opacity: "0", transform: "translateY(4px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
+        },
+        "drawer-in": {
+          from: { transform: "translateX(-16px)", opacity: "0" },
+          to: { transform: "translateX(0)", opacity: "1" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "caret-blink": "caret-blink 1.25s ease-out infinite",
+        "fade-in": "fade-in var(--dur-med) var(--ease-signature)",
+        "page-enter": "page-enter var(--dur-med) var(--ease-signature)",
+        "drawer-in": "drawer-in var(--dur-med) var(--ease-signature)",
       },
     },
   },

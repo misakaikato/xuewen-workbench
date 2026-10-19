@@ -14,6 +14,7 @@ import {
   GitBranch, Download, Search, X, MessageSquareQuote, Brain, Gauge, ListChecks,
   PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash, RotateCcw, ChevronDown, ShieldCheck, ShieldAlert, Eye,
 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 interface Conv { id: string; title: string; updatedAt: string; busy?: boolean }
 interface Msg extends AgentMessage { streaming?: boolean; error?: boolean; editing?: boolean }
@@ -260,9 +261,9 @@ export default function AgentChat() {
         <>
           <aside className="shrink-0 border-r border-border flex flex-col min-h-0 bg-sidebar" style={{ width: sidebarW }}>
             <div className="p-3 border-b border-sidebar-border flex items-center gap-2">
-              <button className="flex-1 flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:opacity-90 font-medium" onClick={newConv}>
+              <Button className="flex-1 text-xs rounded-lg font-medium" onClick={newConv}>
                 <Plus className="w-4 h-4" />新对话
-              </button>
+              </Button>
 
             </div>
             <div className="flex-1 overflow-auto p-2 space-y-0.5">
@@ -290,22 +291,22 @@ export default function AgentChat() {
       <div className="flex-1 min-w-0 flex flex-col">
         {/* 顶栏 */}
         <div className="shrink-0 px-4 py-2.5 border-b border-border flex items-center gap-2.5 flex-wrap bg-card">
-          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground shrink-0" onClick={() => setSidebarOpen((v) => !v)} title={sidebarOpen ? '折叠对话列表' : '展开对话列表'}>
+          <button className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground shrink-0" onClick={() => setSidebarOpen((v) => !v)} title={sidebarOpen ? '折叠对话列表' : '展开对话列表'}>
             {sidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
           </button>
           <div className="flex items-center gap-1.5">
             <Sparkles className="w-4 h-4 text-primary" />
             <span className="text-sm font-semibold">智能助手</span>
           </div>
-          {!ep?.ready && <Link to="/rag" className="text-xs text-amber-600 underline">去配置</Link>}
+          {!ep?.ready && <Link to="/rag" className="text-xs text-warning underline">去配置</Link>}
           <span className="flex-1" />
           {active && (
             <>
-              <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="搜索 (Ctrl+F)" onClick={() => setSearchOpen(true)}><Search className="w-3.5 h-3.5" /></button>
-              <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="导出" onClick={doExport}><Download className="w-3.5 h-3.5" /></button>
+              <button className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground" title="搜索 (Ctrl+F)" onClick={() => setSearchOpen(true)}><Search className="w-3.5 h-3.5" /></button>
+              <button className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground" title="导出" onClick={doExport}><Download className="w-3.5 h-3.5" /></button>
             </>
           )}
-          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="Agent 设置" onClick={() => setSettingsOpen(true)}>
+          <button className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground" title="Agent 设置" onClick={() => setSettingsOpen(true)}>
             <Settings2 className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -316,7 +317,7 @@ export default function AgentChat() {
             <Search className="w-3.5 h-3.5 text-muted-foreground" />
             <input autoFocus value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="搜索…" className="flex-1 bg-transparent text-sm outline-none" />
             <span className="text-xs text-muted-foreground">{searchHits} 条</span>
-            <button onClick={() => { setSearchOpen(false); setSearchQ(''); }} className="p-1 rounded hover:bg-accent"><X className="w-3.5 h-3.5" /></button>
+            <button onClick={() => { setSearchOpen(false); setSearchQ(''); }} className="p-1 rounded hover:bg-accent transition-colors"><X className="w-3.5 h-3.5" /></button>
           </div>
         )}
 
@@ -342,31 +343,31 @@ export default function AgentChat() {
               return (
                 <div key={i} className={m.role === 'user' ? 'flex justify-end' : ''}>
                   {m.role === 'user' ? (
-                    <div className={`max-w-[80%] group/msg ${isHit ? 'ring-2 ring-amber-400 rounded-2xl' : ''}`}>
+                    <div className={`max-w-[80%] group/msg ${isHit ? 'ring-2 ring-warning/60 rounded-2xl' : ''}`}>
                       {m.editing ? (
                         <div className="rounded-2xl border border-primary/40 bg-card p-3">
                           <textarea autoFocus defaultValue={m.text} rows={3} className="w-full text-sm bg-transparent outline-none resize-none" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); editMsg(i, (e.target as HTMLTextAreaElement).value); } if (e.key === 'Escape') setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x))); }} />
                           <div className="flex gap-1.5 justify-end mt-1">
-                            <button className="text-xs px-2 py-1 rounded border" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x)))}>取消</button>
-                            <button className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground" onClick={(e) => editMsg(i, (e.target as HTMLElement).parentElement?.previousElementSibling?.textContent || '')}>保存</button>
+                            <Button variant="outline" size="sm" className="text-xs" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x)))}>取消</Button>
+                            <Button size="sm" className="text-xs" onClick={(e) => editMsg(i, (e.target as HTMLElement).parentElement?.previousElementSibling?.textContent || '')}>保存</Button>
                           </div>
                         </div>
                       ) : (
                         <>
                           <div className="rounded-2xl rounded-br-md px-4 py-2.5 text-sm whitespace-pre-wrap break-words bg-primary text-primary-foreground leading-relaxed">{m.text}</div>
                           <div className="opacity-0 group-hover/msg:opacity-100 flex justify-end gap-0.5 mt-0.5 transition-opacity">
-                            <button className="p-1 rounded hover:bg-accent text-muted-foreground" title="重新生成此后内容" onClick={() => regenerate(i)}><RotateCcw className="w-3 h-3" /></button>
-                            <button className="p-1 rounded hover:bg-accent text-muted-foreground" title="编辑" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: true } : x)))}><Pencil className="w-3 h-3" /></button>
-                            <button className="p-1 rounded hover:bg-accent text-muted-foreground" title="删除" onClick={() => deleteMsg(i)}><Trash className="w-3 h-3" /></button>
+                            <button className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground" title="重新生成此后内容" onClick={() => regenerate(i)}><RotateCcw className="w-3 h-3" /></button>
+                            <button className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground" title="编辑" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: true } : x)))}><Pencil className="w-3 h-3" /></button>
+                            <button className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground" title="删除" onClick={() => deleteMsg(i)}><Trash className="w-3 h-3" /></button>
                           </div>
                         </>
                       )}
                     </div>
                   ) : (
-                    <div className={`max-w-full group/msg rounded-lg ${isHit ? 'ring-2 ring-amber-400 ring-offset-2' : ''}`}>
+                    <div className={`max-w-full group/msg rounded-lg ${isHit ? 'ring-2 ring-warning/60 ring-offset-2' : ''}`}>
                       {m.thinking && <ThinkingBlock text={m.thinking} streaming={m.streaming && !m.text} />}
                       {(m.tools || []).map((t, j) => <ToolCard key={j} t={t as ToolItem} />)}
-                      {m.text && <div className={m.error ? 'text-red-600' : ''}><MarkdownMsg text={m.text} richRefs={richRefs} /></div>}
+                      {m.text && <div className={m.error ? 'text-destructive' : ''}><MarkdownMsg text={m.text} richRefs={richRefs} /></div>}
                       {m.streaming && !m.text && !m.thinking && !(m.tools || []).length && (
                         <div className="flex items-center gap-1.5 py-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
@@ -376,21 +377,21 @@ export default function AgentChat() {
                       )}
                       {!m.streaming && m.text && (
                         <div className="opacity-0 group-hover/msg:opacity-100 flex items-center gap-0.5 mt-1 transition-opacity">
-                          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="复制" onClick={() => copyMsg(i)}>
-                            {copied === i ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+                          <button className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground" title="复制" onClick={() => copyMsg(i)}>
+                            {copied === i ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
                           </button>
-                          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="分叉" onClick={() => fork(i)}><GitBranch className="w-3.5 h-3.5" /></button>
-                          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="重新生成此回复" onClick={() => regenerate(i)}><RotateCcw className="w-3.5 h-3.5" /></button>
-                          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="编辑" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: true } : x)))}><Pencil className="w-3.5 h-3.5" /></button>
-                          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="删除" onClick={() => deleteMsg(i)}><Trash className="w-3.5 h-3.5" /></button>
+                          <button className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground" title="分叉" onClick={() => fork(i)}><GitBranch className="w-3.5 h-3.5" /></button>
+                          <button className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground" title="重新生成此回复" onClick={() => regenerate(i)}><RotateCcw className="w-3.5 h-3.5" /></button>
+                          <button className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground" title="编辑" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: true } : x)))}><Pencil className="w-3.5 h-3.5" /></button>
+                          <button className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground" title="删除" onClick={() => deleteMsg(i)}><Trash className="w-3.5 h-3.5" /></button>
                         </div>
                       )}
                       {m.editing && (
                         <div className="mt-2 rounded-lg border border-primary/40 bg-card p-3">
                           <textarea autoFocus defaultValue={m.text} rows={6} className="w-full text-sm bg-transparent outline-none resize-none font-mono" onKeyDown={(e) => { if (e.key === 'Escape') setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x))); }} />
                           <div className="flex gap-1.5 justify-end mt-1">
-                            <button className="text-xs px-2 py-1 rounded border" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x)))}>取消</button>
-                            <button className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground" onClick={(e) => editMsg(i, (e.target as HTMLElement).parentElement?.previousElementSibling?.textContent || '')}>保存</button>
+                            <Button variant="outline" size="sm" className="text-xs" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x)))}>取消</Button>
+                            <Button size="sm" className="text-xs" onClick={(e) => editMsg(i, (e.target as HTMLElement).parentElement?.previousElementSibling?.textContent || '')}>保存</Button>
                           </div>
                         </div>
                       )}
@@ -421,7 +422,7 @@ export default function AgentChat() {
               {modelOpen && (
                 <div className="absolute bottom-full left-0 mb-1 bg-card border rounded-lg shadow-lg p-1 z-30 min-w-44 max-w-[90vw] max-h-56 overflow-auto">
                   {modelList.map((m) => (
-                    <button key={m} className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-mono ${m === ep?.model ? 'bg-accent text-primary' : 'hover:bg-accent'}`}
+                    <button key={m} className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-mono ${m === ep?.model ? 'bg-accent text-primary' : 'hover:bg-accent transition-colors'}`}
                       onClick={async () => { await api.agentSettings({ model: m }); setModelOpen(false); refresh(); }}>
                       {m}
                     </button>
@@ -434,7 +435,7 @@ export default function AgentChat() {
             <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
               {(['off', 'low', 'medium', 'high'] as const).map((lv) => (
                 <button key={lv}
-                  className={`px-1.5 py-0.5 rounded text-[11px] ${ep?.thinkingLevel === lv ? 'bg-violet-500/15 text-violet-600 font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+                  className={`px-1.5 py-0.5 rounded text-[11px] transition-colors ${ep?.thinkingLevel === lv ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground'}`}
                   onClick={async () => { await api.agentSettings({ thinkingLevel: lv }); refresh(); }}>
                   {lv === 'off' ? '思考关' : lv === 'low' ? '低' : lv === 'medium' ? '中' : '高'}
                 </button>
@@ -462,19 +463,19 @@ export default function AgentChat() {
         {/* 确认对话框 */}
         {confirmReq && (
           <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-            <div className="bg-card border border-amber-400/50 rounded-2xl shadow-2xl p-5 w-96 max-w-[90vw]">
+            <div className="bg-card border border-warning/50 rounded-2xl shadow-2xl p-5 w-96 max-w-[90vw]">
               <h3 className="text-sm font-semibold flex items-center gap-2 mb-2">
-                <ShieldAlert className="w-4 h-4 text-amber-500" />
+                <ShieldAlert className="w-4 h-4 text-warning" />
                 确认执行：{confirmReq.tool}
               </h3>
               <pre className="text-xs bg-muted rounded-lg p-2.5 max-h-40 overflow-auto mb-3">{JSON.stringify(confirmReq.args, null, 2)}</pre>
               <div className="flex gap-2 justify-end">
-                <button className="px-3 py-1.5 rounded-lg border text-sm hover:bg-accent" onClick={async () => { await api.agentConfirm(confirmReq.id, false); setConfirmReq(null); }}>
+                <Button variant="outline" size="sm" onClick={async () => { await api.agentConfirm(confirmReq.id, false); setConfirmReq(null); }}>
                   取消
-                </button>
-                <button className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm" onClick={async () => { await api.agentConfirm(confirmReq.id, true); setConfirmReq(null); }}>
+                </Button>
+                <Button size="sm" onClick={async () => { await api.agentConfirm(confirmReq.id, true); setConfirmReq(null); }}>
                   确认执行
-                </button>
+                </Button>
               </div>
             </div>
           </div>
@@ -484,7 +485,7 @@ export default function AgentChat() {
       {/* 后台完成 toast */}
       {toast && (
         <div className="fixed bottom-24 right-4 z-50 bg-card border border-primary/30 rounded-xl shadow-lg px-4 py-2.5 text-sm flex items-center gap-2">
-          <Check className="w-4 h-4 text-green-600" />
+          <Check className="w-4 h-4 text-success" />
           {toast}
           <button className="ml-2 text-xs text-primary underline" onClick={() => {
             const c = conversations.find((x) => toast.includes(x.title || ''));

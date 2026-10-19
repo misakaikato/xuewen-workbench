@@ -234,11 +234,11 @@ async function main() {
   await exec(`localStorage.setItem('wb:draft:${dsId}:top.md', JSON.stringify({ content: '# 草稿', savedAt: Date.now() })); true`);
   await win.loadURL(BASE + '/read/top.md');
   await until(`!!document.querySelector('[data-tpath="top.md"]')`);
-  check('草稿徽标出现在文件行', await until(`!!document.querySelector('[data-tpath="top.md"] svg.text-amber-600')`));
+  check('草稿徽标出现在文件行', await until(`!!document.querySelector('[data-tpath="top.md"] svg.text-warning')`));
   fs.writeFileSync(path.join(corpus, 'f00.md.meta.json'), '{bad json');
   await exec(`(() => { const c = document.querySelector('aside .overflow-auto'); if (c) c.scrollTop = 0; return true; })()`);
   await sleep(250);
-  check('元数据问题徽标出现在文件行', await until(`!!document.querySelector('[data-tpath="f00.md"] svg.text-red-500')`, 20000));
+  check('元数据问题徽标出现在文件行', await until(`!!document.querySelector('[data-tpath="f00.md"] svg.text-destructive')`, 20000));
 
   // ---------- 11. 虚拟滚动 ----------
   console.log('== 11. 虚拟滚动 ==');

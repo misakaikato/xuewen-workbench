@@ -23,6 +23,13 @@
     --accent-foreground: 30 10% 18%;
     --destructive: 0 70% 45%;
     --destructive-foreground: 42 30% 97%;
+    /* 状态色（DESIGN.md §2）：warning/success 替代硬编码 amber/green；soft 为横幅底色 */
+    --warning: 32 90% 38%;
+    --warning-foreground: 30 80% 26%;
+    --warning-soft: 40 85% 93%;
+    --success: 150 50% 32%;
+    --success-foreground: 150 55% 22%;
+    --success-soft: 150 40% 93%;
     --border: 38 12% 85%;
     --input: 38 12% 82%;
     --ring: 8 55% 40%;
@@ -51,6 +58,12 @@
     --rd-code-size: 14px;
     --rd-bg: transparent;
     --rd-fg: inherit;
+
+    /* 动效 token（DESIGN.md §7）：时长三档 + 签名缓动，禁止刻度外取值 */
+    --dur-fast: 120ms;  /* hover 变色、微交互 */
+    --dur-med: 200ms;   /* 折叠、抽屉、路由过渡 */
+    --dur-slow: 320ms;  /* 弹窗、横幅等大块面入场 */
+    --ease-signature: cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   /* A 宣纸 · 书卷：暖纸底、朱砂强调、衬线界面（对应原型 A.html） */
@@ -71,6 +84,12 @@
     --accent-foreground: 33 21.6% 10%;
     --destructive: 0 70% 45%;
     --destructive-foreground: 40 72.4% 94.3%;
+    --warning: 34 88% 36%;
+    --warning-foreground: 32 82% 24%;
+    --warning-soft: 42 72% 89.5%;
+    --success: 152 48% 30%;
+    --success-foreground: 152 52% 20%;
+    --success-soft: 140 32% 90%;
     --border: 40 36.4% 79%;              /* #ddd0b6 */
     --input: 39 31.5% 71.4%;             /* #cdbd9f */
     --ring: 9 66.4% 42%;
@@ -120,6 +139,12 @@
     --accent-foreground: 228 10.2% 9.6%;
     --destructive: 0 70% 45%;
     --destructive-foreground: 0 0% 100%;
+    --warning: 32 95% 38%;
+    --warning-foreground: 30 85% 26%;
+    --warning-soft: 40 92% 94%;
+    --success: 155 55% 32%;
+    --success-foreground: 155 60% 22%;
+    --success-soft: 152 45% 94%;
     --border: 240 9.5% 91.8%;            /* #e8e8ec */
     --input: 231 11.1% 87.6%;            /* #dcdde3 */
     --ring: 243 75.4% 58.6%;
@@ -168,6 +193,12 @@
     --accent-foreground: 40 15% 88%;
     --destructive: 0 60% 50%;
     --destructive-foreground: 40 15% 88%;
+    --warning: 36 82% 58%;
+    --warning-foreground: 38 75% 68%;
+    --warning-soft: 36 40% 19%;
+    --success: 150 45% 52%;
+    --success-foreground: 150 50% 65%;
+    --success-soft: 150 28% 18%;
     --border: 30 6% 24%;
     --input: 30 6% 28%;
     --ring: 10 60% 55%;
@@ -211,6 +242,13 @@
     --accent-foreground: 41 43.9% 88.8%;
     --destructive: 0 62% 58%;
     --destructive-foreground: 0 0% 98%;
+    /* C 主题 primary 是鎏金，warning 往橙走以示区分 */
+    --warning: 28 80% 58%;
+    --warning-foreground: 30 85% 68%;
+    --warning-soft: 28 35% 19%;
+    --success: 150 40% 52%;
+    --success-foreground: 150 45% 65%;
+    --success-soft: 150 25% 17%;
     --border: 231 7.7% 17.8%;            /* #2a2b31 */
     --input: 233 7.4% 23.7%;             /* #383941 */
     --ring: 40 55.4% 60.4%;

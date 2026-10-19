@@ -27,6 +27,8 @@ import { CorpusRefPopover, type CorpusRefRequest } from '@/components/CorpusRefP
 import { detectLineSeparator } from '@/components/editor/lineSeparator';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
 import { Save, Undo2, AlertTriangle, X, CheckCircle2, Columns2, Eye, Code2, Wand2, Link2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { PageLoading, PageError } from '@/components/ui-states';
 
 type SaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
 type Mode = 'live' | 'source' | 'preview' | 'split';
@@ -525,16 +527,12 @@ export default function Edit() {
 
   if (error) {
     return (
-      <div className="max-w-xl mx-auto py-16 text-center">
-        <AlertTriangle className="w-10 h-10 mx-auto text-amber-600 mb-3" />
-        <p className="text-sm text-muted-foreground mb-4">{error}</p>
-        <button className="px-4 py-2 rounded border border-border text-sm hover:bg-accent" onClick={() => navigate(-1)}>
-          返回
-        </button>
-      </div>
+      <PageError title="无法打开文件" detail={<p>{error}</p>}>
+        <Button variant="outline" onClick={() => navigate(-1)}>返回</Button>
+      </PageError>
     );
   }
-  if (!file) return <div className="py-20 text-center text-sm text-muted-foreground">加载中…</div>;
+  if (!file) return <PageLoading />;
 
   const editorEl = (
     <CodeMirrorEditor
@@ -558,11 +556,11 @@ export default function Edit() {
         <span
           className={`text-xs px-2 py-0.5 rounded-full border ${
             saveState === 'dirty'
-              ? 'border-amber-400 text-amber-700 dark:text-amber-400'
+              ? 'border-warning/60 text-warning'
               : saveState === 'saved'
-                ? 'border-green-400 text-green-700 dark:text-green-400'
+                ? 'border-success/60 text-success'
                 : saveState === 'error'
-                  ? 'border-red-400 text-red-700 dark:text-red-400'
+                  ? 'border-destructive/60 text-destructive'
                   : 'border-border text-muted-foreground'
           }`}
         >
@@ -587,8 +585,10 @@ export default function Edit() {
           </div>
         )}
         {isJson && (
-          <button
-            className="text-xs px-2.5 py-1 rounded border border-border hover:bg-accent"
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs"
             onClick={() => {
               try {
                 const t = JSON.stringify(JSON.parse(buffer()), null, 2).split('\n').join(lineSep);
@@ -601,7 +601,7 @@ export default function Edit() {
             }}
           >
             格式化
-          </button>
+          </Button>
         )}
         {!isJson && (
           <button
@@ -612,33 +612,38 @@ export default function Edit() {
             <Link2 className="w-3.5 h-3.5" /> 反向链接
           </button>
         )}
-        <button
-          className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent disabled:opacity-40 flex items-center gap-1"
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-xs"
           disabled={!dirty}
           onClick={() => doSave(false)}
           title="Ctrl+S"
         >
           <Save className="w-3.5 h-3.5" /> 保存
-        </button>
-        <button
-          className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40 flex items-center gap-1"
+        </Button>
+        <Button
+          size="sm"
+          className="text-xs"
           disabled={!dirty}
           onClick={() => doSave(true)}
         >
           保存并返回阅读
-        </button>
-        <button
-          className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent flex items-center gap-1"
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-xs"
           onClick={() => navigate('/read/' + encPath(relPath), { state: { wbScrollRatio: editorRatio() } })}
         >
           <Undo2 className="w-3.5 h-3.5" /> 返回阅读
-        </button>
+        </Button>
       </div>
 
       {saveMsg && (
         <div
           className={`shrink-0 text-xs px-3 py-1.5 flex items-center gap-1.5 ${
-            saveState === 'saved' ? 'bg-green-50 text-green-800 dark:bg-green-950/40 dark:text-green-300' : 'bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-300'
+            saveState === 'saved' ? 'bg-success-soft text-success-foreground' : 'bg-destructive/10 text-destructive'
           }`}
         >
           {saveState === 'saved' ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
@@ -646,7 +651,7 @@ export default function Edit() {
         </div>
       )}
       {jsonError && (
-        <div className="shrink-0 text-xs px-3 py-1.5 bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+        <div className="shrink-0 text-xs px-3 py-1.5 bg-warning-soft text-warning-foreground">
           JSON 语法错误：{jsonError}
         </div>
       )}
@@ -698,17 +703,18 @@ export default function Edit() {
               本文件有一份 {new Date(draftPrompt.savedAt).toLocaleString('zh-CN')} 的本地草稿（来自上次未完成的编辑）。
             </p>
             <div className="flex gap-2 justify-end">
-              <button
-                className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent"
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => {
                   clearDraft(dsId!, relPath);
                   setDraftPrompt(null);
                 }}
               >
                 丢弃草稿
-              </button>
-              <button
-                className="px-3 py-1.5 rounded bg-primary text-primary-foreground text-sm"
+              </Button>
+              <Button
+                size="sm"
                 onClick={() => {
                   replaceBuffer(draftPrompt.content);
                   setSaveState('dirty');
@@ -716,7 +722,7 @@ export default function Edit() {
                 }}
               >
                 恢复草稿
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -727,7 +733,7 @@ export default function Edit() {
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
           <div className="bg-card border border-border rounded-lg p-5 max-w-2xl w-full shadow-xl max-h-[80vh] flex flex-col">
             <h3 className="font-medium mb-2 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-amber-600" /> 文件已被外部修改
+              <AlertTriangle className="w-4 h-4 text-warning" /> 文件已被外部修改
             </h3>
             <p className="text-sm text-muted-foreground mb-3">
               磁盘上的文件在你打开后发生了变化。选择处理方式（你的修改已作为草稿保留在本地）：
@@ -735,11 +741,12 @@ export default function Edit() {
             <div className="text-xs text-muted-foreground mb-2">磁盘当前内容预览（前 800 字符）：</div>
             <pre className="text-xs bg-muted rounded p-3 overflow-auto flex-1 whitespace-pre-wrap">{conflict.current.slice(0, 800)}</pre>
             <div className="flex gap-2 justify-end mt-4 flex-wrap">
-              <button className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent flex items-center gap-1" onClick={() => setConflict(null)}>
+              <Button variant="outline" size="sm" onClick={() => setConflict(null)}>
                 <X className="w-3.5 h-3.5" /> 继续编辑（暂不保存）
-              </button>
-              <button
-                className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent"
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => {
                   replaceBuffer(conflict.current);
                   baseMtimeRef.current = conflict.currentMtimeMs;
@@ -750,13 +757,14 @@ export default function Edit() {
                 }}
               >
                 重新加载磁盘版本（放弃我的修改）
-              </button>
-              <button
-                className="px-3 py-1.5 rounded bg-destructive text-destructive-foreground text-sm"
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
                 onClick={() => doSave(false, conflict.currentMtimeMs)}
               >
                 用我的修改覆盖磁盘版本
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -771,24 +779,15 @@ export default function Edit() {
               当前修改尚未保存。无论选择哪种方式，草稿都会保留在本地，下次进入编辑时可恢复。
             </p>
             <div className="flex gap-2 justify-end flex-wrap">
-              <button
-                className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent"
-                onClick={() => blocker.reset()}
-              >
+              <Button variant="outline" size="sm" onClick={() => blocker.reset()}>
                 继续编辑
-              </button>
-              <button
-                className="px-3 py-1.5 rounded border border-border text-sm hover:bg-accent"
-                onClick={() => blocker.proceed()}
-              >
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => blocker.proceed()}>
                 放弃并离开
-              </button>
-              <button
-                className="px-3 py-1.5 rounded bg-primary text-primary-foreground text-sm"
-                onClick={() => setLeaveAction('save')}
-              >
+              </Button>
+              <Button size="sm" onClick={() => setLeaveAction('save')}>
                 保存并离开
-              </button>
+              </Button>
             </div>
           </div>
         </div>

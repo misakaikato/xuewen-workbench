@@ -31,7 +31,7 @@ export function ContextBar({ usage, contextWindow }: { usage: { input: number; o
   const total = usage.input + usage.output + usage.cacheWrite;
   const pct = Math.min(100, (total / contextWindow) * 100);
   const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-  const color = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-amber-500' : 'bg-primary';
+  const color = pct > 80 ? 'bg-destructive' : pct > 60 ? 'bg-warning' : 'bg-primary';
   return (
     <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
       <div className="w-24 h-1 rounded-full bg-muted overflow-hidden">

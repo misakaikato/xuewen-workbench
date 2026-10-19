@@ -125,11 +125,11 @@ export default function MetaImport() {
               {applied && <>；已写入 {applied.summary.written ?? 0}</>}
             </span>
           )}
-          {preview && dirty && <span className="text-xs text-amber-700 dark:text-amber-400">内容已变化，请重新预览</span>}
+          {preview && dirty && <span className="text-xs text-warning">内容已变化，请重新预览</span>}
         </div>
         {error && <p className="text-xs text-destructive break-all" role="alert">{error}</p>}
         {applied && (
-          <p className="text-xs text-green-700 dark:text-green-400">
+          <p className="text-xs text-success">
             已写入 {applied.summary.written ?? 0} 个旁注（新建 {applied.summary.create}，更新 {applied.summary.update}），错误 {applied.summary.errors} 个。
           </p>
         )}

@@ -15,9 +15,9 @@ export function ToolCard({ t }: { t: ToolItem }) {
   const [open, setOpen] = useState(false);
   const err = t.isError;
   return (
-    <div className={`text-xs border rounded ${err ? 'border-red-300 bg-red-50 dark:bg-red-950/20' : 'border-border bg-muted/40'} my-1`}>
+    <div className={`text-xs border rounded ${err ? 'border-destructive/40 bg-destructive/10' : 'border-border bg-muted/40'} my-1`}>
       <button className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left" onClick={() => setOpen((v) => !v)}>
-        <Wrench className={`w-3 h-3 shrink-0 ${err ? 'text-red-500' : 'text-muted-foreground'}`} />
+        <Wrench className={`w-3 h-3 shrink-0 ${err ? 'text-destructive' : 'text-muted-foreground'}`} />
         <span className="font-medium font-mono">{t.name}</span>
         {t.summary && <span className="text-muted-foreground truncate flex-1">{t.summary}</span>}
         {t.durationMs != null && (

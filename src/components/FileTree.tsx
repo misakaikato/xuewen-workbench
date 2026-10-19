@@ -280,9 +280,9 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
         {ro && <span title="Word 文档（只读预览）"><Lock className="w-2.5 h-2.5 text-muted-foreground" /></span>}
         {recent && <span title="7 天内修改过"><span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" /></span>}
         {ctx.drafts.has(row.path) && (
-          <span title="存在本地草稿（上次未完成的编辑）"><PenLine className="w-3 h-3 text-amber-600" /></span>
+          <span title="存在本地草稿（上次未完成的编辑）"><PenLine className="w-3 h-3 text-warning" /></span>
         )}
-        {msgs && <span title={msgs.join('\n')}><AlertTriangle className="w-3 h-3 text-red-500" /></span>}
+        {msgs && <span title={msgs.join('\n')}><AlertTriangle className="w-3 h-3 text-destructive" /></span>}
         {refs && refBadge(ctx.linkCounts[row.path])}
       </span>
     );
@@ -393,11 +393,11 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
     >
       {row.open ? <ChevronDown className="w-3.5 h-3.5 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0" />}
       {isHead ? (
-        <Boxes className="w-4 h-4 shrink-0 text-amber-600" />
+        <Boxes className="w-4 h-4 shrink-0 text-primary/70" />
       ) : row.open ? (
-        <FolderOpen className="w-4 h-4 shrink-0 text-amber-600" />
+        <FolderOpen className="w-4 h-4 shrink-0 text-primary/70" />
       ) : (
-        <Folder className="w-4 h-4 shrink-0 text-amber-600" />
+        <Folder className="w-4 h-4 shrink-0 text-primary/70" />
       )}
       <button
         className={`truncate text-left flex-1 ${active ? 'text-primary font-medium' : ''}`}

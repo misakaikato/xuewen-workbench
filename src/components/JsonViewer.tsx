@@ -1,6 +1,7 @@
 // JSON 只读结构视图：折叠、键值查找、复制、源码切换
 import { useMemo, useState } from 'react';
 import { ChevronRight, ChevronDown, Copy, Check, AlertCircle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 function JsonNode({ k, value, depth, filter }: { k?: string; value: unknown; depth: number; filter: string }) {
   const [open, setOpen] = useState(depth < 2);
@@ -61,12 +62,14 @@ export function JsonViewer({ content }: { content: string }) {
   return (
     <div>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <button
-          className="text-xs px-2.5 py-1 rounded border border-border hover:bg-accent"
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-xs"
           onClick={() => setRaw(!raw)}
         >
           {raw ? '结构视图' : '原始源码'}
-        </button>
+        </Button>
         {!raw && !parsed.error && (
           <input
             value={filter}
@@ -75,8 +78,10 @@ export function JsonViewer({ content }: { content: string }) {
             className="text-xs px-2 py-1 rounded border border-input bg-background w-48"
           />
         )}
-        <button
-          className="text-xs px-2.5 py-1 rounded border border-border hover:bg-accent flex items-center gap-1"
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-xs"
           onClick={() => {
             navigator.clipboard.writeText(content);
             setCopied(true);
@@ -84,10 +89,10 @@ export function JsonViewer({ content }: { content: string }) {
           }}
         >
           {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />} 复制
-        </button>
+        </Button>
       </div>
       {parsed.error ? (
-        <div className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded p-3 mb-3">
+        <div className="flex items-start gap-2 text-sm text-warning-foreground bg-warning-soft border border-warning/40 rounded p-3 mb-3">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>JSON 解析失败：{parsed.error}。以下为原始内容。</span>
         </div>

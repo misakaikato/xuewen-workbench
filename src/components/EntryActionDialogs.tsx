@@ -155,7 +155,7 @@ export function EntryActionDialogs({
               style={{ paddingLeft: 8 + (d ? d.split('/').length - 1 : 0) * 12 }}
               title={d || '资料库根目录'}
             >
-              <Folder className="w-4 h-4 shrink-0 text-amber-600" />
+              <Folder className="w-4 h-4 shrink-0 text-warning" />
               <span className="truncate">{d ? d.split('/').pop() : '（资料库根目录）'}</span>
             </button>
           ))}

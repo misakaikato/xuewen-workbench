@@ -1,5 +1,6 @@
 // 智能助手设置面板（多 tab）：模型端点 / Skills / MCP
 import { useState, useEffect, useCallback } from 'react';
+import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
 import type { AgentStatus, AgentSettingsPatch } from '@/lib/api';
 import {
@@ -117,7 +118,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                   <RefreshCw className={`w-3.5 h-3.5 ${modelsLoading ? 'animate-spin' : ''}`} />
                 </button>
               </div>
-              {models.length > 0 && <p className="text-[11px] text-muted-foreground pl-[72px] flex items-center gap-1"><Check className="w-3 h-3 text-green-600" />从端点拉到 {models.length} 个模型</p>}
+              {models.length > 0 && <p className="text-[11px] text-muted-foreground pl-[72px] flex items-center gap-1"><Check className="w-3 h-3 text-success" />从端点拉到 {models.length} 个模型</p>}
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground w-16 shrink-0 text-xs">apiKey</span>
                 <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="本地服务通常留空" type="password" className="flex-1 px-2.5 py-1.5 rounded-lg border border-input bg-background" />
@@ -128,7 +129,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
               <h3 className="text-xs font-medium text-muted-foreground mb-2">思考强度</h3>
               <div className="flex items-center gap-1.5">
                 {THINKING_LEVELS.map((t) => (
-                  <button key={t.v} className={`px-3 py-1.5 rounded-lg text-xs border ${thinking === t.v ? 'border-violet-500 text-violet-600 font-medium bg-violet-500/5' : 'border-border hover:border-violet-500/40'}`} onClick={() => setThinking(t.v)}>
+                  <button key={t.v} className={`px-3 py-1.5 rounded-lg text-xs border ${thinking === t.v ? 'border-primary text-primary font-medium bg-primary/5' : 'border-border hover:border-primary/40'}`} onClick={() => setThinking(t.v)}>
                     {t.label}
                   </button>
                 ))}
@@ -187,7 +188,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
               <div className="space-y-1.5">
                 {status.mcp!.map((m) => (
                   <div key={m.name} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm group hover:border-primary/30">
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${m.enabled ? 'bg-green-500' : 'bg-muted-foreground'}`} />
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${m.enabled ? 'bg-success' : 'bg-muted-foreground'}`} />
                     <span className="font-mono">{m.name}</span>
                     <span className="text-muted-foreground text-xs">{m.type}</span>
                     {m.url && <span className="text-muted-foreground text-xs truncate flex-1">{m.url}</span>}
@@ -212,7 +213,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                   <option value="http">HTTP</option><option value="stdio">stdio（本地命令）</option>
                 </select>
                 <input data-mcp="url" placeholder="URL 或命令" className="w-full px-2.5 py-1.5 rounded-lg border border-input bg-background" />
-                <button className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs" onClick={async (e) => {
+                <Button size="sm" className="text-xs rounded-lg" onClick={async (e) => {
                   const root = (e.target as HTMLElement).closest('details')!;
                   const q = (s: string) => root.querySelector(`[data-mcp="${s}"]`) as HTMLInputElement;
                   const name = q('name')?.value?.trim(); const type = q('type')?.value; const url = q('url')?.value?.trim();
@@ -220,7 +221,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                   const cfg = type === 'http' ? { url } : { command: url.split(' ')[0], args: url.split(' ').slice(1) };
                   await fetch('/api/agent/mcp-server', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, config: cfg }) });
                   onSaved();
-                }}>添加</button>
+                }}>添加</Button>
               </div>
             </details>
           </>
@@ -230,10 +231,10 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
         {/* 底部操作（仅模型 tab） */}
         {tab === 'model' && (
           <div className="flex items-center gap-2 px-5 py-3 border-t border-border shrink-0">
-            <button className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm hover:opacity-90 disabled:opacity-40" disabled={saving || !baseUrl || !model} onClick={save}>
+            <Button className="rounded-lg" disabled={saving || !baseUrl || !model} onClick={save}>
               {saving ? '保存中…' : '保存'}
-            </button>
-            <button className="px-3 py-2 rounded-lg border border-border text-sm hover:bg-accent" onClick={testConn}>测试连通</button>
+            </Button>
+            <Button variant="outline" className="rounded-lg" onClick={testConn}>测试连通</Button>
             {msg && <span className="text-xs text-muted-foreground flex-1 truncate">{msg}</span>}
           </div>
         )}

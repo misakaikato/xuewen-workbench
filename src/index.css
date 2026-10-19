@@ -47,7 +47,21 @@
   }
 }
 
-/* ===== 阅读区：由阅读偏好变量驱动 ===== */
+/* macOS hiddenInset 标题栏：顶栏作为窗口拖拽区，交互控件排除 */
+.wb-drag { -webkit-app-region: drag; }
+.wb-drag button, .wb-drag a, .wb-drag input, .wb-drag [role="button"] { -webkit-app-region: no-drag; }
+
+/* 动效降级：用户系统开启减弱动态效果时，所有过渡/动画压到 ~0（DESIGN.md §7） */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 阅读区：由阅读偏好变量驱动 */
 .reader {
   font-family: var(--rd-font);
   font-size: var(--rd-size);

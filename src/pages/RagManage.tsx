@@ -7,6 +7,7 @@ import type { RagStatus, RagConfig } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { extIcon } from '@/lib/extIcon';
 import { Download, FolderInput, Play, Pause, RotateCcw, Cpu, Zap, FlaskConical, CheckCircle2, AlertTriangle, SlidersHorizontal } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 const fmtBytes = (n: number) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : String(n));
 
@@ -104,7 +105,7 @@ export default function RagManage() {
         <span className="text-xs text-muted-foreground font-normal">智能检索与本地问答</span>
       </h1>
       {err && (
-        <div className="text-xs text-red-700 dark:text-red-400 border border-red-300 rounded p-2 flex items-center gap-2">
+        <div className="text-xs text-destructive border border-destructive/40 bg-destructive/10 rounded p-2 flex items-center gap-2">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {err}
         </div>
       )}
@@ -119,7 +120,7 @@ export default function RagManage() {
           <div><div className="text-muted-foreground">后端</div><div className="font-medium">{m ? BACKEND_LABEL[m.backend] || m.backend : '—'}</div></div>
           <div><div className="text-muted-foreground">状态</div>
             <div className="font-medium flex items-center gap-1">
-              {modelReady ? <><CheckCircle2 className="w-3.5 h-3.5 text-green-600" />就绪</> :
+              {modelReady ? <><CheckCircle2 className="w-3.5 h-3.5 text-success" />就绪</> :
                 m?.state === 'downloading' ? '下载中…' : m?.state === 'error' ? '失败' : '未下载'}
             </div>
           </div>
@@ -136,15 +137,17 @@ export default function RagManage() {
             </div>
           </div>
         )}
-        {m?.error && <div className="text-xs text-red-600 mb-3">{m.error}</div>}
+        {m?.error && <div className="text-xs text-destructive mb-3">{m.error}</div>}
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent flex items-center gap-1 disabled:opacity-40"
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs"
             disabled={busy !== null || m?.state === 'downloading'}
             onClick={() => run('download', () => api.ragModelDownload())}
           >
             <Download className="w-3.5 h-3.5" />{modelReady ? '重新下载' : '下载模型（约 1.1 GB，hf-mirror 自动回退）'}
-          </button>
+          </Button>
           <span className="flex items-center gap-1 text-xs">
             <FolderInput className="w-3.5 h-3.5 text-muted-foreground" />
             <input
@@ -153,11 +156,13 @@ export default function RagManage() {
               placeholder="手动导入模型目录路径"
               className="px-2 py-1 rounded border border-input bg-card w-56"
             />
-            <button
-              className="px-2 py-1 rounded border border-border hover:bg-accent disabled:opacity-40"
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs"
               disabled={!importDir.trim() || busy !== null}
               onClick={() => run('import', () => api.ragModelImport(importDir.trim()))}
-            >导入</button>
+            >导入</Button>
           </span>
         </div>
       </section>
@@ -183,46 +188,51 @@ export default function RagManage() {
             </div>
           </div>
         )}
-        {ix?.error && <div className="text-xs text-red-600 mb-3">{ix.error}</div>}
+        {ix?.error && <div className="text-xs text-destructive mb-3">{ix.error}</div>}
         {ix?.ftsError && (
-          <div className="text-xs border border-red-300 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 rounded p-2 mb-3 flex items-center gap-2">
+          <div className="text-xs border border-destructive/40 bg-destructive/10 text-destructive rounded p-2 mb-3 flex items-center gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             关键词索引查询失败（检索退化为仅语义路）：{ix.ftsError}
           </div>
         )}
         {ix?.configChanged && (
-          <div className="text-xs border border-amber-400 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 rounded p-2 mb-3 flex items-center gap-2">
+          <div className="text-xs border border-warning/40 bg-warning-soft text-warning-foreground rounded p-2 mb-3 flex items-center gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             切块/嵌入参数与建库时不同，现有索引按旧参数生成。
             <button className="underline" disabled={busy !== null} onClick={() => run('rebuild', () => api.ragIndexBuild(true))}>立即重建</button>
           </div>
         )}
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 flex items-center gap-1 disabled:opacity-40"
+          <Button
+            size="sm"
+            className="text-xs"
             disabled={busy !== null || ix?.state === 'building' || !modelReady}
             title={modelReady ? undefined : '请先就绪嵌入模型'}
             onClick={() => run('build', () => api.ragIndexBuild(false))}
           >
             <Play className="w-3.5 h-3.5" />{ix?.files ? '继续构建 / 增量更新' : '构建索引'}
-          </button>
+          </Button>
           {ix?.state === 'building' && (
-            <button
-              className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent flex items-center gap-1"
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs"
               disabled={busy !== null}
               onClick={() => run('pause', () => api.ragIndexPause())}
             >
               <Pause className="w-3.5 h-3.5" />暂停
-            </button>
+            </Button>
           )}
           {ix && ix.files > 0 && (
-            <button
-              className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent flex items-center gap-1 disabled:opacity-40"
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs"
               disabled={busy !== null || ix.state === 'building'}
               onClick={() => { if (window.confirm('清空当前库的语义索引并全量重建？')) run('rebuild', () => api.ragIndexBuild(true)); }}
             >
               <RotateCcw className="w-3.5 h-3.5" />重建
-            </button>
+            </Button>
           )}
           <span className="text-[11px] text-muted-foreground">索引存于本机应用数据目录，删除后可随时重建；文件改动后自动增量更新。</span>
         </div>
@@ -277,8 +287,9 @@ export default function RagManage() {
               })}
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <button
-                className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
+              <Button
+                size="sm"
+                className="text-xs"
                 disabled={busy !== null}
                 onClick={async () => {
                   const r = await api.ragConfigSave(cfg);
@@ -286,9 +297,11 @@ export default function RagManage() {
                   setCfgSaved('已保存' + (ix?.files ? '——切块/嵌入参数变化需重建索引生效' : ''));
                   await poll();
                 }}
-              >保存参数</button>
-              <button
-                className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent"
+              >保存参数</Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs"
                 disabled={busy !== null}
                 onClick={async () => {
                   const r = await api.ragConfigSave({ chunk: { maxChars: 600, jsonValueLimit: 1500, headingContext: true, fileNameContext: true, hardSplitOversize: false }, embed: { maxLength: 1024 }, search: { topN: 30, rrfK: 60, rrfMin: 0.0105, cosFloor: 0.25, cosSigma: 2.0, semanticWeight: 1.2 } });
@@ -296,7 +309,7 @@ export default function RagManage() {
                   setCfgSaved('已恢复默认');
                   await poll();
                 }}
-              >恢复默认</button>
+              >恢复默认</Button>
               {cfgSaved && <span className="text-xs text-muted-foreground">{cfgSaved}</span>}
             </div>
           </>
@@ -314,7 +327,7 @@ export default function RagManage() {
             placeholder="输入问题测试混合检索（与检索页「智能」tab 同链路）"
             className="flex-1 px-3 py-2 rounded-lg border border-input bg-card text-sm"
           />
-          <button className="text-xs px-3 py-2 rounded bg-primary text-primary-foreground hover:opacity-90" onClick={doSmart}>测试</button>
+          <Button className="text-xs" onClick={doSmart}>测试</Button>
         </div>
         {smart && (
           <div className="space-y-2">
