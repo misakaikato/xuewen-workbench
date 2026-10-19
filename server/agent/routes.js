@@ -22,6 +22,25 @@ export function mountAgent(hub, resolveLib) {
     res.json(hub.deleteConversation(req.params.id));
   });
 
+  r.post('/fork', (req, res) => {
+    const { sessionId, uptoIndex } = req.body || {};
+    if (!sessionId) return res.status(400).json({ error: '缺少 sessionId' });
+    const conv = hub.forkConversation(sessionId, Number(uptoIndex) || 0);
+    if (!conv) return res.status(400).json({ error: '无法分叉（历史为空）' });
+    res.json(conv);
+  });
+
+  r.get('/export/:id', (req, res) => {
+    const md = hub.exportConversation(req.params.id);
+    if (!md) return res.status(404).json({ error: '会话不存在' });
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.send(md);
+  });
+
+  r.get('/models', async (_req, res) => {
+    res.json(await hub.listModels());
+  });
+
   r.post('/abort', (req, res) => {
     res.json(hub.abort(String(req.body?.sessionId || '')));
   });

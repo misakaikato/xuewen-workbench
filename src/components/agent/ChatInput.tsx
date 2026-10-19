@@ -11,6 +11,7 @@ const SLASH_COMMANDS = [
   { cmd: '/model', desc: '当前模型与端点' },
   { cmd: '/status', desc: '语料库与索引状态（发给 agent）' },
   { cmd: '/help', desc: '显示所有命令' },
+  { cmd: '/export', desc: '导出对话为 Markdown' },
 ];
 
 interface FlatFile {

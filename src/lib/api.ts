@@ -245,6 +245,9 @@ export const api = {
   agentSession: (id: string) => req<{ id: string; title: string; messages: AgentMessage[] }>('/api/agent/session/' + encodeURIComponent(id)),
   agentDeleteSession: (id: string) => req<{ ok: boolean }>('/api/agent/session/' + encodeURIComponent(id), json('DELETE', {})),
   agentAbort: (id: string) => req<{ ok: boolean }>('/api/agent/abort', json('POST', { sessionId: id })),
+  agentFork: (id: string, uptoIndex: number) => req<{ id: string; title: string }>('/api/agent/fork', json('POST', { sessionId: id, uptoIndex })),
+  agentExport: (id: string) => '/api/agent/export/' + encodeURIComponent(id),
+  agentModels: () => req<{ models: string[] }>('/api/agent/models'),
 };
 
 export interface RagConfig {
@@ -256,7 +259,9 @@ export interface RagConfig {
 export interface AgentMessage {
   role: 'user' | 'assistant';
   text: string;
-  tools?: { name: string; args?: unknown; summary?: string; isError?: boolean }[];
+  tools?: { name: string; args?: unknown; summary?: string; isError?: boolean; durationMs?: number }[];
+  thinking?: string;
+  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   at?: string;
 }
 

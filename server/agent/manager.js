@@ -401,7 +401,7 @@ export class AgentHub {
       sessionManager,
       thinkingLevel: 'off',
     });
-    entry = { session, sse: new Set(), busy: false, curText: '', curTools: [] };
+    entry = { session, sse: new Set(), busy: false, curText: '', curTools: [], curThinking: '', curUsage: null };
     // 会话级事件订阅：所有轮次（含 steering 追加轮）的事件都经此转发
     entry.unsubscribe = session.subscribe((event) => {
       this._onEvent(convId, entry, event);
@@ -420,6 +420,19 @@ export class AgentHub {
     if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') {
       entry.curText += event.assistantMessageEvent.delta;
       send({ t: 'delta', v: event.assistantMessageEvent.delta });
+    } else if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'thinking_delta') {
+      entry.curThinking = (entry.curThinking || '') + event.assistantMessageEvent.delta;
+      send({ t: 'thinking', v: event.assistantMessageEvent.delta });
+    } else if (event.type === 'message_end' && event.message?.usage) {
+      // Token 用量：每条完成的消息附带 usage
+      const u = event.message.usage;
+      entry.curUsage = {
+        input: (entry.curUsage?.input || 0) + (u.input || 0),
+        output: (entry.curUsage?.output || 0) + (u.output || 0),
+        cacheRead: (entry.curUsage?.cacheRead || 0) + (u.cacheRead || 0),
+        cacheWrite: (entry.curUsage?.cacheWrite || 0) + (u.cacheWrite || 0),
+      };
+      send({ t: 'usage', usage: entry.curUsage });
     } else if (event.type === 'tool_execution_start') {
       const item = { id: event.toolCallId, name: event.toolName, args: event.args, summary: '', isError: false, durationMs: 0 };
       entry.curTools.push(item);
@@ -436,7 +449,7 @@ export class AgentHub {
     } else if (event.type === 'agent_settled') {
       // 全部自动恢复/排队工作结束：写投影、关 SSE、清 busy
       entry.busy = false;
-      this._append(convId, { role: 'assistant', text: entry.curText || '（无输出）', tools: entry.curTools, at: nowIso() });
+      this._append(convId, { role: 'assistant', text: entry.curText || '（无输出）', tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, at: nowIso() });
       this._touch(convId);
       send({ t: 'done' });
       for (const res of entry.sse) {
@@ -490,7 +503,7 @@ export class AgentHub {
       entry.curText += `\n\n（出错：${e.message || e}）`;
       // 兜底收尾
       entry.busy = false;
-      this._append(convId, { role: 'assistant', text: entry.curText || '（无输出）', tools: entry.curTools, at: nowIso() });
+      this._append(convId, { role: 'assistant', text: entry.curText || '（无输出）', tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, at: nowIso() });
       send({ t: 'done' });
       try { res.end(); } catch { /* */ }
       entry.sse.delete(res);
@@ -512,6 +525,69 @@ export class AgentHub {
     const c = m.conversations.find((x) => x.id === convId);
     if (c && (c.title === '新对话' || !c.title)) return text.replace(/\s+/g, ' ').slice(0, 18);
     return undefined;
+  }
+
+  /** 会话分叉：从 uptoIndex（含）复制投影到新会话 */
+  forkConversation(convId, uptoIndex) {
+    const hist = this.history(convId);
+    const slice = hist.slice(0, uptoIndex + 1);
+    if (!slice.length) return null;
+    const newConv = this.newConversation(slice[slice.length - 1]?.text?.slice(0, 18) + '（分叉）');
+    for (const m of slice) {
+      this._append(newConv.id, m);
+    }
+    // 把用户消息作为新 prompt 的上下文——不自动发，用户自己发下一条
+    return newConv;
+  }
+
+  /** 导出对话为 Markdown */
+  exportConversation(convId) {
+    const hist = this.history(convId);
+    const meta = this.listConversations().find((c) => c.id === convId);
+    const lines = [`# ${meta?.title || '对话'}
+
+> 导出于 ${new Date().toLocaleString('zh-CN')}
+`];
+    for (const m of hist) {
+      if (m.role === 'user') {
+        lines.push(`## 👤 用户
+
+${m.text}
+`);
+      } else {
+        if (m.tools?.length) {
+          lines.push(`<details>
+<summary>工具调用（${m.tools.length} 次）</summary>
+
+${m.tools.map((t) => `- \`${t.name}\`${t.summary ? ': ' + t.summary.slice(0, 80) : ''}`).join('\n')}
+
+</details>
+`);
+        }
+        lines.push(`## 🤖 助手
+
+${m.text}
+`);
+      }
+    }
+    return lines.join('\n');
+  }
+
+  /** 模型列表（从端点拉取） */
+  async listModels() {
+    const c = this.llm();
+    if (!c.baseUrl) return { models: [] };
+    try {
+      const r = await fetch(c.baseUrl.replace(/\/$/, '') + '/models', {
+        headers: c.apiKey ? { Authorization: 'Bearer ' + c.apiKey } : {},
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!r.ok) return { models: [] };
+      const j = await r.json();
+      return { models: (j.data || []).map((m) => m.id).slice(0, 30) };
+    } catch {
+      return { models: [] };
+    }
   }
 
   async abort(convId) {
