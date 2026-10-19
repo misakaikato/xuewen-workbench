@@ -1531,7 +1531,7 @@ app.get('/api/topics', (req, res) => {
   });
 });
 
-// 加工数据：概念表与知识图谱（.xuewen/concepts.jsonl + graph.jsonl）
+// 加工数据：概念表与知识图谱（.derived/concepts.jsonl + graph.jsonl）
 app.get('/api/concepts', (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;
@@ -1563,7 +1563,7 @@ app.get('/api/concept', (req, res) => {
   res.json({ concept: c, neighbors });
 });
 
-// 主题标签：合并 .meta.json 的人工 tags 与 .xuewen/topics.jsonl 的 AI 标注
+// 主题标签：合并 .meta.json 的人工 tags 与 .derived/topics.jsonl 的 AI 标注
 app.get('/api/tags', (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;

@@ -21,7 +21,7 @@
 **设计原则**
 1. **原文是唯一的“真”**：链接、检索结果、加工数据都不写回原文；保存时除用户改动外字节不变。
 2. **全部本地**：语料和加工数据不出本机；唯一的网络请求是首次下载向量模型。
-3. **派生数据可重建**：SQLite 索引是缓存，删掉可从原文 + `.meta.json` + `.xuewen/` 重建。
+3. **派生数据可重建**：SQLite 索引是缓存，删掉可从原文 + `.meta.json` + `.derived/` 重建。
 6. **版本可回溯**：代码和语料各有一套只在本机的 git 历史，永不推送远程。
 4. **稳定 id 做锚点**：文档 id 生成后永不改，图谱 / 字义 / 概念都挂在 id 上，不挂在路径上。
 5. **跨平台**：macOS（目标机 Apple M5 Max 128GB）与 Windows 都要能跑。
@@ -62,7 +62,7 @@ flowchart TB
 
   subgraph Disk["本机磁盘"]
     Corpus["语料目录<br/>文档 + 同名 .meta.json"]
-    Xuewen["语料目录/.xuewen/<br/>JSONL 加工数据"]
+    Xuewen["语料目录/.derived/<br/>JSONL 加工数据"]
     CorpusGit["语料本地版本库<br/>无远程"]
     AppData["应用数据目录<br/>配置 · 备份 · SQLite 缓存 · 模型"]
   end
@@ -95,7 +95,7 @@ flowchart TB
   P --> I1["现有内存索引<br/>文件名 · 路径 · 正文 · JSON 键值"]
   K --> I2["SQLite 缓存（已定未做）<br/>关键词索引 + 向量"]
   EM["本地向量模型<br/>首次启动下载"] --> I2
-  X[".xuewen/ JSONL<br/>概念 · 字义 · 图谱 · 摘要"] --> T["词条表 / 条目"]
+  X[".derived/ JSONL<br/>概念 · 字义 · 图谱 · 摘要"] --> T["词条表 / 条目"]
   M --> T
   P --> T
   Q["用户查询"] --> I1 & I2
@@ -195,7 +195,7 @@ flowchart TB
 │   └── 某讲义.docx.meta.json
 ├── 字义.json
 ├── 字义.json.meta.json
-├── .xuewen/                        # 二次加工数据（已定未做）
+├── .derived/                        # 加工数据（v1 已实现 concepts/topics/graph）
 └── （本地版本库，见 4.6）
 ```
 
@@ -229,11 +229,11 @@ flowchart TB
 3. 导入：`POST /api/meta/import`（preview / apply），逐行校验、报错不影响其他行；预览后确认才写入；已有 sidecar 默认跳过，覆盖时只合并提供的字段、id 不变；id / created_at / content_hash 由程序生成。
 4. 保密：开发与测试只用 test-data；真实语料由主人自己处理，发给哪家 AI 由主人决定。
 
-### 4.3 `.xuewen/` 加工数据（JSONL）【v1 已实现：concepts + graph】
-位于语料目录下 `.xuewen/`，按类别分文件，一行一条记录：
+### 4.3 `.derived/` 加工数据（JSONL）【v1 已实现：concepts + graph】
+位于语料目录下 `.derived/`，按类别分文件，一行一条记录：
 
 ```
-.xuewen/
+.derived/
 ├── concepts.jsonl     # 概念 / 主题 / 人物 / 书名 等“条目”
 ├── ziyi.jsonl         # 讲课字义
 ├── graph.jsonl        # 图谱关系（graphml 仅做导入/导出）
@@ -249,12 +249,12 @@ flowchart TB
 | `source_hash` | 生成时原文的哈希；原文变化后该记录标“待更新” |
 
 - 各类别的业务字段（名称、别名、出现位置、字义、关系类型等）参考 `research/derived-data-design-2026-10-17.md` 草案，**最终字段映射【待定】**：取决于主人在本机运行只读结构脚本（只输出字段名 / 类型 / 数量，不输出正文）的结果。
-- 注：设计草案中目录名写作 `.workbench/`；当前定为 `.xuewen/`，已在**代码仓库** `.gitignore` 中排除（不进代码 git）。
+- 注：设计草案中目录名写作 `.workbench/`；当前定为 `.derived/`，已在**代码仓库** `.gitignore` 中排除（不进代码 git）。
 - **v1 已实现**：`concepts.jsonl`（条目 + 别名 + 释义 + 出处）与 `graph.jsonl`（节点 + 边），字段协议见 `docs/derived-data-protocol.md`。概念名与别名进自动内链词条（target 为 `concept:<名称>`，点击开概念弹层）；`/api/concepts`、`/api/concept` 提供列表与详情。`summaries.jsonl` / `ziyi.jsonl` 与 `anchor` 的完整语义仍待定。
 
 ### 4.4 SQLite 缓存【已定未做】
 - 本地 SQLite，存放切块、关键词索引、向量、自动链接词表、反向链接等派生数据。
-- 定位为**可重建缓存**：不保存任何只此一份的数据；删除后从原文 + sidecar + `.xuewen/` 重建。
+- 定位为**可重建缓存**：不保存任何只此一份的数据；删除后从原文 + sidecar + `.derived/` 重建。
 - 表结构和所用 SQLite 库 / 向量扩展在 RAG 开发时实测确定（实现细节，不需主人决定）。
 
 ### 4.5 应用数据目录【已实现】
@@ -303,7 +303,7 @@ flowchart TB
 通过 **OpenAI 兼容端点**（baseURL/model/apiKey 可配，默认 `http://localhost:11434/v1`）调用本地大模型（Ollama / LM Studio 等）基于检索结果生成带引用的回答，作为可开关的第二步。具体模型在实测后选定。（2026-10-18 主人修订：原 Ollama 硬绑定改为 OpenAI 兼容端点。）
 
 ### 5.4 依赖与注意
-- 概念 / 别名扩展查询依赖 `.xuewen/` 字段映射完成后才能接入。
+- 概念 / 别名扩展查询依赖 `.derived/` 字段映射完成后才能接入。
 - 老式 `.doc` 的处理：mammoth 只支持 docx，若语料有 .doc 需另加转换。取决于主人确认实际格式。
 
 ---
@@ -328,7 +328,7 @@ flowchart TB
 
 ## 7. 二次加工数据接入【已定未做】
 - **对象**：已有 graphml 知识图谱、字义 json、自动总结 / 主题 / 概念及其反向索引。
-- **存储**：转成 `.xuewen/` 下 JSONL（见 4.3），以文档 id 为锚。
+- **存储**：转成 `.derived/` 下 JSONL（见 4.3），以文档 id 为锚。
 - **导入器**：一次性导入旧数据，输出映射报告（对上原文多少条、找不到出处多少条）。
 - **状态与更新**：机器生成 vs 老师确认；原文变化 → sidecar `content_hash` 与记录的 `source_hash` 不符 → 标“待更新”；只对新增和改动文档做增量加工。
 - **界面**：左侧导航 文档 / 概念 / 字义 / 图谱；阅读右栏显示本篇摘要、概念、反向链接；“加工任务”面板显示覆盖率和待更新数量。
@@ -338,7 +338,7 @@ flowchart TB
 
 ## 8. 安全与隐私【已实现 / 原则已定】
 - 语料和加工数据**永不离开本机**，不进代码仓库；代码仓库和语料本地版本库都按设计无远程。
-- `.gitignore` 排除：`node_modules`、`dist`、`release`、`server/data`、`.xuewen/`、`.env`、日志。
+- `.gitignore` 排除：`node_modules`、`dist`、`release`、`server/data`、`.derived/`、`.env`、日志。
 - Electron 下服务只绑定 `127.0.0.1`，不对局域网开放。
 - 无遥测；除首次下载向量模型外不发起网络请求。
 - 开发和字段对照只使用结构信息（字段名、类型、数量），不读取、不复制正文。
@@ -393,6 +393,6 @@ flowchart TB
 |---|---|
 | 视觉方向 A / B / C | 主人选定原型 |
 | Word 文件是 .doc 还是 .docx | 主人确认；若有 .doc 需加转换步骤（mammoth 仅支持 docx） |
-| `.xuewen/` 字段映射 | 主人本机运行只读结构脚本（只出字段名 / 类型 / 数量） |
+| `.derived/` 字段映射 | 主人本机运行只读结构脚本（只出字段名 / 类型 / 数量） |
 | id 之外的锚点细则（段落锚点、内容指纹格式） | 加工数据字段映射与 RAG 切块实现；文档 id 已定为 `doc_`+UUID |
 | 辅助写书（做不做、做哪种书；docx 导出用内置 Pandoc +30–60 MB 还是 docx 库） | 主人决定 |

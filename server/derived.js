@@ -1,4 +1,4 @@
-// 加工数据（derived）：读取语料目录下 .xuewen/ 的 JSONL，提供概念表与知识图谱
+// 加工数据（derived）：读取语料目录下 .derived/ 的 JSONL，提供概念表、主题与知识图谱
 // 定位为派生数据：由 AI 从原始 MD 转换产出，系统只读不写；缺失时功能自动退化
 //
 // .xuewen/concepts.jsonl —— 一行一个条目（概念/人物/书名/主题…）
@@ -11,10 +11,29 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const DERIVED_DIR = '.xuewen';
+export const DERIVED_DIR = '.derived';
+export const LEGACY_DERIVED_DIR = '.xuewen';
 const CONCEPTS_FILE = 'concepts.jsonl';
 const GRAPH_FILE = 'graph.jsonl';
 const TOPICS_FILE = 'topics.jsonl';
+
+let migrated = new Set();
+
+/** 旧版目录 .xuewen/ 一次性迁移为 .derived/（只在目标不存在时执行，避免覆盖） */
+export function migrateLegacyDir(baseDir) {
+  if (migrated.has(baseDir)) return;
+  migrated.add(baseDir);
+  const legacy = path.join(baseDir, LEGACY_DERIVED_DIR);
+  const target = path.join(baseDir, DERIVED_DIR);
+  try {
+    if (!fs.existsSync(legacy)) return;
+    if (fs.existsSync(target)) return;
+    fs.renameSync(legacy, target);
+    console.log(`[derived] 已迁移 ${LEGACY_DERIVED_DIR}/ → ${DERIVED_DIR}/`);
+  } catch (e) {
+    console.error('[derived] 目录迁移失败:', e.message);
+  }
+}
 
 function readJsonl(file) {
   let raw;
@@ -94,6 +113,7 @@ export function loadGraph(baseDir) {
 
 /** 概念表 + 图谱合并视图：供 /api/concepts 与内链使用 */
 export function loadDerived(baseDir) {
+  migrateLegacyDir(baseDir);
   const c = loadConcepts(baseDir);
   const g = loadGraph(baseDir);
   return { concepts: c.concepts, graph: g, conceptErrors: c.errors, graphErrors: g.errors, conceptsMissing: c.missing, graphMissing: g.missing };

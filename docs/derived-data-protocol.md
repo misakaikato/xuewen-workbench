@@ -1,11 +1,13 @@
-# 加工数据协议（.xuewen）
+# 加工数据协议（.derived）
 
-语料目录下的 `.xuewen/` 存放 AI 从原始文档提取的加工数据。**系统只读不写**，缺失时相关功能自动退化为普通工作台。
+语料目录下的 `.derived/` 存放 AI 从原始文档提取的加工数据。**系统只读不写**，缺失时相关功能自动退化为普通工作台。
+
+> 命名：`derived` 即「派生数据」——全部内容都能从原文重新提取，删掉不损失任何原始信息。与逐文档的 `<文件名>.meta.json`（文档身份证，不可重建）性质相反。旧版本目录名 `.xuewen/` 会在首次读取时自动迁移。
 
 ```
 <语料根>/
 ├── 笔记/…
-└── .xuewen/
+└── .derived/
     ├── concepts.jsonl   # 概念 / 人物 / 书名 等条目
     ├── topics.jsonl     # 文档 → 主题标注
     └── graph.jsonl      # 知识图谱（节点 + 边）
@@ -13,7 +15,7 @@
 
 两文件均为 **JSONL**：一行一个 JSON 对象，空行与 `//` 开头的行忽略。文件编码 UTF-8，无 BOM。
 
-`.xuewen/` 是隐藏目录，扫描器跳过，不会出现在文件树里；已在 `.gitignore` 中排除。
+`.derived/` 是隐藏目录，扫描器跳过，不会出现在文件树里；已在 `.gitignore` 中排除。
 
 ## concepts.jsonl
 
@@ -65,7 +67,7 @@
 
 - 阅读页正文上方显示该文档的主题徽章，AI 标注的带 ✨ 图标，点击展开同主题文档列表。
 - 知识库概览的「主题分布」按主题聚合全文档数。
-- 删除 `.xuewen/topics.jsonl` 即回到无标注状态，文档本身不受影响。
+- 删除 `.derived/topics.jsonl` 即回到无标注状态，文档本身不受影响。
 
 ## graph.jsonl
 
@@ -123,7 +125,7 @@ GraphML 的 `id` 常是不可读的内部编号（`n1`、`n0`），转换时**�
 | `GET /api/tags` | 主题聚合（人工 tags + AI 标注，含来源标记） |
 | `GET /api/tags/doc?path=` | 单文档的主题 |
 
-`/api/concepts` 里的 `conceptsMissing` / `graphMissing` 用于判断 `.xuewen` 是否就位；`errors` 返回前 5 条 JSONL 解析错误（行号 + 原因），便于排查 AI 产出格式问题。
+`/api/concepts` 里的 `conceptsMissing` / `graphMissing` 用于判断 `.derived` 是否就位；`errors` 返回前 5 条 JSONL 解析错误（行号 + 原因），便于排查 AI 产出格式问题。
 
 ## 写作建议（给生成数据的 AI）
 

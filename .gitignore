@@ -11,8 +11,8 @@ out/
 
 # app runtime data (confidential, per-machine)
 server/data/
-.xuewen/
-**/.xuewen/
+.derived/
+**/.derived/
 
 # temp / atomic-write leftovers, caches, local indexes
 *.wb-tmp-*
