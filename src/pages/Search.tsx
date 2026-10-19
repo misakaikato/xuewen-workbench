@@ -285,6 +285,23 @@ export default function Search() {
         </div>
       )}
 
+      {mode === 'smart' && !loading && q && smart && smart.hits.length === 0 && !smartErr && (
+        <div className="text-center py-16 text-muted-foreground">
+          <SearchX className="w-10 h-10 mx-auto mb-3" />
+          <p className="text-sm">没有找到与「{q}」语义相近的内容</p>
+          <p className="text-xs mt-1">
+            {smart.candidates ? `候选：关键词 ${smart.candidates.fts} 段 · 语义 ${smart.candidates.cos} 段。` : ''}
+            可换一种说法，或切到「精确」按关键词检索。
+          </p>
+          <div className="mt-3 flex items-center justify-center gap-2">
+            <button className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent transition-colors"
+              onClick={() => setParams(input.trim() ? { q: input.trim(), mode: 'exact' } : { mode: 'exact' }, { replace: true })}>
+              切到精确检索
+            </button>
+            <Link to="/rag" className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent transition-colors">检查索引与模型</Link>
+          </div>
+        </div>
+      )}
       {mode === 'exact' && !loading && q && total === 0 && !err && (
         <div className="text-center py-16 text-muted-foreground">
           <SearchX className="w-10 h-10 mx-auto mb-3" />

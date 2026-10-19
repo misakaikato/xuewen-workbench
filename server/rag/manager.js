@@ -293,6 +293,12 @@ export class RagManager {
     // 补位序 = 文件轮转（每文件先出一段，再出第二段……）——大文件的高频块
     // 不霸榜，limit 内覆盖尽可能多的文件；文件内仍按 BM25 名次
     const fusedIds = new Set(fused.map((x) => x.id));
+    // 语义保底：cos 已过统计阈值但融合分不足（单路弱命中）的结果不静默丢弃——
+    // 词面为零而语义相关的查询（用户最常感知到的“有相近内容却 0 结果”）走这里。
+    const weakCos = cos
+      .filter((r) => !fusedIds.has(r.id))
+      .slice(0, Math.max(0, limit - fused.length))
+      .map((r) => ({ id: r.id, score: Math.round((cfg.search.semanticWeight ?? 1) / (rrfK + cfg.search.topN + 1) * 1e4) / 1e4 }));
     // 补位池：每文件 BM25 最优 3 块（SQL 窗口函数保证文件多样性），轮转排序——
     // 第一轮所有命中文件各出一块，第二轮再各出一块……大文件不霸榜，覆盖完备
     const byFile = store.searchFtsByFile(tokens, 3).filter((r) => !fusedIds.has(r.id));
@@ -306,8 +312,8 @@ export class RagManager {
       for (const id of rounds.get(rnk)) filler.push({ id, score: 0 }); // 0 = 未过融合线
     }
     // total 如实反映融合命中 + 可用补位（受 FTS 候选池限制）
-    const total = fused.length + filler.length;
-    const top = [...fused, ...filler].slice(0, limit);
+    const total = fused.length + filler.length + weakCos.length;
+    const top = [...fused, ...filler, ...weakCos].slice(0, limit);
     const chunks = store.getChunksByIds(top.map((x) => x.id));
     const bm25Ids = new Map(fts.map((r) => [r.id, r.score]));
     const cosIds = new Map(cos.map((r) => [r.id, r.score]));
@@ -335,7 +341,11 @@ export class RagManager {
         };
       })
       .filter(Boolean);
-    return { hits, total, took: Date.now() - t0, backend: this.embed.backend };
+    return {
+      hits, total, took: Date.now() - t0, backend: this.embed.backend,
+      candidates: { fts: fts.length, cos: cos.length, fused: fused.length },
+      reason: hits.length ? null : (st.chunks ? 'no_match' : 'index_empty'),
+    };
   }
 
   async llmTest() {

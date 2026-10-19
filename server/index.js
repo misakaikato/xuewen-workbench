@@ -596,8 +596,20 @@ app.post('/api/notes/append', async (req, res) => {
     const block = [first ? `# ${stem} 阅读笔记\n` : '', `## ${stamp}`, quoted, body ? `\n${body}` : '', `\n来源：${source}\n`, ''].filter(Boolean).join('\n');
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.appendFileSync(abs, (first ? '' : '\n---\n\n') + block, 'utf8');
+    // 笔记元数据：标准旁注（仅 schema 允许字段）+ 逐条划线记录（独立 annotations 文件，避免污染 meta schema）
+    const metaAbs = abs + SIDECAR_SUFFIX;
+    if (!fs.existsSync(metaAbs)) {
+      const meta = { id: 'doc_' + crypto.randomUUID(), title: `${stem} 阅读笔记` };
+      fs.writeFileSync(metaAbs, JSON.stringify(meta, null, 2) + '\n', 'utf8');
+    }
+    const annAbs = path.join(path.dirname(abs), `.${path.basename(abs, '.md')}.annotations.json`);
+    let ann = [];
+    try { ann = JSON.parse(fs.readFileSync(annAbs, 'utf8')); } catch { /* 首次写入 */ }
+    if (!Array.isArray(ann)) ann = [];
+    ann.push({ at: now.toISOString(), source, quote: String(quote || '').trim(), note: body });
+    fs.writeFileSync(annAbs, JSON.stringify(ann, null, 2) + '\n', 'utf8');
     await lib.scanner.rescan();
-    res.json({ ok: true, path: rel });
+    res.json({ ok: true, path: rel, meta: rel + SIDECAR_SUFFIX, annotations: ann.length });
   } catch (e) {
     res.status(e.status || 500).json({ error: '写入笔记失败: ' + e.message });
   }

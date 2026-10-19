@@ -396,6 +396,8 @@ export interface RagSearchResponse {
     cos: number | null;
   }[];
   total?: number; // 融合命中总数（截断显示前）
+  candidates?: { fts: number; cos: number; fused: number };
+  reason?: string | null;
   took: number;
   backend?: string;
 }

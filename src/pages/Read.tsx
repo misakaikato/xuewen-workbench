@@ -81,6 +81,7 @@ export default function Read() {
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [noteSaving, setNoteSaving] = useState(false);
+  const [noteDraftSaved, setNoteDraftSaved] = useState(false);
   const [resumeHint, setResumeHint] = useState<string | null>(null);
   const [pinned, setPinned] = useState(false);
   const navType = useNavigationType();
@@ -594,12 +595,23 @@ export default function Read() {
     return () => document.removeEventListener('mouseup', onUp);
   }, []);
 
+  // 笔记草稿自动保存（按文档隔离，关闭/崩溃都不丢）
+  useEffect(() => {
+    if (!noteOpen) return;
+    const t = setTimeout(() => {
+      try { localStorage.setItem('wb:note-draft:' + relPath, noteText); setNoteDraftSaved(true); } catch { /* 忽略 */ }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [noteOpen, noteText, relPath]);
+
   const saveNote = useCallback(async () => {
     if (!sel) return;
     setNoteSaving(true);
     try {
       const r = await api.notesAppend({ sourcePath: relPath, quote: sel.text, note: noteText });
       setNoteOpen(false); setNoteText(''); setSel(null); window.getSelection()?.removeAllRanges();
+      try { localStorage.removeItem('wb:note-draft:' + relPath); } catch { /* 忽略 */ }
+      setNoteDraftSaved(false);
       setResumeHint(`已写入阅读笔记：${r.path}`);
       window.setTimeout(() => setResumeHint(null), 5000);
     } catch (err) {
@@ -1002,7 +1014,10 @@ export default function Read() {
           className="fixed z-40 -translate-x-1/2 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs shadow-lg transition-colors hover:opacity-90"
           style={{ left: sel.x, top: sel.y }}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => { setNoteOpen(true); setNoteText(''); }}
+          onClick={() => {
+            setNoteOpen(true);
+            try { setNoteText(localStorage.getItem('wb:note-draft:' + relPath) || ''); } catch { setNoteText(''); }
+          }}
         >
           <NotebookPen className="w-3.5 h-3.5" /> 记笔记
         </button>
@@ -1011,7 +1026,7 @@ export default function Read() {
       {/* 划线笔记：编辑弹窗 */}
       {noteOpen && sel && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setNoteOpen(false)}>
-          <div className="bg-card border border-border rounded-lg p-4 max-w-lg w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-card border border-border rounded-lg p-5 max-w-2xl w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-sm font-semibold mb-2 flex items-center gap-1.5"><NotebookPen className="w-4 h-4 text-primary" />添加到阅读笔记</h3>
             <blockquote className="text-xs text-muted-foreground border-l-2 border-primary/50 pl-2 mb-3 max-h-24 overflow-auto whitespace-pre-wrap">
               {sel.text}
@@ -1020,11 +1035,13 @@ export default function Read() {
               autoFocus
               value={noteText}
               onChange={(e) => setNoteText(e.target.value)}
-              rows={4}
+              rows={10}
               placeholder="写下你的想法（可留空，只记录划线）…"
-              className="w-full text-sm px-3 py-2 rounded border border-input bg-background resize-y"
+              className="w-full text-sm px-3 py-2 rounded border border-input bg-background resize-y min-h-[180px] leading-relaxed"
             />
-            <div className="flex justify-end gap-2 mt-3">
+            <div className="flex items-center gap-2 mt-3">
+              <span className="text-xs text-muted-foreground">{noteDraftSaved ? '草稿已自动保存（按文档隔离）' : '输入内容会自动保存草稿'}</span>
+              <span className="flex-1" />
               <Button variant="outline" size="sm" onClick={() => setNoteOpen(false)}>取消</Button>
               <Button size="sm" disabled={noteSaving} onClick={saveNote}>{noteSaving ? '写入中…' : '保存笔记'}</Button>
             </div>
