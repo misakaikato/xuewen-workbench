@@ -84,6 +84,7 @@ export function scanTree(baseDir, opts = {}) {
         }
         if (isDir) {
           if (!relDir && ent.name === TRASH_DIR) continue;
+          if (ent.name.startsWith('.')) continue; // 隐藏目录（.git / .xuewen / .trash 等）一律不扫描
           hasContent = true;
           walk(abs, rel);
         } else if (isFile) {
