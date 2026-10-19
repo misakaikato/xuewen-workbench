@@ -1,6 +1,6 @@
 // 聊天输入框：@-mention 文件自动补全 + 斜杠命令提示
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, AtSign } from 'lucide-react';
+import { Send, Square, AtSign, ImagePlus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
 import type { TreeNode } from '@/lib/types';
@@ -35,6 +35,9 @@ export function ChatInput({
   disabled,
   placeholder,
   onCommand,
+  images = [],
+  onImagesChange,
+  visionEnabled = true,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -44,12 +47,33 @@ export function ChatInput({
   disabled: boolean;
   placeholder: string;
   onCommand: (cmd: string) => void;
+  images?: { data: string; mimeType: string; name: string }[];
+  onImagesChange?: (imgs: { data: string; mimeType: string; name: string }[]) => void;
+  visionEnabled?: boolean;
 }) {
   const [files, setFiles] = useState<FlatFile[]>([]);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIdx, setMentionIdx] = useState(0);
   const [showCommands, setShowCommands] = useState(false);
   const [cmdIdx, setCmdIdx] = useState(0);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // 读图：转 dataURL 后存 base64（发送时再剥前缀）
+  const pickImages = async (files: FileList | null) => {
+    if (!files?.length || !onImagesChange) return;
+    const next = [...images];
+    for (const f of Array.from(files).slice(0, 4 - images.length)) {
+      if (!f.type.startsWith('image/')) continue;
+      if (f.size > 8 * 1024 * 1024) { alert(`${f.name} 超过 8MB`); continue; }
+      const dataUrl = await new Promise<string>((resolve) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result || ''));
+        r.readAsDataURL(f);
+      });
+      next.push({ data: dataUrl, mimeType: f.type, name: f.name });
+    }
+    onImagesChange(next);
+  };
   const taRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
 
@@ -188,7 +212,44 @@ export function ChatInput({
         </div>
       )}
 
+      {/* 图片预览 */}
+      {images.length > 0 && (
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
+          {images.map((im, i) => (
+            <div key={i} className="relative group">
+              <img src={im.data} alt={im.name} className="h-16 w-16 object-cover rounded-lg border border-border" />
+              <button
+                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-destructive text-white flex items-center justify-center opacity-0 group-hover:opacity-100"
+                title="移除"
+                onClick={() => onImagesChange?.(images.filter((_, j) => j !== i))}
+              >
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex items-end gap-2">
+        {visionEnabled && onImagesChange && (
+          <>
+            <button
+              className="p-2 rounded-lg border border-border hover:bg-accent text-muted-foreground shrink-0"
+              title="添加图片（需模型支持视觉）"
+              onClick={() => fileRef.current?.click()}
+              disabled={disabled || images.length >= 4}
+            >
+              <ImagePlus className="w-4 h-4" />
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => { void pickImages(e.target.files); e.target.value = ''; }}
+            />
+          </>
+        )}
         <textarea
           ref={taRef}
           value={value}
@@ -206,7 +267,7 @@ export function ChatInput({
             <Square className="w-3.5 h-3.5" />停止
           </Button>
         ) : (
-          <Button className="rounded-lg" disabled={disabled || !value.trim()} onClick={onSend}>
+          <Button className="rounded-lg" disabled={disabled || (!value.trim() && images.length === 0)} onClick={onSend}>
             <Send className="w-3.5 h-3.5" />发送
           </Button>
         )}

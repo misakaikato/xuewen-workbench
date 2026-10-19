@@ -175,7 +175,7 @@ export default function Search() {
         if (seq === seqRef.current) setLoading(false);
       }
     },
-    []
+    [smartLimit]
   );
 
   // 输入防抖

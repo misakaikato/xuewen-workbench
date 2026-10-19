@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams, Link, useSearchParams, useBlocker, useNavigationType } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { Sparkles } from 'lucide-react';
 import { findSearchLocation, searchLocationRange } from '@/lib/searchLocation';
 import { useApp } from '@/store/app';
 import { useReadingPrefs } from '@/lib/prefs';
@@ -80,6 +81,23 @@ export default function Read() {
   const [navDepth, setNavDepth] = useState({ idx: 0, max: 0 });
   const contentRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // 选中正文后浮出「问 AI」按钮：把选中文本作为引用带到智能助手
+  const [sel, setSel] = useState<{ text: string; x: number; y: number } | null>(null);
+  useEffect(() => {
+    const onUp = () => {
+      const s2 = window.getSelection();
+      const text = s2?.toString().trim() || '';
+      if (!text || text.length < 2) { setSel(null); return; }
+      // 仅在正文卡片内生效
+      const anchor = s2?.anchorNode;
+      const host = anchor instanceof Node ? (anchor.nodeType === 1 ? (anchor as HTMLElement) : anchor.parentElement) : null;
+      if (!host?.closest('[data-wb-content-card]')) { setSel(null); return; }
+      const rect = s2!.getRangeAt(0).getBoundingClientRect();
+      setSel({ text: text.slice(0, 4000), x: rect.left + rect.width / 2, y: rect.top });
+    };
+    document.addEventListener('mouseup', onUp);
+    return () => document.removeEventListener('mouseup', onUp);
+  }, []);
   const viewRef = useRef<EditorViewType | null>(null);
   const [viewReady, setViewReady] = useState(0);
   const lastFindRef = useRef<{ from: number; to: number } | null>(null);
@@ -821,6 +839,25 @@ export default function Read() {
             </div>
           )}
           </div>
+
+          {/* 选中文字 → 问 AI */}
+          {sel && (
+            <button
+              className="fixed z-40 -translate-x-1/2 -translate-y-full mb-1 flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-primary text-primary-foreground shadow-lg hover:opacity-90"
+              style={{ left: sel.x, top: sel.y }}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                const quote = sel.text.split('\n').map((l) => '> ' + l).join('\n');
+                const prompt = `${quote}\n\n请基于以上引用的内容回答：`;
+                sessionStorage.setItem('wb.agent.prefill', prompt);
+                window.getSelection()?.removeAllRanges();
+                setSel(null);
+                navigate('/agent');
+              }}
+            >
+              <Sparkles className="w-3 h-3" />问 AI
+            </button>
+          )}
 
           {/* 正文 */}
           <div ref={contentRef} data-wb-content-card className="bg-card border border-border rounded-lg p-6 md:p-8 min-h-[40vh]">
