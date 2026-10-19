@@ -264,6 +264,8 @@ export interface AgentStatus {
   endpoint: { baseUrl: string; model: string; ready: boolean; enabled: boolean };
   agentDir: string;
   skills: string[];
+  mcp?: { name: string; type: string; url?: string; enabled: boolean }[];
+  tools?: string[];
   conversations: { id: string; title: string; updatedAt: string; busy?: boolean }[];
 }
 

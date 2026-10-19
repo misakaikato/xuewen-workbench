@@ -8,6 +8,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { Type } from '@sinclair/typebox';
 
 const CONV_META = 'conversations.json';
+const TOOL_NAMES = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc'];
 
 function nowIso() {
   return new Date().toISOString();
@@ -107,6 +108,7 @@ export class AgentHub {
   deleteConversation(id) {
     const entry = this.live.get(id);
     if (entry) {
+      try { if (entry.unsubscribe) entry.unsubscribe(); } catch { /* */ }
       try { entry.session.dispose(); } catch { /* 忽略 */ }
       this.live.delete(id);
     }
@@ -279,6 +281,69 @@ export class AgentHub {
         },
       });
       pi.registerTool({
+        name: 'list_collections',
+        label: '列出逻辑集合',
+        description: '列出当前资料库的逻辑集合配置（名称与映射目录）。',
+        parameters: Type.Object({}),
+        execute: async () => {
+          const l = lib();
+          if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
+          const cols = hub.ragManager ? [] : [];
+          try {
+            const colsData = JSON.parse(fs.readFileSync(path.join(hub.dataDir, 'sources', l.id, 'collections.json'), 'utf8'));
+            const lines = (colsData || []).map((c) => `- ${c.name}: ${(c.dirs || []).join(', ')}`);
+            return { content: [{ type: 'text', text: lines.length ? lines.join('\n') : '暂无集合配置' }] };
+          } catch {
+            return { content: [{ type: 'text', text: '暂无集合配置' }] };
+          }
+        },
+      });
+      pi.registerTool({
+        name: 'word_to_markdown',
+        label: 'Word 转 Markdown',
+        description: '将一个 Word 文档（.docx）另存为同目录下的 Markdown 副本（不改原件）。',
+        parameters: Type.Object({ path: Type.String({ description: 'Word 文件相对路径' }) }),
+        execute: async (_id, params) => {
+          const l = lib();
+          if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
+          try {
+            const f = l.indexer.texts.get(params.path);
+            if (!f) return { content: [{ type: 'text', text: '未找到该 Word 文档的提取文本' }] };
+            const mdPath = params.path.replace(/\.docx?$/i, '.md');
+            const abs = path.resolve(l.baseDir, mdPath);
+            if (fs.existsSync(abs)) return { content: [{ type: 'text', text: `已存在同名的 Markdown 文件：${mdPath}` }] };
+            fs.writeFileSync(abs, `# ${path.basename(params.path, path.extname(params.path))}\n\n${f}\n`);
+            return { content: [{ type: 'text', text: `已另存为 ${mdPath}（原件不变）` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '转换失败：' + (e.message || e) }] };
+          }
+        },
+      });
+      pi.registerTool({
+        name: 'save_note',
+        label: '保存笔记',
+        description: '将一段文本保存为资料库中的新 Markdown 笔记文件。',
+        parameters: Type.Object({
+          title: Type.String({ description: '笔记标题（也是文件名）' }),
+          content: Type.String({ description: 'Markdown 内容' }),
+        }),
+        execute: async (_id, params) => {
+          const l = lib();
+          if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
+          try {
+            const safe = params.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
+            const rel = `笔记/${safe}.md`;
+            const abs = path.resolve(l.baseDir, rel);
+            if (fs.existsSync(abs)) return { content: [{ type: 'text', text: `已存在同名笔记：${rel}` }] };
+            fs.mkdirSync(path.dirname(abs), { recursive: true });
+            fs.writeFileSync(abs, `# ${params.title}\n\n${params.content}\n`);
+            return { content: [{ type: 'text', text: `已保存笔记到 ${rel}` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '保存失败：' + (e.message || e) }] };
+          }
+        },
+      });
+      pi.registerTool({
         name: 'open_doc',
         label: '打开文档',
         description: '在用户界面上打开一个文档（可选定位到某关键词）。用于把用户引导到原文。',
@@ -336,59 +401,99 @@ export class AgentHub {
       sessionManager,
       thinkingLevel: 'off',
     });
-    entry = { session, sse: new Set(), busy: false };
+    entry = { session, sse: new Set(), busy: false, curText: '', curTools: [] };
+    // 会话级事件订阅：所有轮次（含 steering 追加轮）的事件都经此转发
+    entry.unsubscribe = session.subscribe((event) => {
+      this._onEvent(convId, entry, event);
+    });
     this.live.set(convId, entry);
     return entry;
   }
 
-  /** SSE 聊天：注册响应流，prompt，转发事件，落投影 */
+  /** 会话级事件处理：转发到全部 SSE 连接，agent_settled 时收尾 */
+  _onEvent(convId, entry, event) {
+    const send = (obj) => {
+      for (const res of entry.sse) {
+        try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* 断开 */ }
+      }
+    };
+    if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') {
+      entry.curText += event.assistantMessageEvent.delta;
+      send({ t: 'delta', v: event.assistantMessageEvent.delta });
+    } else if (event.type === 'tool_execution_start') {
+      const item = { id: event.toolCallId, name: event.toolName, args: event.args, summary: '', isError: false, durationMs: 0 };
+      entry.curTools.push(item);
+      send({ t: 'tool_start', name: event.toolName, args: event.args, callId: event.toolCallId });
+    } else if (event.type === 'tool_execution_end') {
+      const summary = this._toolSummary(event.toolName, event.result);
+      const item = entry.curTools.find((x) => x.id === event.toolCallId);
+      if (item) {
+        item.summary = summary;
+        item.isError = event.isError;
+        item.durationMs = event.durationMs;
+      }
+      send({ t: 'tool_end', name: event.toolName, callId: event.toolCallId, summary, isError: event.isError, durationMs: event.durationMs });
+    } else if (event.type === 'agent_settled') {
+      // 全部自动恢复/排队工作结束：写投影、关 SSE、清 busy
+      entry.busy = false;
+      this._append(convId, { role: 'assistant', text: entry.curText || '（无输出）', tools: entry.curTools, at: nowIso() });
+      this._touch(convId);
+      send({ t: 'done' });
+      for (const res of entry.sse) {
+        try { res.end(); } catch { /* 已断开 */ }
+      }
+      entry.sse.clear();
+      entry.curText = '';
+      entry.curTools = [];
+    }
+  }
+
+  /** SSE 聊天：注册响应流，prompt 或 steer（生成中插入指令），事件经会话级订阅转发 */
   async chat(convId, text, res) {
     const entry = await this._ensureSession(convId);
-    if (entry.busy) throw new Error('会话正忙（先停止当前生成）');
-    entry.busy = true;
     entry.sse.add(res);
-    this._append(convId, { role: 'user', text, at: nowIso() });
-    this._touch(convId, this._autoTitle(convId, text));
-
     const send = (obj) => {
       try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* 断开 */ }
     };
     send({ t: 'start' });
+    this._append(convId, { role: 'user', text, at: nowIso() });
+    this._touch(convId, this._autoTitle(convId, text));
 
-    let assistantText = '';
-    const toolCalls = [];
-    const unsub = entry.session.subscribe((event) => {
-      if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
-        assistantText += event.assistantMessageEvent.delta;
-        send({ t: 'delta', v: event.assistantMessageEvent.delta });
-      } else if (event.type === 'tool_execution_start') {
-        const item = { id: event.toolCallId, name: event.toolName, args: event.args, summary: '', isError: false };
-        toolCalls.push(item);
-        send({ t: 'tool_start', name: event.toolName, args: event.args, callId: event.toolCallId });
-      } else if (event.type === 'tool_execution_end') {
-        const item = toolCalls.find((x) => x.id === event.toolCallId);
-        const summary = this._toolSummary(event.toolName, event.result);
-        if (item) {
-          item.summary = summary;
-          item.isError = event.isError;
-        }
-        send({ t: 'tool_end', name: event.toolName, callId: event.toolCallId, summary, isError: event.isError });
+    if (entry.busy) {
+      // Steering：当前轮结束后插入，响应在同一 SSE 流上继续
+      try {
+        const result = await entry.session.steer(text);
+        send({ t: 'steered', message: '已插入到当前生成' });
+        // 不关 SSE——agent_settled 时由会话级订阅统一收尾
+      } catch (e) {
+        send({ t: 'error', message: '插入失败：' + String(e.message || e) });
+        try { res.end(); } catch { /* */ }
+        entry.sse.delete(res);
       }
-    });
+      return;
+    }
 
+    entry.busy = true;
+    entry.curText = '';
+    entry.curTools = [];
     try {
       await entry.session.prompt(text);
+      // prompt() 在 run 完成时 resolve；SSE 由 agent_settled 关闭（自动恢复可能追加轮次）
+      // 若 agent_settled 已触发但 SSE 未关（时序差），兜底关闭
+      if (entry.sse.has(res) && !entry.busy) {
+        send({ t: 'done' });
+        try { res.end(); } catch { /* */ }
+        entry.sse.delete(res);
+      }
     } catch (e) {
       send({ t: 'error', message: String(e.message || e) });
-      assistantText += `\n\n（出错：${e.message || e}）`;
-    } finally {
-      unsub();
-      entry.sse.delete(res);
+      entry.curText += `\n\n（出错：${e.message || e}）`;
+      // 兜底收尾
       entry.busy = false;
-      this._append(convId, { role: 'assistant', text: assistantText || '（无输出）', tools: toolCalls, at: nowIso() });
-      this._touch(convId);
+      this._append(convId, { role: 'assistant', text: entry.curText || '（无输出）', tools: entry.curTools, at: nowIso() });
       send({ t: 'done' });
-      try { res.end(); } catch { /* 已断开 */ }
+      try { res.end(); } catch { /* */ }
+      entry.sse.delete(res);
     }
   }
 
@@ -426,8 +531,24 @@ export class AgentHub {
       endpoint: { baseUrl: llm.baseUrl || '', model: llm.model || '', ready: this.endpointReady(), enabled: !!llm.enabled },
       agentDir: this.agentDir,
       skills: this._listSkills(),
+      mcp: this._mcpStatus(),
+      tools: TOOL_NAMES,
       conversations: this.listConversations(),
     };
+  }
+
+  _mcpStatus() {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(this.agentDir, 'mcp.json'), 'utf8'));
+      return Object.entries(cfg.mcpServers || {}).map(([name, c]) => ({
+        name,
+        type: c.url ? 'http' : 'stdio',
+        url: c.url || `${c.command || ''} ${(c.args || []).join(' ')}`.trim(),
+        enabled: c.enabled !== false,
+      }));
+    } catch {
+      return [];
+    }
   }
 
   _listSkills() {

@@ -88,7 +88,8 @@ export default function AgentChat() {
 
   const send = async () => {
     const text = input.trim();
-    if (!text || busy || !active) return;
+    if (!text || !active) return;
+    // busy 时仍可发送（steering：插入到当前生成）
     setInput('');
     setBusy(true); streamRef.current = true; aiRef.current = -1;
     setMsgs((m) => { const next = [...m, { role: 'user' as const, text }, { role: 'assistant' as const, text: '', tools: [], streaming: true }]; aiRef.current = next.length - 1; return next; });
@@ -161,7 +162,23 @@ export default function AgentChat() {
           ))}
           {!convs.length && <div className="text-xs text-muted-foreground p-2">还没有对话</div>}
         </div>
-        {sk.length > 0 && <div className="p-2 border-t border-border text-[11px] text-muted-foreground truncate" title={sk.join('、')}>skills: {sk.join('、')}</div>}
+        <div className="p-2 border-t border-border text-[11px] space-y-1">
+          {sk.length > 0 && (
+            <div className="text-muted-foreground truncate" title={sk.join('、')}>
+              <span className="text-primary font-medium">skills</span> {sk.length} 个
+            </div>
+          )}
+          {(status?.mcp || []).length > 0 && (
+            <div className="text-muted-foreground truncate">
+              <span className="text-primary font-medium">MCP</span> {(status?.mcp || []).filter((m) => m.enabled).length}/{(status?.mcp || []).length} 个
+            </div>
+          )}
+          {(status?.tools || []).length > 0 && (
+            <div className="text-muted-foreground truncate" title={(status?.tools || []).join(' · ')}>
+              <span className="text-primary font-medium">工具</span> {(status?.tools || []).length} 个
+            </div>
+          )}
+        </div>
       </aside>
 
       <div className="flex-1 min-w-0 flex flex-col">
