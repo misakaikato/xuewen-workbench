@@ -50,6 +50,80 @@ export function mountAgent(hub, resolveLib) {
     }
   });
 
+  // ---------- 记忆管理 ----------
+  // GET /api/agent/memory?scope=library&agentId=default  → 某层记忆
+  r.get('/memory', (req, res) => {
+    const lib = resolveLib(req);
+    const ctx = { agentId: String(req.query.agentId || 'default'), dsId: lib?.id || null };
+    const scope = String(req.query.scope || 'library');
+    try {
+      const facts = hub.memory.loadFacts(scope, ctx);
+      const summary = hub.memory.loadSummary(scope, ctx);
+      res.json({ scope, dsId: ctx.dsId, facts, summary, stats: hub.memory.stats(ctx) });
+    } catch (e) {
+      res.status(400).json({ error: String(e.message || e) });
+    }
+  });
+
+  // POST /api/agent/memory  { scope, fact, kind?, pinned? }
+  r.post('/memory', (req, res) => {
+    const lib = resolveLib(req);
+    const ctx = { agentId: String(req.body?.agentId || 'default'), dsId: lib?.id || null };
+    const scope = String(req.body?.scope || 'library');
+    try {
+      const item = hub.memory.addFact(scope, ctx, {
+        fact: req.body?.fact,
+        kind: req.body?.kind,
+        pinned: !!req.body?.pinned,
+        source: 'user',
+      });
+      res.json({ ok: true, item });
+    } catch (e) {
+      res.status(400).json({ error: String(e.message || e) });
+    }
+  });
+
+  // PUT /api/agent/memory/:id  { fact?, pinned? }
+  r.put('/memory/:id', (req, res) => {
+    const lib = resolveLib(req);
+    const ctx = { agentId: String(req.body?.agentId || 'default'), dsId: lib?.id || null };
+    const scope = String(req.body?.scope || 'library');
+    try {
+      const item = hub.memory.updateFact(scope, ctx, req.params.id, {
+        fact: req.body?.fact,
+        pinned: req.body?.pinned,
+      });
+      res.json({ ok: true, item });
+    } catch (e) {
+      res.status(400).json({ error: String(e.message || e) });
+    }
+  });
+
+  // DELETE /api/agent/memory/:id?scope=library
+  r.delete('/memory/:id', (req, res) => {
+    const lib = resolveLib(req);
+    const ctx = { agentId: String(req.query.agentId || 'default'), dsId: lib?.id || null };
+    const scope = String(req.query.scope || 'library');
+    try {
+      const removed = hub.memory.removeFact(scope, ctx, { id: req.params.id });
+      res.json({ ok: true, removed: removed.length });
+    } catch (e) {
+      res.status(400).json({ error: String(e.message || e) });
+    }
+  });
+
+  // POST /api/agent/memory/consolidate  { scope }
+  r.post('/memory/consolidate', async (req, res) => {
+    const lib = resolveLib(req);
+    const ctx = { agentId: String(req.body?.agentId || 'default'), dsId: lib?.id || null };
+    const scope = String(req.body?.scope || 'library');
+    try {
+      res.json({ ok: true, ...(await hub._consolidate(scope, ctx)) });
+    } catch (e) {
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+
   r.put('/settings', (req, res) => {
     res.json(hub.updateSettings(req.body || {}));
   });

@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, createMcpExtension } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
 import { agentFailure } from './failure.js';
+import { MemoryStore, buildMemorySection, memoryDir, FACTS_LIMIT, PINNED_LIMIT } from './memory.js';
 
 const CONV_META = 'conversations.json';
 // 运行模式：auto=全自动 / confirm=破坏性工具需确认 / readonly=仅检索阅读
@@ -21,12 +22,15 @@ function nowIso() {
 export class AgentHub {
   constructor({ dataDir, getLib, ragManager, getRagConfig }) {
     this.dataDir = dataDir;
-    this.agentDir = path.join(dataDir, 'agent');
-    this.sessionsDir = path.join(this.agentDir, 'sessions');
-    this.convDir = path.join(this.agentDir, 'conversations');
-    fs.mkdirSync(this.sessionsDir, { recursive: true });
-    fs.mkdirSync(this.convDir, { recursive: true });
+    this.agentId = 'default';
+    // Agent 定义目录：agents/<id>/（AGENTS.md / skills / mcp.json / memory）
+    this.agentDir = path.join(dataDir, 'agents', this.agentId);
     fs.mkdirSync(path.join(this.agentDir, 'skills'), { recursive: true });
+    fs.mkdirSync(path.join(this.agentDir, 'memory'), { recursive: true });
+    // 记忆三层存储
+    this.memory = new MemoryStore(dataDir);
+    fs.mkdirSync(path.join(dataDir, 'memory'), { recursive: true });
+    this._migrateLegacyAgentDir(dataDir);
     this.getLib = getLib; // (dsId?) => Lib | null（当前库）
     this.ragManager = ragManager;
     this.getRagConfig = getRagConfig; // () => llm 配置 {enabled, baseUrl, model, apiKey}
@@ -37,6 +41,48 @@ export class AgentHub {
     this._ctxWindow = 0; // 端点模型的真实上下文窗口（0=未知，回退 128000）
     this._syncModelsJson();
     this._detectContextWindow().catch(() => {}); // 启动时探测一次，写正 models.json
+  }
+
+  /**
+   * 旧结构迁移（agent/ → agents/<id>/）：
+   * skills 与 mcp.json 保留；旧对话（conversations/、sessions/）按设计丢弃
+   */
+  _migrateLegacyAgentDir(dataDir) {
+    const legacy = path.join(dataDir, 'agent');
+    if (!fs.existsSync(legacy)) return;
+    try {
+      // skills 目录：旧有新的没有时整体搬过来
+      const oldSkills = path.join(legacy, 'skills');
+      const newSkills = path.join(this.agentDir, 'skills');
+      if (fs.existsSync(oldSkills) && fs.readdirSync(oldSkills).length && !fs.readdirSync(newSkills).length) {
+        for (const name of fs.readdirSync(oldSkills)) {
+          fs.cpSync(path.join(oldSkills, name), path.join(newSkills, name), { recursive: true });
+        }
+        console.log('[agent] 已迁移 skills:', fs.readdirSync(newSkills).join(', '));
+      }
+      // mcp.json
+      const oldMcp = path.join(legacy, 'mcp.json');
+      const newMcp = path.join(this.agentDir, 'mcp.json');
+      if (fs.existsSync(oldMcp) && !fs.existsSync(newMcp)) fs.copyFileSync(oldMcp, newMcp);
+      // 旧对话：丢弃
+      for (const d of ['conversations', 'sessions']) {
+        const p = path.join(legacy, d);
+        if (fs.existsSync(p)) {
+          fs.rmSync(p, { recursive: true, force: true });
+          console.log(`[agent] 已丢弃旧对话目录: agent/${d}`);
+        }
+      }
+      // 旧 conversations.json 一并清理（新索引在 dataDir/agent-conversations.json）
+      const oldMeta = path.join(legacy, 'conversations.json');
+      if (fs.existsSync(oldMeta)) fs.rmSync(oldMeta, { force: true });
+      // 旧 models.json 清理（新位置 agents/<id>/models.json）
+      const oldModels = path.join(legacy, 'models.json');
+      if (fs.existsSync(oldModels)) fs.rmSync(oldModels, { force: true });
+      // 空目录清理
+      if (fs.readdirSync(legacy).length === 0) fs.rmdirSync(legacy);
+    } catch (e) {
+      console.warn('[agent] 旧目录迁移失败:', e.message);
+    }
   }
 
   // ---------- 端点与模型 ----------
@@ -96,30 +142,63 @@ export class AgentHub {
 
   // ---------- 会话元数据与投影 ----------
 
+  _metaPath() {
+    return path.join(this.dataDir, CONV_META);
+  }
+
   _meta() {
     try {
-      return JSON.parse(fs.readFileSync(path.join(this.agentDir, CONV_META), 'utf8'));
+      const m = JSON.parse(fs.readFileSync(this._metaPath(), 'utf8'));
+      return { conversations: Array.isArray(m.conversations) ? m.conversations : [] };
     } catch {
       return { conversations: [] };
     }
   }
 
   _saveMeta(m) {
-    fs.writeFileSync(path.join(this.agentDir, CONV_META), JSON.stringify(m, null, 2));
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    fs.writeFileSync(this._metaPath(), JSON.stringify(m, null, 2));
   }
 
-  listConversations() {
+  /** 对话列表（按库过滤；dsId 省略=当前库） */
+  listConversations(dsId = null) {
+    const want = dsId ?? this.currentDsId();
     return this._meta().conversations
+      .filter((c) => !want || c.dsId === want)
       .map((c) => ({ ...c, busy: this.live.get(c.id)?.busy || false }))
       .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
   }
 
-  newConversation(title) {
+  /** 当前库的 dsId（来自 getLib） */
+  currentDsId() {
+    return this.getLib()?.id || null;
+  }
+
+  /** 对话目录：knowledge/<dsId>/conversations/<agentId>/ */
+  _convDir(dsId) {
+    return path.join(this.dataDir, 'knowledge', dsId, 'conversations', this.agentId);
+  }
+
+  newConversation(title, dsId = null) {
     const id = crypto.randomBytes(6).toString('hex');
+    const lib = this.getLib();
+    const belong = dsId || lib?.id || null;
+    if (!belong) throw new Error('当前没有打开的资料库，无法新建对话');
     const m = this._meta();
-    const conv = { id, title: title || '新对话', createdAt: nowIso(), updatedAt: nowIso() };
+    const conv = {
+      id,
+      title: title || '新对话',
+      dsId: belong,
+      agentId: this.agentId,
+      pinned: false,
+      folderId: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
     m.conversations.push(conv);
     this._saveMeta(m);
+    const dir = this._convDir(belong);
+    fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(this._convFile(id), '');
     return conv;
   }
@@ -137,13 +216,14 @@ export class AgentHub {
     for (const f of [this._convFile(id)]) {
       try { fs.unlinkSync(f); } catch { /* 忽略 */ }
     }
-    // pi 会话文件（sessions/<id>.jsonl）一并清
-    try { fs.unlinkSync(path.join(this.sessionsDir, id + '.jsonl')); } catch { /* 忽略 */ }
     return { ok: true };
   }
 
   _convFile(id) {
-    return path.join(this.convDir, id + '.jsonl');
+    const conv = this._meta().conversations.find((c) => c.id === id);
+    const dsId = conv?.dsId || this.currentDsId();
+    if (!dsId) throw new Error('对话不存在或无法确定所属资料库: ' + id);
+    return path.join(this._convDir(dsId), id + '.jsonl');
   }
 
   _touch(id, title) {
@@ -312,7 +392,7 @@ export class AgentHub {
           if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
           const cols = hub.ragManager ? [] : [];
           try {
-            const colsData = JSON.parse(fs.readFileSync(path.join(hub.dataDir, 'sources', l.id, 'collections.json'), 'utf8'));
+            const colsData = JSON.parse(fs.readFileSync(path.join(hub.dataDir, 'knowledge', l.id, 'collections.json'), 'utf8'));
             const lines = (colsData || []).map((c) => `- ${c.name}: ${(c.dirs || []).join(', ')}`);
             return { content: [{ type: 'text', text: lines.length ? lines.join('\n') : '暂无集合配置' }] };
           } catch {
@@ -384,6 +464,98 @@ export class AgentHub {
           return { content: [{ type: 'text', text: `已在界面打开 ${params.path}${params.term ? '（定位到「' + params.term + '」）' : ''}` }] };
         },
       });
+
+      // ---------- 记忆工具（对用户透明） ----------
+      const memCtx = () => ({ agentId: hub.agentId, dsId: hub.currentDsId() });
+
+      pi.registerTool({
+        name: 'remember',
+        label: '记住',
+        description: '把一条值得长期保留的信息写入记忆。用于用户的稳定偏好、跨对话有用的结论、明确约定。不要记一次性问题或可随时查到的事实。',
+        parameters: Type.Object({
+          fact: Type.String({ description: '要记住的内容，一句话，具体明确' }),
+          kind: Type.Optional(Type.Union([Type.Literal('preference'), Type.Literal('knowledge'), Type.Literal('convention')], { description: '偏好/知识/约定' })),
+          scope: Type.Optional(Type.Union([Type.Literal('global'), Type.Literal('agent'), Type.Literal('library')], { description: 'global=跨库偏好；agent=你的习性；library=本库知识（默认）' })),
+          pinned: Type.Optional(Type.Boolean({ description: '是否固定（永不淘汰且总是注入）。只在你确信未来多次对话都需要时使用' })),
+        }),
+        execute: async (_id, params) => {
+          try {
+            const ctx = memCtx();
+            const scope = params.scope || 'library';
+            if (scope === 'library' && !ctx.dsId) throw new Error('当前没有打开资料库，无法写库记忆');
+            const item = hub.memory.addFact(scope, ctx, {
+              fact: params.fact,
+              kind: params.kind,
+              pinned: !!params.pinned,
+              source: convId,
+            });
+            // 容量检查：超限时后台 consolidate（不阻塞本次返回）
+            if (hub.memory.needsConsolidate(scope, ctx)) {
+              hub._consolidate(scope, ctx).catch(() => {});
+            }
+            return { content: [{ type: 'text', text: item.duplicate ? '（该内容已在记忆中）' : '已记录' }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '记录失败：' + (e.message || e) }], isError: true };
+          }
+        },
+      });
+
+      pi.registerTool({
+        name: 'forget',
+        label: '忘记',
+        description: '删除或纠正记忆。按 id 精确删除，或按 query 模糊匹配删除。用于纠正记错的内容。',
+        parameters: Type.Object({
+          id: Type.Optional(Type.String({ description: '记忆 id（精确删除）' })),
+          query: Type.Optional(Type.String({ description: '按内容模糊匹配删除' })),
+          scope: Type.Optional(Type.Union([Type.Literal('global'), Type.Literal('agent'), Type.Literal('library')], { description: '默认 library' })),
+        }),
+        execute: async (_id, params) => {
+          try {
+            const removed = hub.memory.removeFact(params.scope || 'library', memCtx(), { id: params.id, query: params.query });
+            return { content: [{ type: 'text', text: removed.length ? `已删除 ${removed.length} 条记忆` : '没有匹配到要删除的记忆' }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '删除失败：' + (e.message || e) }], isError: true };
+          }
+        },
+      });
+
+      pi.registerTool({
+        name: 'recall',
+        label: '回忆',
+        description: '检索此前的记忆条目。query 留空则返回最近的记忆（用于回答「你记得什么」）；有关键词则按相关性检索。注意：这是记忆检索，与检索文档语料的 rag_search 不同。',
+        parameters: Type.Object({
+          query: Type.String({ description: '检索关键词；留空则列出最近记忆' }),
+          scope: Type.Optional(Type.Union([Type.Literal('global'), Type.Literal('agent'), Type.Literal('library'), Type.Literal('all')], { description: '默认 all（三层都查）' })),
+          limit: Type.Optional(Type.Number({ description: '返回条数上限，默认 8' })),
+        }),
+        execute: async (_id, params) => {
+          try {
+            const hits = hub.memory.recall(params.scope || 'all', memCtx(), params.query, params.limit || 8);
+            if (!hits.length) return { content: [{ type: 'text', text: '记忆中没有相关条目' }] };
+            const lines = hits.map((h) => `- [${h.scope}] ${h.fact}${h.pinned ? '（固定）' : ''}`);
+            return { content: [{ type: 'text', text: lines.join('\n') }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '检索失败：' + (e.message || e) }], isError: true };
+          }
+        },
+      });
+
+      pi.registerTool({
+        name: 'consolidate',
+        label: '整理记忆',
+        description: '把某层的记忆条目压缩重写为摘要。当记忆积累较多、或用户要求整理记忆时使用。',
+        parameters: Type.Object({
+          scope: Type.Optional(Type.Union([Type.Literal('global'), Type.Literal('agent'), Type.Literal('library')], { description: '默认 library' })),
+        }),
+        execute: async (_id, params) => {
+          try {
+            const r = await hub._consolidate(params.scope || 'library', memCtx());
+            return { content: [{ type: 'text', text: `已整理：摘要 ${r.summaryChars} 字，保留 ${r.kept} 条记忆${r.dropped ? `，压缩归档 ${r.dropped} 条` : ''}` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '整理失败：' + (e.message || e) }], isError: true };
+          }
+        },
+      });
     };
   }
 
@@ -409,12 +581,35 @@ export class AgentHub {
       systemPromptOverride: () => [
         '你是「学问 Workbench」的内嵌助手，帮助用户在自己的资料库中检索、阅读、问答与管理。',
         '',
+        ...(() => {
+          // 三层记忆注入：全局 + Agent + 库(summary+pinned)
+          try {
+            const section = buildMemorySection(this.memory, { agentId: this.agentId, dsId: this.currentDsId() });
+            return section ? [section, ''] : [];
+          } catch {
+            return [];
+          }
+        })(),
+        '',
         '## 工具使用规则（对用户完全透明——绝不提及工具名称或使用过程）',
         '- 回答语料问题前，自行检索（语义用 rag_search，关键词用 search_corpus），基于命中段落作答。',
         '- 答案中标注出处为 [文件名.ext] 格式（如 [第1章 入门.md]），不要说「根据 rag_search 的结果」。',
         '- 需要看全文时自行读取，不要告诉用户「我用 read_doc 读取了文件」。',
         '- 要用户查看某文档时直接给出文件名引用（自动可点击跳转），不要说「你可以用 open_doc 打开」。',
         '- 管理操作（重建索引等）直接执行后报告结果，不要列出可用的工具或命令。',
+        '',
+        '## 记忆',
+        '- 遇到值得长期记住的信息（用户的稳定偏好、跨对话有用的结论、明确约定）时，静默调用 remember。',
+        '- 只有确信「未来多次对话都需要」时才设 pinned=true（每层上限 20 条）。',
+        '- 一次性问题、可随时从语料查到的事实不要记（那些用 rag_search）。',
+        '- 发现记错时用 forget 纠正，不要追加「更正」条目。',
+        '- 记不清以前记过什么时用 recall 检索本库记忆。',
+        '- 记忆操作对用户透明：不说「我记住了」「已写入记忆」，除非用户明确问起。',
+        '- 记忆作用域判断（重要）：',
+        '  · scope=global：用户对「你如何回答」的偏好（语言、风格、格式、结论先行等），在任何资料库都适用',
+        '  · scope=agent：你自己的工作习性（比如总是先查索引再回答）',
+        '  · scope=library（默认）：只与当前资料库内容有关的知识',
+        '- 拿不准时：涉及「用户希望我怎么回答」→ global；涉及「这个库里有什么」→ library。',
         '',
         '## Skills 使用规则',
         '- 如果用户的任务匹配某个 skill（如分析文档、生成报告等），可以读取该 skill 的 SKILL.md 了解如何执行，然后按 skill 指引操作。',
@@ -431,7 +626,12 @@ export class AgentHub {
     });
     await loader.reload();
     const settings = SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2 } });
-    const sessionManager = SessionManager.create(cwd, this.sessionsDir);
+    // pi 会话文件与对话投影同目录：knowledge/<dsId>/conversations/<agentId>/
+    const convMeta = this._meta().conversations.find((c) => c.id === convId);
+    const convDsId = convMeta?.dsId || this.currentDsId() || 'default';
+    const sessionDir = this._convDir(convDsId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const sessionManager = SessionManager.create(cwd, sessionDir);
     // 会话文件名与 convId 对齐：pi 默认生成自己的文件名；此处接受 pi 命名，投影按 convId 存
     const { session } = await createAgentSession({
       cwd,
@@ -659,6 +859,56 @@ ${m.text}
         }
       }
     });
+  }
+
+  /** 通用 LLM 补全（记忆压缩/摘要用，独立于 pi 会话） */
+  async _llmComplete(messages, maxTokens = 800) {
+    const c = this.llm();
+    if (!this.endpointReady()) throw new Error('生成端点未配置');
+    const r = await fetch(c.baseUrl.replace(/\/$/, '') + '/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(c.apiKey ? { Authorization: 'Bearer ' + c.apiKey } : {}),
+      },
+      body: JSON.stringify({ model: c.model, messages, temperature: 0.3, max_tokens: maxTokens }),
+      signal: AbortSignal.timeout(90000),
+    });
+    if (!r.ok) throw new Error('LLM 调用失败: HTTP ' + r.status);
+    const j = await r.json();
+    const text = j.choices?.[0]?.message?.content;
+    if (!text) throw new Error('LLM 返回为空');
+    return String(text).trim();
+  }
+
+  /**
+   * 整理某层记忆：facts + 旧 summary → 新 summary，然后裁剪（保留 pinned + 最近 150 条）
+   * pinned 内容不再并入 summary（避免重复注入）
+   */
+  async _consolidate(scope, ctx) {
+    const all = this.memory.loadFacts(scope, ctx);
+    const prevSummary = this.memory.loadSummary(scope, ctx).trim();
+    const compressible = all.filter((f) => !f.pinned);
+    if (!compressible.length && !prevSummary) return { summaryChars: prevSummary.length, kept: all.length, dropped: 0 };
+
+    const factsText = compressible.map((f, i) => `${i + 1}. [${f.kind}] ${f.fact}`).join('\n');
+    const prompt = [
+      '把下列记忆条目整理成摘要，供后续对话参考。',
+      '要求：用简短要点列表（每条一行，以「- 」开头）；同类信息合并；保留关键事实与原意；去掉重复与琐碎细节；',
+      '用中文；不超过 800 字；不要添加原文没有的信息；不要写「摘要：」之类的前缀。',
+      prevSummary ? `\n【已有摘要】\n${prevSummary}` : '',
+      `\n【新增记忆条目】\n${factsText}`,
+    ].filter(Boolean).join('\n');
+
+    const summary = await this._llmComplete([
+      { role: 'system', content: '你是记忆整理助手，只做信息压缩，不编造内容。' },
+      { role: 'user', content: prompt },
+    ], 900);
+
+    this.memory.saveSummary(scope, ctx, summary);
+    const plan = this.memory.planPrune(scope, ctx);
+    if (plan.dropped.length) this.memory.applyPrune(scope, ctx, plan.kept);
+    return { summaryChars: summary.length, kept: plan.kept.length, dropped: plan.dropped.length };
   }
 
   async abort(convId) {

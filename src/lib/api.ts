@@ -252,6 +252,13 @@ export const api = {
   agentEditMessage: (id: string, idx: number, text: string) => req<{ ok: boolean }>(`/api/agent/session/${encodeURIComponent(id)}/message/${idx}`, json('PUT', { text })),
   agentDeleteMessage: (id: string, idx: number) => req<{ ok: boolean }>(`/api/agent/session/${encodeURIComponent(id)}/message/${idx}`, json('DELETE', {})),
   agentConfirm: (confirmId: string, approved: boolean) => req<{ ok: boolean }>('/api/agent/confirm', json('POST', { id: confirmId, approved })),
+
+  // ---- 记忆管理 ----
+  memoryGet: (scope: string) => req<MemoryPayload>('/api/agent/memory?scope=' + encodeURIComponent(scope)),
+  memoryAdd: (body: { scope: string; fact: string; kind?: string; pinned?: boolean }) => req<{ ok: boolean; item: MemoryFact }>('/api/agent/memory', json('POST', body)),
+  memoryUpdate: (id: string, body: { scope: string; fact?: string; pinned?: boolean }) => req<{ ok: boolean }>('/api/agent/memory/' + encodeURIComponent(id), json('PUT', body)),
+  memoryDelete: (id: string, scope: string) => req<{ ok: boolean; removed: number }>('/api/agent/memory/' + encodeURIComponent(id) + '?scope=' + encodeURIComponent(scope), json('DELETE', {})),
+  memoryConsolidate: (scope: string) => req<{ ok: boolean; summaryChars: number; kept: number; dropped: number }>('/api/agent/memory/consolidate', json('POST', { scope })),
 };
 
 export interface RagConfig {
@@ -265,6 +272,23 @@ export interface AgentFailure {
   title: string;
   message: string;
   details?: string;
+}
+
+export interface MemoryFact {
+  id: string;
+  fact: string;
+  kind: 'preference' | 'knowledge' | 'convention';
+  pinned: boolean;
+  source: string | null;
+  at: string;
+}
+
+export interface MemoryPayload {
+  scope: string;
+  dsId: string | null;
+  facts: MemoryFact[];
+  summary: string;
+  stats: Record<string, { facts: number; pinned: number; hasSummary: boolean; summaryChars: number }>;
 }
 
 export interface AgentMessage {
