@@ -82,7 +82,7 @@ export function EntryActionDialogs({
             <AlertDialogTitle>删除{action.isDir ? '文件夹' : '文档'}？</AlertDialogTitle>
             <AlertDialogDescription className="break-all">
               「{action.path}」{action.isDir ? '及其中全部内容' : '及其元数据文件（如有）'}将移到回收站
-              （系统废纸篓；不可用时移入资料库内的 .trash/ 文件夹），可从回收站恢复。
+              （系统废纸篓；不可用时移入知识库内的 .trash/ 文件夹），可从回收站恢复。
             </AlertDialogDescription>
           </AlertDialogHeader>
           {errorLine}
@@ -153,10 +153,10 @@ export function EntryActionDialogs({
                 targetDir === d ? 'bg-accent font-medium' : ''
               }`}
               style={{ paddingLeft: 8 + (d ? d.split('/').length - 1 : 0) * 12 }}
-              title={d || '资料库根目录'}
+              title={d || '知识库根目录'}
             >
               <Folder className="w-4 h-4 shrink-0 text-warning" />
-              <span className="truncate">{d ? d.split('/').pop() : '（资料库根目录）'}</span>
+              <span className="truncate">{d ? d.split('/').pop() : '（知识库根目录）'}</span>
             </button>
           ))}
           {shown.length === 0 && <div className="text-xs text-muted-foreground p-2">没有匹配的目录</div>}

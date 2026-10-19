@@ -1,5 +1,5 @@
-// 整体布局：顶栏（logo、概览、资料库切换、全局搜索、重扫、设置）+ 可折叠侧栏（目录树）+ 内容区
-// 小屏幕侧栏变为抽屉；Escape 关闭抽屉。多资料库：切换器列出全部已打开库，可添加/移除。
+// 整体布局：顶栏（logo、概览、知识库切换、全局搜索、重扫、设置）+ 可折叠侧栏（目录树）+ 内容区
+// 小屏幕侧栏变为抽屉；Escape 关闭抽屉。多知识库：切换器列出全部已打开库，可添加/移除。
 import { useEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/store/app';
@@ -72,7 +72,7 @@ export function Layout() {
   const isMacElectron = /Electron/.test(navigator.userAgent) && /Mac/.test(navigator.platform || '');
   const currentName = config?.baseDir
     ? (libraries.find((l) => l.id === dsId)?.name ?? config.baseDir)
-    : '未打开资料库';
+    : '未打开知识库';
 
   // 侧栏宽度：可拖拽调整并持久化（仅桌面侧栏；抽屉固定宽）
   const [sideW, setSideW] = useState(() => {
@@ -135,7 +135,7 @@ export function Layout() {
           <FileTree tree={tree} filter={treeFilter} onFilterChange={setTreeFilter} />
         ) : st?.scanning ? (
           // 扫描中骨架屏：代替干巴巴的一行字
-          <div className="p-2 space-y-1.5" aria-label="正在扫描资料库">
+          <div className="p-2 space-y-1.5" aria-label="正在扫描知识库">
             <div className="h-6 rounded bg-sidebar-accent/70 animate-pulse w-3/5" />
             {Array.from({ length: 9 }, (_, i) => (
               <div key={i} className="h-7 rounded bg-sidebar-accent/60 animate-pulse" style={{ width: `${92 - (i % 4) * 14}%` }} />
@@ -170,19 +170,19 @@ export function Layout() {
         </button>
         <Link to="/" className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors px-1">
           <LayoutDashboard className="w-4 h-4" />
-          <span className="hidden sm:inline">语料概览</span>
+          <span className="hidden sm:inline">知识库概览</span>
         </Link>
         <Link to="/agent" className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors px-1" title="智能助手：多轮对话 · 工具 · skills/MCP">
           <Bot className="w-4 h-4" />
           <span className="hidden sm:inline">智能助手</span>
         </Link>
         <span className="text-border">|</span>
-        {/* 资料库切换器：列出全部已打开库；添加/移除入口 */}
+        {/* 知识库切换器：列出全部已打开库；添加/移除入口 */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary transition-colors min-w-0 px-1.5 py-1 rounded hover:bg-accent/50"
-              title={config?.baseDir || '打开资料库'}
+              title={config?.baseDir || '打开知识库'}
             >
               <Database className="w-3.5 h-3.5 shrink-0" />
               <span className="truncate max-w-[120px] md:max-w-[240px]">{currentName}</span>
@@ -190,7 +190,7 @@ export function Layout() {
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-96">
-            <DropdownMenuLabel>资料库（{libraries.length} 个已打开）</DropdownMenuLabel>
+            <DropdownMenuLabel>知识库（{libraries.length} 个已打开）</DropdownMenuLabel>
             {libraries.map((l) => (
               <DropdownMenuItem
                 key={l.id}
@@ -213,14 +213,14 @@ export function Layout() {
             ))}
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => navigate('/setup')}>
-              <Plus className="w-4 h-4 shrink-0" /> 添加资料库…
+              <Plus className="w-4 h-4 shrink-0" /> 添加知识库…
             </DropdownMenuItem>
             <DropdownMenuItem
               disabled={!config?.configured}
               onClick={() => setConfirmRemove(true)}
               className="text-destructive focus:text-destructive"
             >
-              <FolderMinus className="w-4 h-4 shrink-0" /> 从工作区移除当前资料库…
+              <FolderMinus className="w-4 h-4 shrink-0" /> 从工作区移除当前知识库…
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -249,7 +249,7 @@ export function Layout() {
         </button>
         <button
           className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground hover:text-primary disabled:opacity-40"
-          title="重新扫描资料库"
+          title="重新扫描知识库"
           disabled={rescanning || !config?.configured}
           onClick={async () => {
             setRescanning(true);
@@ -333,7 +333,7 @@ export function Layout() {
         </DialogContent>
       </Dialog>
 
-      {/* 移除当前资料库确认：只移出工作区（停监听/卸索引），不动磁盘文件与草稿/最近记录 */}
+      {/* 移除当前知识库确认：只移出工作区（停监听/卸索引），不动磁盘文件与草稿/最近记录 */}
       <AlertDialog open={confirmRemove} onOpenChange={setConfirmRemove}>
         <AlertDialogContent>
           <AlertDialogHeader>

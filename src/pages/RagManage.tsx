@@ -170,7 +170,7 @@ export default function RagManage() {
       {/* 索引区 */}
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
-          <Zap className="w-4 h-4" /> 语义索引 <span className="text-xs text-muted-foreground font-normal">（当前资料库）</span>
+          <Zap className="w-4 h-4" /> 语义索引 <span className="text-xs text-muted-foreground font-normal">（当前知识库）</span>
         </h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs mb-3">
           <div><div className="text-muted-foreground">状态</div><div className="font-medium">
@@ -242,7 +242,7 @@ export default function RagManage() {
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
           <SlidersHorizontal className="w-4 h-4" /> 切块与检索参数
-          <span className="text-xs text-muted-foreground font-normal">（按当前资料库；改切块/嵌入后需重建索引）</span>
+          <span className="text-xs text-muted-foreground font-normal">（按当前知识库；改切块/嵌入后需重建索引）</span>
         </h2>
         {cfg && (
           <>

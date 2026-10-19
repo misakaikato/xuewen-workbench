@@ -1,4 +1,4 @@
-// 资料库管理：添加（输入/测试/加载）+ 已打开资料库清单（状态、移除）。
+// 知识库管理：添加（输入/测试/加载）+ 已打开知识库清单（状态、移除）。
 // 移除只移出工作区：停监听、卸内存索引；磁盘文件与草稿/最近记录/集合配置全保留。
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -40,7 +40,7 @@ export default function Setup() {
     try {
       await api.saveConfig(baseDir);
       await refreshConfig();
-      setSaveMsg('已添加并打开资料库。');
+      setSaveMsg('已添加并打开知识库。');
       setBaseDir('');
       setResult(null);
       navigate('/');
@@ -65,27 +65,27 @@ export default function Setup() {
         <img src="/logo-64.png" alt="Workbench" className="w-12 h-12 rounded-xl shrink-0 select-none" draggable={false} />
         <div>
           <h1 className="text-lg font-semibold leading-tight">Workbench</h1>
-          <p className="text-sm text-muted-foreground">资料库管理</p>
+          <p className="text-sm text-muted-foreground">知识库管理</p>
         </div>
       </div>
       <p className="text-sm text-muted-foreground mb-6">
-        资料库是本机的一个语料目录（包含 Markdown、JSON、Word 文件）。可以同时打开多个，随时切换或移出工作区；
+        知识库是本机的一个知识库目录（包含 Markdown、JSON、Word 文件）。可以同时打开多个，随时切换或移出工作区；
         路径支持中文、空格与 Windows 反斜杠，配置在服务端持久化，重启后自动恢复。
       </p>
 
-      {/* 添加资料库 */}
+      {/* 添加知识库 */}
       <section className="bg-card border border-border rounded-lg p-4 mb-6">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
-          <Plus className="w-4 h-4 text-primary" /> 添加资料库
+          <Plus className="w-4 h-4 text-primary" /> 添加知识库
         </h2>
-        <label className="block text-sm font-medium mb-1">语料根目录</label>
+        <label className="block text-sm font-medium mb-1">知识库根目录</label>
         <input
           value={baseDir}
           onChange={(e) => {
             setBaseDir(e.target.value);
             setResult(null);
           }}
-          placeholder={'例如 D:\\语料库 或 /Users/me/corpus'}
+          placeholder={'例如 D:\\知识库 或 /Users/me/corpus'}
           className="w-full px-3 py-2 rounded border border-input bg-background text-sm mono"
         />
         <p className="text-xs text-muted-foreground mt-1">
@@ -130,13 +130,13 @@ export default function Setup() {
         {saveMsg && <div className="mt-3 text-sm text-muted-foreground">{saveMsg}</div>}
       </section>
 
-      {/* 已打开的资料库 */}
+      {/* 已打开的知识库 */}
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
-          <Database className="w-4 h-4 text-primary" /> 已打开的资料库（{libraries.length}）
+          <Database className="w-4 h-4 text-primary" /> 已打开的知识库（{libraries.length}）
         </h2>
         {libraries.length === 0 ? (
-          <div className="text-sm text-muted-foreground">还没有打开任何资料库，先在上方添加一个。</div>
+          <div className="text-sm text-muted-foreground">还没有打开任何知识库，先在上方添加一个。</div>
         ) : (
           <ul className="divide-y divide-border">
             {libraries.map((l) => {

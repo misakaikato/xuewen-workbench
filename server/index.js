@@ -334,7 +334,7 @@ app.get('/api/ui-settings', (req, res) => {
 });
 
 app.put('/api/ui-settings', (req, res) => {
-  const { theme, autoUpdate } = req.body || {};
+  const { theme, autoUpdate, notesDir } = req.body || {};
   const patch = {};
   if (theme !== undefined) {
     if (!['A', 'B', 'C'].includes(theme)) {
@@ -348,8 +348,15 @@ app.put('/api/ui-settings', (req, res) => {
     }
     patch.autoUpdate = autoUpdate;
   }
+  if (notesDir !== undefined) {
+    const dir = String(notesDir).trim();
+    if (!dir || dir.includes('..') || /[\\/]/.test(dir)) {
+      return res.status(400).json({ error: '阅读笔记目录必须是单层目录名' });
+    }
+    patch.notesDir = dir;
+  }
   if (Object.keys(patch).length === 0) {
-    return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate）' });
+    return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate / notesDir）' });
   }
   const next = saveUiSettings(patch);
   res.json({ ok: true, ...next });
@@ -562,6 +569,37 @@ app.put('/api/file', async (req, res) => {
     res.json({ ok: true, mtimeMs: st.mtimeMs });
   } catch (e) {
     res.status(e.status || 500).json({ error: '写入失败: ' + e.message });
+  }
+});
+
+// 阅读划线笔记：追加到知识库的笔记目录（默认「阅读笔记」），按源文档聚合成一个 md
+app.post('/api/notes/append', async (req, res) => {
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const { sourcePath, quote, note } = req.body || {};
+  if (!String(sourcePath || '').trim()) return res.status(400).json({ error: '缺少 sourcePath' });
+  if (!String(quote || '').trim() && !String(note || '').trim()) {
+    return res.status(400).json({ error: '引用和笔记不能同时为空' });
+  }
+  const { notesDir } = getUiSettings();
+  try {
+    const source = String(sourcePath);
+    const stem = path.posix.basename(source).replace(/\.(md|txt|json|docx?)$/i, '') || '未命名';
+    const rel = path.posix.join(notesDir, stem + '.md');
+    const abs = resolveWithin(lib, rel);
+    const first = !fs.existsSync(abs);
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const body = String(note || '').trim();
+    const quoted = String(quote || '').trim().split(/\r?\n/).map((line) => '> ' + line).join('\n');
+    const block = [first ? `# ${stem} 阅读笔记\n` : '', `## ${stamp}`, quoted, body ? `\n${body}` : '', `\n来源：${source}\n`, ''].filter(Boolean).join('\n');
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.appendFileSync(abs, (first ? '' : '\n---\n\n') + block, 'utf8');
+    await lib.scanner.rescan();
+    res.json({ ok: true, path: rel });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: '写入笔记失败: ' + e.message });
   }
 });
 

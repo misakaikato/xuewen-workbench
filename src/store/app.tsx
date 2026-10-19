@@ -1,4 +1,4 @@
-// 应用级上下文：资料库配置、扫描状态、目录树。支持多资料库并行，
+// 应用级上下文：知识库配置、扫描状态、目录树。支持多知识库并行，
 // 当前库由 activeId 决定；所有请求经 api 作用域携带 ds，切库后统一重取并丢弃旧库响应。
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, setApiScope } from '@/lib/api';
@@ -46,7 +46,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const dsChanged = cfg.configured && cfg.dsId !== prevDs;
     const genChanged = cfg.configured && cfg.generation !== prevGen;
     if (dsChanged || genChanged) {
-      // 资料库或代际变化：重取目录树
+      // 知识库或代际变化：重取目录树
       const t = await api.tree();
       if (genRef.current === cfg.generation && dsRef.current === cfg.dsId) setTree(t.tree);
     } else if (cfg.configured && !tree) {

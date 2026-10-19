@@ -306,7 +306,7 @@ export default function Edit() {
     return () => pullLinksAbortRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dsId, relPath, loadSeq]);
-  // 语料引用名称清单注入编辑器（挂载与 refNames 变化时）
+  // 知识库引用名称清单注入编辑器（挂载与 refNames 变化时）
   useEffect(() => {
     pushCorpusNames(viewRef.current, refNames, collections);
   }, [refNames, collections, loadSeq]);
@@ -691,7 +691,7 @@ export default function Edit() {
         </div>
       </div>
 
-      {/* 语料引用解析弹层 */}
+      {/* 知识库引用解析弹层 */}
       <CorpusRefPopover req={crReq} onClose={() => setCrReq(null)} />
 
       {/* 草稿恢复提示 */}

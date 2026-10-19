@@ -121,13 +121,13 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
 
         <CommandSeparator />
         <CommandGroup heading="页面">
-          <CommandItem value="语料概览 dashboard" onSelect={() => go('/')}><LayoutDashboard />语料概览</CommandItem>
+          <CommandItem value="知识库概览 dashboard" onSelect={() => go('/')}><LayoutDashboard />知识库概览</CommandItem>
           <CommandItem value="浏览全部 browse" onSelect={() => go('/browse')}><FolderOpen />浏览全部</CommandItem>
           <CommandItem value="检索 search" onSelect={() => go('/search')}><Search />检索</CommandItem>
           <CommandItem value="智能助手 agent" onSelect={() => go('/agent')}><Bot />智能助手</CommandItem>
           <CommandItem value="RAG 管理 rag" onSelect={() => go('/rag')}><DatabaseZap />RAG 管理</CommandItem>
           <CommandItem value="设置 settings" onSelect={() => go('/settings')}><Settings />设置</CommandItem>
-          <CommandItem value="资料库管理 setup" onSelect={() => go('/setup')}><Database />资料库管理</CommandItem>
+          <CommandItem value="知识库管理 setup" onSelect={() => go('/setup')}><Database />知识库管理</CommandItem>
         </CommandGroup>
 
         <CommandGroup heading="动作">
@@ -139,7 +139,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
               rescan();
             }}
           >
-            <RefreshCw />重新扫描资料库
+            <RefreshCw />重新扫描知识库
           </CommandItem>
           <CommandItem
             value="切换外观主题 theme"

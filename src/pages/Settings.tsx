@@ -43,9 +43,25 @@ export default function Settings() {
     api.getUiSettings().then((s) => setAutoUpdate(s.autoUpdate)).catch(() => {});
   }, []);
   const { theme, setTheme } = useTheme();
+
+  // 阅读笔记目录：全局界面设置（默认「阅读笔记」）
+  useEffect(() => {
+    api.getUiSettings().then((cfg) => setNotesDir(cfg.notesDir || '阅读笔记')).catch(() => {});
+  }, []);
+  const saveNotesDir = async (dir: string) => {
+    try {
+      const r = await api.saveUiSettings({ notesDir: dir });
+      setNotesDir(r.notesDir);
+      setMsg('阅读笔记目录已保存：' + r.notesDir);
+      setTimeout(() => setMsg(''), 2500);
+    } catch (e) {
+      setMsg('保存失败：' + (e as Error).message);
+    }
+  };
   const [collections, setCollections] = useState<Collection[]>([]);
   const [mappings, setMappings] = useState<MetadataMapping[]>([]);
   const [msg, setMsg] = useState('');
+  const [notesDir, setNotesDir] = useState('阅读笔记');
   const [inspect, setInspect] = useState<Record<string, string>>({});
   const [blocklistRaw, setBlocklistRaw] = useState('');
   const [ignoredCount, setIgnoredCount] = useState<number | null>(null);
@@ -191,6 +207,16 @@ export default function Settings() {
       {tab === 'reading' && (
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="text-sm font-semibold mb-3">阅读与外观</h2>
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
+          <span className="w-24 text-sm text-muted-foreground">笔记目录</span>
+          <input
+            value={notesDir}
+            onChange={(e) => setNotesDir(e.target.value)}
+            onBlur={() => notesDir.trim() && saveNotesDir(notesDir.trim())}
+            className="px-2 py-1 rounded border border-input bg-background text-sm w-56"
+          />
+          <span className="text-xs text-muted-foreground">划线笔记写入知识库中的该目录（默认「阅读笔记」），失焦即保存</span>
+        </div>
         <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
           <label className="flex items-center gap-2">
             <span className="w-24 text-muted-foreground">正文字体</span>
@@ -252,7 +278,7 @@ export default function Settings() {
           <Button variant="outline" size="sm" className="text-xs" onClick={reset}>
             恢复默认（{DEFAULT_PREFS.fontSize}px / {DEFAULT_PREFS.lineHeight} 行距 / 浅色）
           </Button>
-          <span className="text-xs text-muted-foreground">仅影响界面呈现，不修改源文件，不清除资料库与草稿。</span>
+          <span className="text-xs text-muted-foreground">仅影响界面呈现，不修改源文件，不清除知识库与草稿。</span>
         </div>
       </section>
       )}
