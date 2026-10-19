@@ -8,6 +8,7 @@ import { useApp } from '@/store/app';
 import { MarkdownMsg } from '@/components/agent/MarkdownMsg';
 import { inline } from '@/components/agent/mdInline';
 import { ChatInput } from '@/components/agent/ChatInput';
+import { type Block, initialBlocks, blocksToPrompt, hasUserText, appendQuote } from '@/components/agent/blocks';
 import { ToolCard, type ToolItem } from '@/components/agent/ToolCard';
 import { ThinkingBlock, ContextBar } from '@/components/agent/Extras';
 import { InputDialog, FolderPickerDialog } from '@/components/agent/Dialogs';
@@ -49,7 +50,7 @@ export default function AgentChat() {
   
   const [active, setActive] = useState<string | null>(() => new URLSearchParams(window.location.search).get('c'));
   const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [input, setInput] = useState('');
+  const [blocks, setBlocks] = useState<Block[]>(initialBlocks());
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<AgentStatus | null>(null);
   const [usage, setUsage] = useState<Msg['usage'] | null>(null);
@@ -85,6 +86,8 @@ export default function AgentChat() {
     return Number.isFinite(n) && n >= 200 && n <= 480 ? n : 240;
   });
   const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
+  const [selConvs, setSelConvs] = useState<Set<string>>(new Set());
+  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef(false);
@@ -115,7 +118,7 @@ export default function AgentChat() {
     const prefill = sessionStorage.getItem('wb.agent.prefill');
     if (!prefill) return;
     sessionStorage.removeItem('wb.agent.prefill');
-    setInput(prefill);
+    setBlocks((prev) => appendQuote(prev, prefill, '阅读页引用'));
   }, []);
 
   // 切换资料库：当前对话若不属于新库，立即清空（后端也会拒绝跨库对话，这里避免界面误导）
@@ -175,7 +178,7 @@ export default function AgentChat() {
     window.history.replaceState(null, '', url);
   };
   const open = (id: string) => { openConv(id); };
-  const newConv = async () => { const c = await api.agentNewSession(); await refresh(); openConv(c.id); setInput(''); };
+  const newConv = async () => { const c = await api.agentNewSession(); await refresh(); openConv(c.id); setBlocks(initialBlocks()); };
   const del = async (id: string) => { if (!window.confirm('删除这个对话？')) return; await api.agentDeleteSession(id); if (active === id) openConv(null); refresh(); };
   const fork = async (msgIndex: number) => { const c = await api.agentFork(active!, msgIndex); await refresh(); openConv(c.id); };
   const doExport = () => { if (active) window.open(api.agentExport(active), '_blank'); };
@@ -211,7 +214,7 @@ export default function AgentChat() {
       await api.agentDeleteMessage(active, i).catch(() => {});
     }
     // 重新发送
-    setInput(userText);
+    setBlocks([{ id: 'b_' + Date.now(), type: 'text', value: userText }]);
     requestAnimationFrame(() => send());
   };
 
@@ -221,7 +224,7 @@ export default function AgentChat() {
     if (cmd === '/model') { setSettingsOpen(true); return; }
     if (cmd === '/skills') { const sk = status?.skills || []; setMsgs((m) => [...m, { role: 'user', text: cmd }, { role: 'assistant', text: sk.length ? `可用 skills：\n${sk.map((s) => `- \`${s}\``).join('\n')}` : '暂无。放 SKILL.md 到应用数据 agent/skills/<名称>/ 即可。' }]); return; }
     if (cmd === '/mcp') { const mcp = status?.mcp || []; setMsgs((m) => [...m, { role: 'user', text: cmd }, { role: 'assistant', text: mcp.length ? `MCP：\n${mcp.map((s) => `- \`${s.name}\` (${s.type}) ${s.enabled ? '✅' : '⏸'}`).join('\n')}` : '暂无。配置 agent/mcp.json 即可。' }]); return; }
-    if (cmd === '/status') { setInput('用 corpus_status 查看资料库状态并简要报告'); return; }
+    if (cmd === '/status') { setBlocks([{ id: 'b_' + Date.now(), type: 'text', value: '用 corpus_status 查看资料库状态并简要报告' }]); return; }
     if (cmd === '/export') { doExport(); return; }
   };
 
@@ -243,7 +246,8 @@ export default function AgentChat() {
   }, [msgs]);
 
   const send = async (retryText?: string) => {
-    const text = (retryText ?? input).trim();
+    let text = (retryText ?? blocksToPrompt(blocks)).trim();
+    if (text && !retryText && !hasUserText(blocks)) text += '\n\n请基于以上引用的内容回答。';
     if (!text) return;
     // 无活跃对话时自动新建
     let convId = active;
@@ -255,7 +259,7 @@ export default function AgentChat() {
       await refresh();
     }
     const pending = images;
-    setInput('');
+    setBlocks(initialBlocks());
     setImages([]);
     autoScrollRef.current = true;
     setBusy(true); streamRef.current = true; aiRef.current = -1;
@@ -300,12 +304,12 @@ export default function AgentChat() {
     }
   };
   const stop = () => { abortRef.current?.abort(); if (active) api.agentAbort(active).catch(() => {}); };
-  // 引用消息内容：以 markdown 引用块插入输入框
+  // 引用消息内容：插入引用 chip（可多个、可与文字交替）
   const quoteMsg = (i: number) => {
     const m = msgs[i];
     if (!m?.text) return;
-    const body = m.text.trim().split('\n').map((l) => '> ' + l).join('\n');
-    setInput((prev) => (prev ? prev + '\n' : '') + body + '\n\n');
+    const source = m.role === 'user' ? '你的提问' : '助手回复';
+    setBlocks((prev) => appendQuote(prev, m.text, source));
   };
 
   const copyMsg = (i: number) => { navigator.clipboard.writeText(msgs[i].text).then(() => { setCopied(i); setTimeout(() => setCopied(null), 1200); }); };
@@ -336,9 +340,25 @@ export default function AgentChat() {
   const renderConvRow = (c: Conv, indent: number) => (
     <div
       key={c.id}
-      className={`group flex items-center gap-1.5 pr-2 py-2 rounded-lg cursor-pointer text-sm transition-colors ${active === c.id ? 'bg-sidebar-accent text-primary font-medium' : 'hover:bg-sidebar-accent'}`}
+      draggable
+      className={`group flex items-center gap-1.5 pr-2 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
+        selConvs.has(c.id) ? 'bg-primary/15 ring-1 ring-inset ring-primary/40' : active === c.id ? 'bg-sidebar-accent text-primary font-medium' : 'hover:bg-sidebar-accent'
+      }`}
       style={{ paddingLeft: 8 + indent * 14 }}
-      onClick={() => open(c.id)}
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey) {
+          e.preventDefault();
+          setSelConvs((prev) => { const n = new Set(prev); if (n.has(c.id)) n.delete(c.id); else n.add(c.id); return n; });
+          return;
+        }
+        if (selConvs.size > 0) { setSelConvs(new Set()); return; }
+        open(c.id);
+      }}
+      onDragStart={(e) => {
+        const ids = selConvs.has(c.id) && selConvs.size > 1 ? [...selConvs] : [c.id];
+        e.dataTransfer.setData('application/x-agent-conv', JSON.stringify(ids));
+        e.dataTransfer.effectAllowed = 'move';
+      }}
     >
       <div className="truncate flex-1">{c.title || '新对话'}</div>
       <button
@@ -388,7 +408,28 @@ export default function AgentChat() {
                 const isOpen = openFolders.has(f.id);
                 return (
                   <div key={f.id}>
-                    <div className="group flex items-center gap-1 px-2 py-1.5 rounded-lg cursor-pointer text-xs text-muted-foreground hover:bg-sidebar-accent" onClick={() => setOpenFolders((st) => { const n = new Set(st); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; })}>
+                    <div
+                      className={`group flex items-center gap-1 px-2 py-1.5 rounded-lg cursor-pointer text-sm font-medium hover:bg-sidebar-accent ${dragOverFolder === f.id ? 'ring-2 ring-primary bg-primary/10' : ''}`}
+                      onClick={() => setOpenFolders((st) => { const n = new Set(st); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; })}
+                      onDragOver={(e) => {
+                        if (!e.dataTransfer.types.includes('application/x-agent-conv')) return;
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                        setDragOverFolder(f.id);
+                      }}
+                      onDragLeave={() => setDragOverFolder((cur) => (cur === f.id ? null : cur))}
+                      onDrop={async (e) => {
+                        if (!e.dataTransfer.types.includes('application/x-agent-conv')) return;
+                        e.preventDefault();
+                        setDragOverFolder(null);
+                        let ids: string[] = [];
+                        try { ids = JSON.parse(e.dataTransfer.getData('application/x-agent-conv')); } catch { /* 忽略 */ }
+                        if (!ids.length) return;
+                        for (const cid of ids) await api.convMove(cid, f.id).catch(() => {});
+                        setSelConvs(new Set());
+                        refresh();
+                      }}
+                    >
                       {isOpen ? <ChevronDown className="w-3 h-3 shrink-0" /> : <ChevronRight className="w-3 h-3 shrink-0" />}
                       {isOpen ? <FolderOpen className="w-3.5 h-3.5 shrink-0" /> : <Folder className="w-3.5 h-3.5 shrink-0" />}
                       <span className="truncate flex-1">{f.name}</span>
@@ -409,6 +450,20 @@ export default function AgentChat() {
                 );
               })}
               {conversations.filter((c) => !c.folderId).map((c) => renderConvRow(c, 0))}
+              {/* 拖到空白处 = 移出文件夹回到根目录 */}
+              <div
+                className="h-6"
+                onDragOver={(e) => { if (e.dataTransfer.types.includes('application/x-agent-conv')) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } }}
+                onDrop={async (e) => {
+                  if (!e.dataTransfer.types.includes('application/x-agent-conv')) return;
+                  e.preventDefault();
+                  let ids: string[] = [];
+                  try { ids = JSON.parse(e.dataTransfer.getData('application/x-agent-conv')); } catch { /* */ }
+                  for (const cid of ids) await api.convMove(cid, null).catch(() => {});
+                  setSelConvs(new Set());
+                  refresh();
+                }}
+              />
               {!conversations.length && <div className="text-xs text-muted-foreground p-3 text-center">还没有对话</div>}
             </div>
             <div className="p-3 border-t border-sidebar-border text-xs text-muted-foreground space-y-0.5">
@@ -471,7 +526,7 @@ export default function AgentChat() {
               <div className="flex items-center gap-2 text-muted-foreground"><Bot className="w-8 h-8" /><span className="text-lg font-medium">智能助手</span></div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-w-2xl">
                 {TEMPLATES.map((t, i) => (
-                  <button key={i} className="flex flex-col gap-2 border rounded-xl p-4 text-left hover:border-primary/50 hover:shadow-sm transition-all group" onClick={() => { setInput(t.prompt); }}>
+                  <button key={i} className="flex flex-col gap-2 border rounded-xl p-4 text-left hover:border-primary/50 hover:shadow-sm transition-all group" onClick={() => { setBlocks([{ id: 'b_' + Date.now(), type: 'text', value: t.prompt }]); }}>
                     <t.icon className="w-5 h-5 text-primary/70 group-hover:text-primary" />
                     <div className="text-sm font-medium">{t.title}</div>
                     <div className="text-xs text-muted-foreground line-clamp-2">{t.prompt}</div>
@@ -571,7 +626,7 @@ export default function AgentChat() {
         {/* 输入区（含上下文指示） */}
         <div className="shrink-0 border-t border-border bg-card">
           <div className="max-w-3xl mx-auto px-3 pt-2.5 pb-1.5">
-            <ChatInput value={input} onChange={setInput} onSend={() => { void send(); }} onStop={stop} busy={busy} images={images} onImagesChange={setImages} disabled={!ep?.ready} placeholder={ep?.ready ? '提问 · / 命令 · @ 文件 · Enter 发送' : '去设置面板配置端点'} onCommand={doCommand} />
+            <ChatInput blocks={blocks} onBlocksChange={setBlocks} onSend={() => { void send(); }} onStop={stop} busy={busy} images={images} onImagesChange={setImages} disabled={!ep?.ready} placeholder={ep?.ready ? '提问 · / 命令 · @ 文件 · Enter 发送' : '去设置面板配置端点'} onCommand={doCommand} />
           </div>
           {/* 模型/思考/模式选择器 */}
           <div className="max-w-3xl mx-auto px-4 pb-2.5 flex items-center gap-2 text-xs flex-wrap">

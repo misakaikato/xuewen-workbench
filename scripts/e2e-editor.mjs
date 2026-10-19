@@ -723,7 +723,7 @@ async function main() {
     await exec(`(() => {
       const li = [...document.querySelectorAll('li')].find((x) => x.textContent.includes('长文滚动测试'));
       if (!li) return false;
-      li.querySelector('button').click();
+      li.click(); // 整卡可点击（卡片不再是内部 button）
       return true;
     })()`);
     await sleep(1200);

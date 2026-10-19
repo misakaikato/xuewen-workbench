@@ -33,7 +33,7 @@ const TYPE_OPTIONS = [
   { v: '.doc', label: 'DOC' },
 ];
 
-function Highlight({ text, terms }: { text: string; terms: string[] }) {
+function Highlight({ text, terms, emphasis }: { text: string; terms: string[]; emphasis?: boolean }) {
   let parts: (string | React.ReactNode)[] = [text];
   terms.forEach((t, ti) => {
     const next: (string | React.ReactNode)[] = [];
@@ -47,7 +47,7 @@ function Highlight({ text, terms }: { text: string; terms: string[] }) {
       let k = 0;
       while (idx >= 0) {
         if (idx > 0) next.push(rest.slice(0, idx));
-        next.push(<mark key={`${ti}-${k++}`}>{rest.slice(idx, idx + t.length)}</mark>);
+        next.push(<mark key={`${ti}-${k++}`} className={emphasis ? 'bg-warning/30 text-foreground rounded-sm px-0.5' : undefined}>{rest.slice(idx, idx + t.length)}</mark>);
         rest = rest.slice(idx + t.length);
         idx = rest.toLowerCase().indexOf(t.toLowerCase());
       }
@@ -323,10 +323,10 @@ export default function Search() {
       {mode === 'smart' && smart && smart.hits.length > 0 && (
         <ul className="space-y-3 wb-selectable">
           {smart.hits.map((h, i) => (
-            <li key={h.path + ':' + h.ordinal + ':' + i} className="bg-card border border-border rounded-lg p-3">
-              <button
-                className="flex items-center gap-2 text-sm font-semibold hover:text-primary w-full text-left"
-                onClick={() => {
+            <li
+              key={h.path + ':' + h.ordinal + ':' + i}
+              className="bg-card border border-border rounded-lg p-3 cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all"
+              onClick={() => {
                   // ?h= 与 #锚点同带：词在正文则高亮并定位首个命中；
                   // 语义命中常不含原词，此时回退到命中块的标题锚点
                   const heading = h.headingPath ? h.headingPath.split(' > ').pop() : '';
@@ -340,7 +340,8 @@ export default function Search() {
                   }
                   navigate(base + (query.size ? '?' + query.toString() : '') + (heading ? '#' + encodeURIComponent(heading) : ''));
                 }}
-              >
+            >
+              <div className="flex items-center gap-2 text-sm font-semibold">
                 {extIcon(h.path.includes('.') ? ('.' + h.name.split('.').pop() as string) : '')}
                 <span className="truncate">{h.name}</span>
                 {h.headingPath && (
@@ -350,9 +351,9 @@ export default function Search() {
                   {h.bm25 && <span className="px-1 rounded bg-muted">关键词</span>}
                   {h.cos != null && <span className="px-1 rounded bg-muted">语义 {h.cos.toFixed(2)}</span>}
                 </span>
-              </button>
+              </div>
               <div className="mt-1.5 text-xs text-muted-foreground leading-relaxed">
-                <Highlight text={h.snippet} terms={terms} />
+                <Highlight text={h.snippet} terms={terms} emphasis />
               </div>
             </li>
           ))}
@@ -362,29 +363,35 @@ export default function Search() {
         <Button
           variant="outline"
           className="mt-3 w-full text-xs text-muted-foreground"
+          disabled={loading}
           onClick={() => setSmartLimit((n) => Math.min(500, n * 2))}
         >
-          显示更多（还有 {(smart.total ?? 0) - smart.hits.length} 段）
+          {loading ? (
+            <><Loader2 className="w-3.5 h-3.5 animate-spin" />加载中…</>
+          ) : (
+            `显示更多（还有 ${(smart.total ?? 0) - smart.hits.length} 段）`
+          )}
         </Button>
       )}
 
       {mode === 'exact' && (
       <ul className="space-y-3 wb-selectable">
         {results.map((r) => (
-          <li key={r.file.path} className="bg-card border border-border rounded-lg p-3">
-            <button
-              className="flex items-center gap-2 text-sm font-semibold hover:text-primary w-full text-left"
-              onClick={() =>
-                navigate(
-                  '/read/' + r.file.path.split('/').map(encodeURIComponent).join('/') +
-                    (terms[0] ? '?h=' + encodeURIComponent(terms[0]) : '')
-                )
-              }
-            >
+          <li
+            key={r.file.path}
+            className="bg-card border border-border rounded-lg p-3 cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all"
+            onClick={() =>
+              navigate(
+                '/read/' + r.file.path.split('/').map(encodeURIComponent).join('/') +
+                  (terms[0] ? '?h=' + encodeURIComponent(terms[0]) : '')
+              )
+            }
+          >
+            <div className="flex items-center gap-2 text-sm font-semibold">
               {extIcon(r.file.ext)}
               <Highlight text={r.file.name} terms={terms} />
               <span className="text-xs text-muted-foreground font-normal truncate">{r.file.dir || '(根目录)'}</span>
-            </button>
+            </div>
             <div className="mt-1.5 space-y-1">
               {r.matches
                 .filter((m) => m.field === 'content')
