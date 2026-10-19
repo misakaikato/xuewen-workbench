@@ -50,6 +50,7 @@ export function ChatInput({
   const [showCommands, setShowCommands] = useState(false);
   const [cmdIdx, setCmdIdx] = useState(0);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
 
   useEffect(() => {
     api.tree().then((r) => setFiles(flatten(r.tree))).catch(() => {});
@@ -107,6 +108,8 @@ export function ChatInput({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
+      // 中文输入法组合中：Enter 确认候选词，不发送
+      if (composingRef.current || (e.nativeEvent as KeyboardEvent).isComposing) return;
       e.preventDefault();
       if (mentionQuery !== null && mentionMatches[mentionIdx]) {
         insertMention(mentionMatches[mentionIdx]);
@@ -190,6 +193,8 @@ export function ChatInput({
           value={value}
           disabled={disabled}
           onChange={(e) => handleInput(e.target.value)}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
           onKeyDown={handleKeyDown}
           rows={2}
           placeholder={placeholder}

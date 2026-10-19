@@ -166,28 +166,16 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                 <p className="text-sm">暂无 skills</p>
               </div>
             )}
-            <div className="mt-3 flex items-center gap-2">
-              <label className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-primary/40 text-primary hover:bg-primary/5 cursor-pointer">
-                <Plus className="w-3.5 h-3.5" />上传 SKILL.md
-                <input type="file" accept=".md" className="hidden" onChange={async (e) => {
-                  const f = e.target.files?.[0]; if (!f) return;
-                  const name = f.name.replace(/\.md$/i, '');
-                  const content = await f.text();
-                  await fetch('/api/agent/skill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, content }) });
-                  onSaved();
-                }} />
-              </label>
-              <label className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-primary/40 text-primary hover:bg-primary/5 cursor-pointer">
-                <Plus className="w-3.5 h-3.5" />安装 Skill 包（.zip）
-                <input type="file" accept=".zip" className="hidden" onChange={async (e) => {
-                  const f = e.target.files?.[0]; if (!f) return;
-                  const buf = await f.arrayBuffer();
-                  const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-                  await fetch('/api/agent/skill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ zipBase64: base64, fileName: f.name }) });
-                  onSaved();
-                }} />
-              </label>
-            </div>
+            <label className="mt-3 inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-primary/40 text-primary hover:bg-primary/5 cursor-pointer">
+              <Plus className="w-3.5 h-3.5" />安装 Skill 包（.zip，含完整文件夹）
+              <input type="file" accept=".zip" className="hidden" onChange={async (e) => {
+                const f = e.target.files?.[0]; if (!f) return;
+                const buf = await f.arrayBuffer();
+                const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+                await fetch('/api/agent/skill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ zipBase64: base64, fileName: f.name }) });
+                onSaved();
+              }} />
+            </label>
           </>
         )}
 

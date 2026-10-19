@@ -32,6 +32,7 @@ const THEME_CARDS: { id: Theme; name: string; desc: string; side: string; paper:
 ];
 
 export default function Settings() {
+  const [tab, setTab] = useState<string>('appearance');
   const { prefs, update, reset } = useReadingPrefs();
   const { tree, dsId, update: updateState, applyUpdate } = useApp();
   const [autoUpdate, setAutoUpdate] = useState(true);
@@ -83,10 +84,18 @@ export default function Settings() {
 
   return (
     <div className="max-w-3xl mx-auto py-6 px-4 space-y-8">
+      <div className="flex items-center gap-1 mb-4 border-b border-border pb-2 flex-wrap">
+        {[['appearance','外观'],['reading','阅读'],['collections','集合'],['metadata','元数据'],['rag','RAG 检索'],['about','关于']].map(([id,label]) => (
+          <button key={id} className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${tab === id ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`} onClick={() => setTab(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
       <h1 className="text-lg font-bold">设置</h1>
       {msg && <div className="text-xs text-green-700 dark:text-green-400">{msg}</div>}
 
-      {/* 外观主题 */}
+      {tab === 'appearance' && (
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="font-medium text-sm mb-1">外观主题</h2>
         <p className="text-xs text-muted-foreground mb-3">界面整体配色与字体，保存在本机并随应用重启保留。</p>
@@ -130,10 +139,11 @@ export default function Settings() {
           })}
         </RadioGroup>
       </section>
+      )}
 
-      {/* 关于与更新 */}
-      <RagManage />
+      {tab === 'rag' && <RagManage />}
 
+      {tab === 'about' && (
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="font-medium text-sm mb-1">关于与更新</h2>
         <p className="text-xs text-muted-foreground mb-3">
@@ -176,8 +186,9 @@ export default function Settings() {
           </div>
         )}
       </section>
+      )}
 
-      {/* 阅读与外观 */}
+      {tab === 'reading' && (
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="font-medium text-sm mb-3">阅读与外观</h2>
         <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
@@ -244,6 +255,7 @@ export default function Settings() {
           <span className="text-xs text-muted-foreground">仅影响界面呈现，不修改源文件，不清除资料库与草稿。</span>
         </div>
       </section>
+      )}
 
       {/* 屏蔽词表（自动内链） */}
       <section className="bg-card border border-border rounded-lg p-4">
@@ -300,7 +312,7 @@ export default function Settings() {
         </div>
       </section>
 
-      {/* 逻辑集合 */}
+      {tab === 'collections' && (
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="font-medium text-sm mb-1">逻辑集合</h2>
         <p className="text-xs text-muted-foreground mb-3">
@@ -365,6 +377,7 @@ export default function Settings() {
           <Plus className="w-3.5 h-3.5" /> 新增集合
         </button>
       </section>
+      )}
 
       {/* 元数据映射 */}
       <section className="bg-card border border-border rounded-lg p-4">

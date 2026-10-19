@@ -42,7 +42,7 @@ export default function AgentChat() {
   const { dsId } = useApp();
   const navigate = useNavigate();
   
-  const [active, setActive] = useState<string | null>(null);
+  const [active, setActive] = useState<string | null>(() => new URLSearchParams(window.location.search).get('c'));
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -103,10 +103,16 @@ export default function AgentChat() {
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, []);
 
-  const open = (id: string) => { setActive(id); };
-  const newConv = async () => { const c = await api.agentNewSession(); await refresh(); setActive(c.id); setInput(''); };
-  const del = async (id: string) => { if (!window.confirm('删除这个对话？')) return; await api.agentDeleteSession(id); if (active === id) setActive(null); refresh(); };
-  const fork = async (msgIndex: number) => { const c = await api.agentFork(active!, msgIndex); await refresh(); setActive(c.id); };
+  const openConv = (id: string | null) => {
+    setActive(id);
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set('c', id); else url.searchParams.delete('c');
+    window.history.replaceState(null, '', url);
+  };
+  const open = (id: string) => { openConv(id); };
+  const newConv = async () => { const c = await api.agentNewSession(); await refresh(); openConv(c.id); setInput(''); };
+  const del = async (id: string) => { if (!window.confirm('删除这个对话？')) return; await api.agentDeleteSession(id); if (active === id) openConv(null); refresh(); };
+  const fork = async (msgIndex: number) => { const c = await api.agentFork(active!, msgIndex); await refresh(); openConv(c.id); };
   const doExport = () => { if (active) window.open(api.agentExport(active), '_blank'); };
 
   // 消息编辑/删除
@@ -179,7 +185,7 @@ export default function AgentChat() {
     if (!convId) {
       const c = await api.agentNewSession();
       convId = c.id;
-      setActive(c.id);
+      openConv(c.id);
       await refresh();
     }
     setInput('');
@@ -449,10 +455,7 @@ export default function AgentChat() {
               ))}
             </div>
             {/* 模式说明 */}
-            <span className="text-[10px] text-muted-foreground ml-auto hidden sm:inline">
-              {status?.mode === 'readonly' ? '仅检索阅读' : status?.mode === 'confirm' ? '写入需确认' : '全自动'}
-            </span>
-            {usage && <div className="ml-2"><ContextBar usage={usage} contextWindow={CTX_WINDOW} /></div>}
+            {usage && <div className="ml-auto"><ContextBar usage={usage} contextWindow={CTX_WINDOW} /></div>}
           </div>
         </div>
 
