@@ -21,6 +21,7 @@ import { EditorView } from '@codemirror/view';
 import { JsonViewer } from '@/components/JsonViewer';
 import { WordReader } from '@/components/WordReader';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
+import { ReadAgentPanel } from '@/components/ReadAgentPanel';
 import { extIcon } from '@/lib/extIcon';
 import { Button } from '@/components/ui/button';
 import { PageLoading, PageError } from '@/components/ui-states';
@@ -79,6 +80,8 @@ export default function Read() {
   const [findMode, setFindMode] = useState<'smart' | 'exact'>('smart');
   const [findHits, setFindHits] = useState(0);
   const [sel, setSel] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiQuote, setAiQuote] = useState<string | null>(null);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [noteSaving, setNoteSaving] = useState(false);
@@ -780,6 +783,13 @@ export default function Read() {
               {pinned ? <PinOff className="w-4 h-4 text-primary" /> : <Pin className="w-4 h-4" />}
             </button>
             <button
+              className={`p-1.5 rounded hover:bg-accent transition-colors ${aiOpen ? 'text-primary' : 'text-muted-foreground'}`}
+              title="AI 助手（就当前文档提问）"
+              onClick={() => setAiOpen((v) => !v)}
+            >
+              <Sparkles className="w-4 h-4" />
+            </button>
+            <button
               className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground"
               title="反向引用"
               onClick={() => setShowBacklinks(!showBacklinks)}
@@ -949,8 +959,22 @@ export default function Read() {
         </div>
       </div>
 
+      {/* 右侧：AI 助手（优先） */}
+      {aiOpen && file && (
+        <aside className="hidden lg:flex w-80 shrink-0">
+          <ReadAgentPanel
+            docPath={relPath}
+            docName={file.name}
+            pendingQuote={aiQuote}
+            onQuoteConsumed={() => setAiQuote(null)}
+            onClose={() => setAiOpen(false)}
+            onOpenDoc={(p, term) => navigate('/read/' + p.split('/').map(encodeURIComponent).join('/') + (term ? '?h=' + encodeURIComponent(term) : ''))}
+          />
+        </aside>
+      )}
+
       {/* 右侧：目录 + 反链 */}
-      {((showToc && toc.length > 0) || showBacklinks) && (
+      {!aiOpen && ((showToc && toc.length > 0) || showBacklinks) && (
         <aside className="hidden lg:block w-64 shrink-0 border-l border-border overflow-auto p-3">
           {showToc && toc.length > 0 && (
             <div className="mb-4">
@@ -1029,11 +1053,10 @@ export default function Read() {
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-card border border-border text-xs shadow-lg transition-colors hover:border-primary/50 hover:text-primary"
             title="把选中内容引用到智能助手"
             onClick={() => {
-              const quote = sel.text.split('\n').map((l) => '> ' + l).join('\n');
-              sessionStorage.setItem('wb.agent.prefill', quote);
+              setAiQuote(sel.text);
+              setAiOpen(true);
               window.getSelection()?.removeAllRanges();
               setSel(null);
-              navigate('/agent');
             }}
           >
             <Sparkles className="w-3.5 h-3.5" /> 问 AI
