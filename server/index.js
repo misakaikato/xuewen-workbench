@@ -17,6 +17,7 @@ import { mountAgent } from './agent/routes.js';
 import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
 import { LinkIndex } from './links.js';
+import { loadDerived, DERIVED_DIR } from './derived.js';
 
 const PORT = process.env.WORKBENCH_PORT || 7410;
 const HOST = process.env.WORKBENCH_HOST || undefined; // 未设置时保持原行为（监听所有地址）
@@ -1528,6 +1529,38 @@ app.get('/api/topics', (req, res) => {
     concepts: [...conceptCount.values()].sort((a, b) => b.count - a.count),
     errors,
   });
+});
+
+// 加工数据：概念表与知识图谱（.xuewen/concepts.jsonl + graph.jsonl）
+app.get('/api/concepts', (req, res) => {
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const d = loadDerived(lib.baseDir);
+  res.json({
+    dsId: lib.id,
+    dir: DERIVED_DIR,
+    concepts: d.concepts,
+    conceptsMissing: d.conceptsMissing,
+    graphMissing: d.graphMissing,
+    nodeCount: d.graph.nodes.length,
+    edgeCount: d.graph.edges.length,
+    errors: [...d.conceptErrors, ...d.graphErrors],
+  });
+});
+
+// 单个概念详情（含反向：哪些文档引用了它、图上邻居）
+app.get('/api/concept', (req, res) => {
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const name = String(req.query.name || '').trim();
+  if (!name) return res.status(400).json({ error: '缺少 name' });
+  const d = loadDerived(lib.baseDir);
+  const c = d.concepts.find((x) => x.name === name || x.aliases.includes(name));
+  if (!c) return res.status(404).json({ error: '概念不存在: ' + name });
+  const neighbors = d.graph.edges
+    .filter((e) => e.from === c.name || e.to === c.name)
+    .map((e) => ({ rel: e.rel, dir: e.from === c.name ? 'out' : 'in', other: e.from === c.name ? e.to : e.from }));
+  res.json({ concept: c, neighbors });
 });
 
 app.get('/api/word-capability', async (req, res) => {

@@ -9,6 +9,7 @@ import { SIDECAR_SUFFIX } from './scanner.js';
 import {
   normalizeText, isTermLike, buildAutoIndex, extractLinks, extractWikilinks,
 } from './linkMatch.js';
+import { loadConcepts } from './derived.js';
 
 const CACHE_VERSION = 1;
 const LINKS_DIR = () => path.join(dataDir(), 'links');
@@ -192,7 +193,7 @@ export class LinkIndex {
     const byName = new Map(); // norm -> Set<path>
     const byPath = new Map(); // normPath(含/不含扩展名) -> path
     for (const e of entries) {
-      if (e.kind === 'heading') continue;
+      if (e.kind === 'heading' || e.kind === 'concept') continue; // 概念不是文档，[[..]] 不指向它
       const norm = normalizeText(e.term);
       if (!norm) continue;
       if (!byName.has(norm)) byName.set(norm, new Set());
@@ -279,6 +280,15 @@ export class LinkIndex {
       const texts = indexer.texts;
       const blocklist = this.blocklist();
       const { entries, sidecarIds, fileMeta } = this.collectVocab(snapshot, texts);
+      // 加工数据里的概念：概念名与别名也进词条表，target 用 concept: 前缀（前端据此打开概念详情）
+      // 与文档词条同名时会被 buildAutoIndex 判为歧义而不链，属可接受行为
+      try {
+        const { concepts } = loadConcepts(this.baseDir);
+        for (const c of concepts) {
+          entries.push({ term: c.name, path: 'concept:' + c.name, kind: 'concept', force: true });
+          for (const a of c.aliases) entries.push({ term: a, path: 'concept:' + c.name, kind: 'concept', force: true });
+        }
+      } catch (e) { console.error('[links] 概念词条接入失败:', e.message); }
       this.sidecarIds = sidecarIds;
       this._pendingMeta = fileMeta;
       const sig = this.vocabSignature(entries, blocklist);
@@ -522,6 +532,7 @@ export class LinkIndex {
     const nq = normalizeText(String(q || '')).toLowerCase();
     const list = this.vocab
       .filter((v) => !v.ambiguous)
+      .filter((v) => !String(v.path || '').startsWith('concept:')) // 概念条目不进 wikilink 补全
       .filter((v) => !nq || normalizeText(v.term).toLowerCase().startsWith(nq))
       .sort((a, b) => a.term.length - b.term.length || (a.term < b.term ? -1 : 1));
     return list.slice(0, max).map((v) => ({ term: v.term, path: v.path, heading: v.heading || null }));

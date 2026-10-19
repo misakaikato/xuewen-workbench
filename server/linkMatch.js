@@ -64,7 +64,9 @@ export function buildAutoIndex(entries, blocklist = []) {
   const grouped = new Map();
   for (const e of entries) {
     const term = String(e.term ?? '').trim();
-    if (!term || !isTermLike(term)) continue;
+    if (!term) continue;
+    // force：人工/AI 确认过的条目（概念表），跳过 isTermLike 的启发式过滤，允许「道」「性」这类单字
+    if (!e.force && !isTermLike(term)) continue;
     const norm = normalizeText(term);
     if (!grouped.has(norm)) grouped.set(norm, new Map());
     const byPath = grouped.get(norm);

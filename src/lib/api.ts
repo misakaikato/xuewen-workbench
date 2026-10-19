@@ -136,6 +136,10 @@ export const api = {
   getUiSettings: () => req<{ theme: Theme; autoUpdate: boolean; notesDir: string; showMetaFiles: boolean }>('/api/ui-settings'),
   saveUiSettings: (patch: { theme?: Theme; autoUpdate?: boolean; notesDir?: string; showMetaFiles?: boolean }) =>
     req<{ ok: boolean; theme: Theme; autoUpdate: boolean; notesDir: string; showMetaFiles: boolean }>('/api/ui-settings', json('PUT', patch)),
+  concepts: () =>
+    req<{ dsId: string; dir: string; concepts: ConceptItem[]; conceptsMissing: boolean; graphMissing: boolean; nodeCount: number; edgeCount: number; errors: string[] }>('/api/concepts'),
+  conceptDetail: (name: string) =>
+    req<{ concept: ConceptItem; neighbors: { rel: string; dir: 'in' | 'out'; other: string }[] }>('/api/concept?name=' + encodeURIComponent(name)),
   notesFor: (path: string) =>
     req<{ ok: boolean; notes: { notePath: string; count: number; latest: string | null }[] }>(
       '/api/notes/for?path=' + encodeURIComponent(path)),
@@ -287,6 +291,17 @@ export interface AgentFailure {
   title: string;
   message: string;
   details?: string;
+}
+
+export interface ConceptItem {
+  name: string;
+  aliases: string[];
+  type: string;
+  def: string;
+  refs: string[];
+  related: string[];
+  status: 'machine' | 'confirmed';
+  source_hash: string | null;
 }
 
 export interface MemoryFact {

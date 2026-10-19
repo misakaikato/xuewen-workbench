@@ -66,6 +66,8 @@ export interface ReadOnlyDocProps {
   /** 划线笔记标记：正文中做过的笔记原文 → 下划线，点击跳笔记锚点 */
   noteMarks?: { quote: string; href: string }[];
   onOpenNote?: (href: string) => void;
+  /** 点击概念词条：打开概念详情 */
+  onOpenConcept?: (name: string) => void;
   onReady?: (view: EditorView) => void;
   /** 原位编辑态：切换只 reconfigure，实例与滚动不动 */
   editing?: boolean;
@@ -78,7 +80,7 @@ export interface ReadOnlyDocProps {
 }
 
 export function ReadOnlyDoc({
-  content, docPath, refNames, collections, links, highlightTerm, noteMarks, onOpenNote, onReady,
+  content, docPath, refNames, collections, links, highlightTerm, noteMarks, onOpenNote, onOpenConcept, onReady,
   editing = false, lineSep = '\n', onDocChanged, onViewUpdate,
 }: ReadOnlyDocProps) {
   const navigate = useNavigate();
@@ -91,6 +93,8 @@ export function ReadOnlyDoc({
   docDirRef.current = docDir;
   const navRef = useRef(navigate);
   navRef.current = navigate;
+  const onOpenConceptRef = useRef(onOpenConcept);
+  onOpenConceptRef.current = onOpenConcept;
 
   // 相对链接应用内导航，http(s) 外开；本文件锚点走 hash（页面按标题定位）
   const openLink = useCallback((href: string) => {
@@ -114,6 +118,11 @@ export function ReadOnlyDoc({
   }, []);
 
   const openLinkTarget = useCallback((t: { path: string; heading?: string | null }) => {
+    // 概念词条：target 是 concept:<名称> 伪路径，交给上层打开概念详情
+    if (t.path.startsWith('concept:')) {
+      onOpenConceptRef.current?.(t.path.slice('concept:'.length));
+      return;
+    }
     const nav = '/read/' + encPath(t.path);
     navRef.current(t.heading ? nav + '#' + encodeURIComponent(t.heading) : nav);
   }, []);

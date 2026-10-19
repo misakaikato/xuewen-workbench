@@ -22,6 +22,7 @@ import { JsonViewer } from '@/components/JsonViewer';
 import { WordReader } from '@/components/WordReader';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
 import { ReadAgentPanel } from '@/components/ReadAgentPanel';
+import { ConceptCard } from '@/components/ConceptCard';
 import { extIcon } from '@/lib/extIcon';
 import { Button } from '@/components/ui/button';
 import { PageLoading, PageError } from '@/components/ui-states';
@@ -105,6 +106,7 @@ export default function Read() {
     return out;
   }, [docNotes]);
   const [aiOpen, setAiOpen] = useState(false);
+  const [conceptName, setConceptName] = useState<string | null>(null);
   const [aiWidth, setAiWidth] = useState(() => {
     const n = Number(localStorage.getItem('wb.read.aiWidth'));
     return Number.isFinite(n) && n >= 260 && n <= 720 ? n : 380;
@@ -999,6 +1001,7 @@ export default function Read() {
                 key={relPath}
                 noteMarks={noteMarks}
                 onOpenNote={(href) => navigate(href)}
+                onOpenConcept={(n) => setConceptName(n)}
                 content={file.content || ''}
                 docPath={relPath}
                 refNames={refNames}
@@ -1297,6 +1300,17 @@ export default function Read() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 概念详情（点正文里的概念词条打开） */}
+      {conceptName && (
+        <ConceptCard
+          key={conceptName}
+          name={conceptName}
+          onClose={() => setConceptName(null)}
+          onOpenDoc={(p2) => { setConceptName(null); navigate('/read/' + p2.split('/').map(encodeURIComponent).join('/')); }}
+          onOpenConcept={(n) => setConceptName(n)}
+        />
       )}
     </div>
   );
