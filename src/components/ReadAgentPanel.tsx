@@ -124,12 +124,12 @@ export function ReadAgentPanel({
   const stop = () => { abortRef.current?.abort(); if (convId) api.agentAbort(convId).catch(() => {}); };
 
   return (
-    <div className="h-full flex flex-col bg-card border-l border-border">
+    <div className="h-full w-full min-w-0 flex flex-col bg-card border-l border-border">
       {/* 头部 */}
-      <div className="shrink-0 px-3 py-2 border-b border-border flex items-center gap-2">
-        <Sparkles className="w-3.5 h-3.5 text-primary" />
-        <span className="text-xs font-medium">AI 助手</span>
-        <span className="text-[10px] text-muted-foreground truncate" title={docPath}>· {docName}</span>
+      <div className="shrink-0 px-3 py-2 border-b border-border flex items-center gap-2 min-w-0">
+        <Sparkles className="w-3.5 h-3.5 text-primary shrink-0" />
+        <span className="text-xs font-medium shrink-0">AI 助手</span>
+        <span className="text-[10px] text-muted-foreground truncate min-w-0 flex-1" title={docPath}>· {docName}</span>
         <button className="ml-auto p-1 rounded hover:bg-accent text-muted-foreground" onClick={onClose} title="关闭">
           <X className="w-3.5 h-3.5" />
         </button>
@@ -166,7 +166,7 @@ export function ReadAgentPanel({
       </div>
 
       {/* 输入区：完整 ChatInput（引用 chip / 附件 / @文件 / 命令） */}
-      <div className="shrink-0 border-t border-border p-2">
+      <div className="shrink-0 border-t border-border p-2 min-w-0">
         {usage && <div className="mb-1.5"><ContextBar usage={usage} contextWindow={128000} /></div>}
         <ChatInput
           blocks={blocks}

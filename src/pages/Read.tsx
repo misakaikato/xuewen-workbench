@@ -79,6 +79,7 @@ export default function Read() {
   const [findQ, setFindQ] = useState('');
   const [findMode, setFindMode] = useState<'smart' | 'exact'>('smart');
   const [findHits, setFindHits] = useState(0);
+  const [docNotes, setDocNotes] = useState<{ notePath: string; count: number; quotes?: { quote: string; anchor: string | null }[] }[]>([]);
   const [sel, setSel] = useState<{ text: string; x: number; y: number } | null>(null);
   useEffect(() => {
     if (!relPath) return;
@@ -88,8 +89,40 @@ export default function Read() {
       .catch(() => { if (!dead) setDocNotes([]); });
     return () => { dead = true; };
   }, [relPath]);
+
+  // 划线笔记标记：把做过笔记的原文映射到「笔记文件#锚点」
+  const noteMarks = useMemo(() => {
+    const out: { quote: string; href: string }[] = [];
+    for (const n of docNotes) {
+      for (const q of n.quotes || []) {
+        if (!q.quote || !q.anchor) continue;
+        out.push({
+          quote: q.quote,
+          href: '/read/' + n.notePath.split('/').map(encodeURIComponent).join('/') + '#' + encodeURIComponent(q.anchor),
+        });
+      }
+    }
+    return out;
+  }, [docNotes]);
   const [aiOpen, setAiOpen] = useState(false);
-  const [docNotes, setDocNotes] = useState<{ notePath: string; count: number }[]>([]);
+  const [aiWidth, setAiWidth] = useState(() => {
+    const n = Number(localStorage.getItem('wb.read.aiWidth'));
+    return Number.isFinite(n) && n >= 260 && n <= 720 ? n : 380;
+  });
+  const aiDragRef = useRef(false);
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!aiDragRef.current) return;
+      // 从右边拖：宽度 = 视口宽 - 鼠标 x
+      const w = Math.max(260, Math.min(720, window.innerWidth - e.clientX));
+      setAiWidth(w);
+    };
+    const onUp = () => { if (aiDragRef.current) { aiDragRef.current = false; document.body.style.cursor = ''; } };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, []);
+  useEffect(() => { try { localStorage.setItem('wb.read.aiWidth', String(Math.round(aiWidth))); } catch { /* */ } }, [aiWidth]);
   const [aiQuote, setAiQuote] = useState<string | null>(null);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState('');
@@ -933,6 +966,8 @@ export default function Read() {
             {file.type === 'markdown' && (
               <ReadOnlyDoc
                 key={relPath}
+                noteMarks={noteMarks}
+                onOpenNote={(href) => navigate(href)}
                 content={file.content || ''}
                 docPath={relPath}
                 refNames={refNames}
@@ -985,7 +1020,12 @@ export default function Read() {
 
       {/* 右侧：AI 助手（优先） */}
       {aiOpen && file && (
-        <aside data-wb-overlay className="hidden lg:flex w-80 shrink-0">
+        <aside data-wb-overlay className="hidden lg:flex shrink-0 relative" style={{ width: aiWidth }}>
+          <div
+            className="absolute left-0 top-0 bottom-0 w-1 -ml-0.5 cursor-col-resize hover:bg-primary/30 z-10"
+            title="拖动调整宽度"
+            onMouseDown={() => { aiDragRef.current = true; document.body.style.cursor = 'col-resize'; }}
+          />
           <ReadAgentPanel
             docPath={relPath}
             docName={file.name}

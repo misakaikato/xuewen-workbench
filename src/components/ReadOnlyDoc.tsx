@@ -63,6 +63,9 @@ export interface ReadOnlyDocProps {
   links?: DocLink[];
   /** 搜索跳转携带的高亮词（backlinks 的 ?h=） */
   highlightTerm?: string;
+  /** 划线笔记标记：正文中做过的笔记原文 → 下划线，点击跳笔记锚点 */
+  noteMarks?: { quote: string; href: string }[];
+  onOpenNote?: (href: string) => void;
   onReady?: (view: EditorView) => void;
   /** 原位编辑态：切换只 reconfigure，实例与滚动不动 */
   editing?: boolean;
@@ -75,7 +78,7 @@ export interface ReadOnlyDocProps {
 }
 
 export function ReadOnlyDoc({
-  content, docPath, refNames, collections, links, highlightTerm, onReady,
+  content, docPath, refNames, collections, links, highlightTerm, noteMarks, onOpenNote, onReady,
   editing = false, lineSep = '\n', onDocChanged, onViewUpdate,
 }: ReadOnlyDocProps) {
   const navigate = useNavigate();
@@ -135,7 +138,7 @@ export function ReadOnlyDoc({
       EditorState.lineSeparator.of(lineSep),
       EditorView.lineWrapping,
       drawSelection(),
-      ...livePreview({ docPath, openLink, readOnly: !editing, geometry: 'card' }),
+      ...livePreview({ docPath, openLink, openNote: onOpenNote, readOnly: !editing, geometry: 'card', noteMarks }),
       ...corpusRefsExtension({
         names: [],
         collections: [],

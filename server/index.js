@@ -606,7 +606,12 @@ app.post('/api/notes/append', async (req, res) => {
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
     const body = String(note || '').trim();
     const quoted = String(quote || '').trim().split(/\r?\n/).map((line) => '> ' + line).join('\n');
-    const block = [first ? `# ${stem} 阅读笔记\n` : '', `## ${stamp}`, quoted, body ? `\n${body}` : '', `\n来源：[${source}](${encodeURI(source)})\n`, ''].filter(Boolean).join('\n');
+    // 锚点：标题文本即锚点（阅读页按标题文本定位），加短随机后缀避免同分钟冲突
+    const annAbsForAnchor = path.join(path.dirname(abs), `.${path.basename(abs, '.md')}.annotations.json`);
+    let existing = [];
+    try { existing = JSON.parse(fs.readFileSync(annAbsForAnchor, 'utf8')); } catch { existing = []; }
+    const anchor = `${stamp} · ${String(existing.length + 1)}`;
+    const block = [first ? `# ${stem} 阅读笔记\n` : '', `## ${anchor}`, quoted, body ? `\n${body}` : '', `\n来源：[${source}](${encodeURI(source)})\n`, ''].filter(Boolean).join('\n');
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.appendFileSync(abs, (first ? '' : '\n---\n\n') + block, 'utf8');
     // 笔记元数据：标准旁注（仅 schema 允许字段）+ 逐条划线记录（独立 annotations 文件，避免污染 meta schema）
@@ -619,7 +624,7 @@ app.post('/api/notes/append', async (req, res) => {
     let ann = [];
     try { ann = JSON.parse(fs.readFileSync(annAbs, 'utf8')); } catch { /* 首次写入 */ }
     if (!Array.isArray(ann)) ann = [];
-    ann.push({ at: now.toISOString(), source, quote: String(quote || '').trim(), note: body });
+    ann.push({ at: now.toISOString(), source, quote: String(quote || '').trim(), note: body, anchor });
     fs.writeFileSync(annAbs, JSON.stringify(ann, null, 2) + '\n', 'utf8');
     await lib.scanner.rescan();
     res.json({ ok: true, path: rel, meta: rel + SIDECAR_SUFFIX, annotations: ann.length });
@@ -652,6 +657,7 @@ app.get('/api/notes/for', async (req, res) => {
             notePath: path.posix.join(notesDir, noteName),
             count: hits.length,
             latest: hits[hits.length - 1]?.at || null,
+            quotes: hits.map((h) => ({ quote: h.quote, anchor: h.anchor || null })),
           });
         } catch { /* 坏文件跳过 */ }
       }

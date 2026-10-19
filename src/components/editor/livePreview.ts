@@ -19,16 +19,21 @@ export interface LivePreviewOptions {
   docPath: string;
   /** Cmd/Ctrl+点击链接时交给上层：内部相对路径应用内导航，http(s) 外开 */
   openLink: (href: string) => void;
+  /** 点击划线笔记标记：跳到笔记文件锚点 */
+  openNote?: (href: string) => void;
   /** 只读实例（阅读视图）：无光标、链接单击即开 */
   readOnly?: boolean;
   /** 版式几何：page=编辑页全幅（预留页边留白）；card=卡片/面板内（容器即排版列）。
    *  与 readOnly 正交——阅读页原位编辑 = card + 可编辑 */
   geometry?: 'page' | 'card';
+  /** 划线笔记标记：正文中匹配到 quote 时加下划线，点击跳到笔记锚点 */
+  noteMarks?: { quote: string; href: string }[];
 }
 
 // 文档路径以 facet 提供，构建装饰时读取
 const lpDocPath = Facet.define<string, string>({ combine: (v) => (v.length ? v[v.length - 1] : '') });
 const lpReadOnly = Facet.define<boolean, boolean>({ combine: (v) => v.some(Boolean) });
+const lpNoteMarks = Facet.define<{ quote: string; href: string }[], { quote: string; href: string }[]>({ combine: (v) => v[v.length - 1] ?? [] });
 
 // 语法树延迟补全后，提醒表格 StateField 重算的空效果
 const lpTreeRefresh = StateEffect.define<null>();
@@ -979,6 +984,28 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
       }
     }
   }
+  // 划线笔记标记：正文中出现做过的笔记的原文 → 加下划线 + data-note-href（点击跳笔记锚点）
+  const marks = state.facet(lpNoteMarks);
+  if (marks.length) {
+    for (const { from: vFrom, to: vTo } of view.visibleRanges) {
+      const slice = doc.sliceString(vFrom, vTo);
+      for (const mk of marks) {
+        const q = mk.quote.split('\n')[0].slice(0, 80); // 用首行前 80 字定位
+        if (q.length < 2) continue;
+        let idx = slice.indexOf(q);
+        while (idx >= 0) {
+          const at = vFrom + idx;
+          parts.push(
+            Decoration.mark({
+              class: 'cm-note-mark',
+              attributes: { 'data-note-href': mk.href, title: '此处有笔记，点击查看' },
+            }).range(at, at + q.length)
+          );
+          idx = slice.indexOf(q, idx + q.length);
+        }
+      }
+    }
+  }
   return Decoration.set(parts, true);
 }
 
@@ -1025,7 +1052,7 @@ const lpTableField = StateField.define<DecorationSet>({
 });
 
 // 视图插件：可见范围装饰 + Cmd/Ctrl+点击链接
-function makeLpPlugin(openLink: (href: string) => void) {
+function makeLpPlugin(openLink: (href: string) => void, openNote: (href: string) => void) {
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
@@ -1055,9 +1082,17 @@ function makeLpPlugin(openLink: (href: string) => void) {
       decorations: (v: { decorations: DecorationSet }) => v.decorations,
       eventHandlers: {
         mousedown(event: MouseEvent, view: EditorView) {
+          const target = event.target as HTMLElement | null;
+          // 划线笔记标记：只读实例单击即开（不受 Cmd 约束）
+          const noteEl = target?.closest('[data-note-href]');
+          if (noteEl) {
+            event.preventDefault();
+            openNote(noteEl.getAttribute('data-note-href') || '');
+            return true;
+          }
           const ro = view.state.facet(lpReadOnly);
           if (!(ro || event.metaKey || event.ctrlKey)) return false;
-          const el = (event.target as HTMLElement | null)?.closest('[data-lp-href]');
+          const el = target?.closest('[data-lp-href]');
           if (!el) return false;
           event.preventDefault();
           openLink(el.getAttribute('data-lp-href') || '');
@@ -1125,6 +1160,7 @@ function makeLpTheme(card: boolean) {
   '.cm-lp-fence': { display: 'inline-block', color: 'hsl(40 20% 90% / 0.55)', fontSize: '11px', lineHeight: '1.4', letterSpacing: '0.05em' },
   '.cm-lp-fence-lang': { display: 'inline-block', padding: '0 6px', borderLeft: '2px solid hsl(40 20% 90% / 0.25)' },
 
+  '.cm-note-mark': { textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: '3px', textDecorationColor: 'hsl(38 92% 50% / 0.8)', cursor: 'pointer' },
   '.cm-lp-em': { fontStyle: 'italic' },
   '.cm-lp-strong': { fontWeight: '700' },
   '.cm-lp-strike': { textDecoration: 'line-through', opacity: '0.7' },
@@ -1229,8 +1265,9 @@ export function livePreview(opts: LivePreviewOptions) {
     ...mdLang(),
     lpDocPath.of(opts.docPath),
     lpReadOnly.of(!!opts.readOnly),
+    lpNoteMarks.of(opts.noteMarks ?? []),
     lpTableField,
-    makeLpPlugin(opts.openLink),
+    makeLpPlugin(opts.openLink, opts.openNote ?? (() => {})),
     makeLpTheme(opts.geometry === 'card'),
   ];
 }

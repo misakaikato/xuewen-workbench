@@ -274,8 +274,8 @@ export function ChatInput({
       </div>
 
       {/* 底部工具行 */}
-      <div className="flex items-center gap-1.5 mt-2">
-        <span className="text-[11px] text-muted-foreground hidden sm:inline">
+      <div className="flex items-center gap-1.5 mt-2 flex-wrap min-w-0">
+        <span className="text-[11px] text-muted-foreground hidden sm:inline truncate min-w-0">
           {images.length > 0 && <><ImageIcon className="w-3 h-3 inline" /> {images.length} 图 · </>}
           Enter 发送 · Shift+Enter 换行
         </span>
