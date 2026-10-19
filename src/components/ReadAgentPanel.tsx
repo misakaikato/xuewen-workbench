@@ -100,7 +100,7 @@ export function ReadAgentPanel({
       const resp = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: convId, text: body, images: pending.length ? pending.map((im) => ({ data: im.data, mimeType: im.mimeType })) : undefined }),
+        body: JSON.stringify({ sessionId: convId, text: body, images: pending.length ? pending.map((im) => ({ data: im.data, mimeType: im.mimeType })) : undefined, docContext: { path: docPath, name: docName } }),
         signal: ctl.signal,
       });
       await readAgentStream(resp, (d) => {

@@ -8,6 +8,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { Type } from '@sinclair/typebox';
 import { agentFailure } from './failure.js';
 import { MemoryStore, buildMemorySection, memoryDir, FACTS_LIMIT, PINNED_LIMIT } from './memory.js';
+import { loadTopics } from '../derived.js';
 import { applySettings, readSettings, SETTABLE, buildPatch, normalizeCategory } from './settings.js';
 import { generateImage, uniapiKey } from './imagegen.js';
 
@@ -1079,7 +1080,22 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
   }
 
   /** SSE 聊天：注册响应流，prompt 或 steer（生成中插入指令），事件经会话级订阅转发 */
-  async chat(convId, text, res, images = []) {
+  /** 组装文档上下文文本（注入为 aside，不进用户消息本体） */
+  _docContextText(doc) {
+    const lib = this.getLib();
+    const lines = [`用户当前正在阅读文档「${doc.name || doc.path}」（路径：${doc.path}）。`];
+    try {
+      if (lib) {
+        const t = loadTopics(lib.baseDir).byPath.get(doc.path);
+        if (t?.topics?.length) lines.push(`该文档的主题：${t.topics.join('、')}。`);
+        if (t?.concepts?.length) lines.push(`该文档的核心概念：${t.concepts.join('、')}。`);
+      }
+    } catch { /* 无加工数据时只有路径 */ }
+    lines.push('若问题与这篇文档相关，结合文档内容回答；需要看原文时自行读取该文档。');
+    return lines.join('\n');
+  }
+
+  async chat(convId, text, res, images = [], docContext = null) {
     // 库隔离硬校验：对话绑定的资料库必须与当前激活库一致，否则拒绝
     //（否则会复用旧库的 session 上下文，导致回答串库）
     const convMeta = this._meta().conversations.find((c) => c.id === convId);
@@ -1090,6 +1106,18 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       throw new Error('该对话属于另一个资料库，当前资料库不能继续这个对话。请新建对话。');
     }
     const entry = await this._ensureSession(convId);
+    // 文档上下文：与上次不同时注入 aside（custom 消息，随下一条 prompt 发给模型，不进我们的历史文件）
+    if (docContext?.path && docContext.path !== convMeta.docPath) {
+      try {
+        await entry.session.sendCustomMessage(
+          { customType: 'doc-context', display: false, content: [{ type: 'text', text: this._docContextText(docContext) }] },
+          { deliverAs: 'nextTurn' }
+        );
+      } catch (e) { console.error('[agent] 文档上下文注入失败:', e.message); }
+      const m = this._meta();
+      const c = m.conversations.find((x) => x.id === convId);
+      if (c) { c.docPath = docContext.path; this._saveMeta(m); }
+    }
     entry.sse.add(res);
     const send = (obj) => {
       try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* 断开 */ }

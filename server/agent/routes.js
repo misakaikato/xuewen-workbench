@@ -313,7 +313,7 @@ export function mountAgent(hub, resolveLib) {
 
   // SSE 聊天：POST /api/agent/chat {sessionId, text} → text/event-stream
   r.post('/chat', async (req, res) => {
-    const { sessionId, text, images } = req.body || {};
+    const { sessionId, text, images, docContext } = req.body || {};
     if (!sessionId || (!String(text || '').trim() && !(Array.isArray(images) && images.length))) {
       return res.status(400).json({ error: '缺少 sessionId 或内容' });
     }
@@ -333,7 +333,7 @@ export function mountAgent(hub, resolveLib) {
     });
     res.write(`data: ${JSON.stringify({ t: 'open' })}\n\n`);
     try {
-      await hub.chat(sessionId, String(text || '').trim(), res, imgs);
+      await hub.chat(sessionId, String(text || '').trim(), res, imgs, docContext);
     } catch (e) {
       try {
         res.write(`data: ${JSON.stringify({ t: 'error', message: String(e.message || e) })}\n\n`);

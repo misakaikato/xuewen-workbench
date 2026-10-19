@@ -1,7 +1,7 @@
 // 全局浮层助手：任意页面 ⌘J 唤出，不离开当前页面即可提问
 // 复用当前库最近一次对话（与主界面/阅读页面板上下文连续）
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Sparkles, Send, X, Loader2, Square, ChevronRight } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { AgentMessage } from '@/lib/api';
@@ -14,6 +14,14 @@ const encPath = (p: string) => p.split('/').map(encodeURIComponent).join('/');
 
 export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => void }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  // 当前若在阅读页，把文档路径/名字作为上下文带给 Agent
+  const docContext = useMemo(() => {
+    const m2 = /^\/read\/(.+)$/.exec(location.pathname);
+    if (!m2) return null;
+    const path = m2[1].split('/').map(decodeURIComponent).join('/');
+    return { path, name: path.split('/').pop() || path };
+  }, [location.pathname]);
   const [convId, setConvId] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
@@ -77,7 +85,7 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
       const resp = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: convId, text }),
+        body: JSON.stringify({ sessionId: convId, text, docContext }),
         signal: ctl.signal,
       });
       await readAgentStream(resp, (d) => {
@@ -99,7 +107,7 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
       setBusy(false);
       abortRef.current = null;
     }
-  }, [input, convId, busy, navigate, onClose]);
+  }, [input, convId, busy, navigate, onClose, docContext]);
 
   const stop = () => { abortRef.current?.abort(); if (convId) api.agentAbort(convId).catch(() => {}); };
 
