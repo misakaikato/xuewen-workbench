@@ -4,20 +4,22 @@ import { Tag, X, Loader2, Sparkles, UserPen } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { TagEntry } from '@/lib/api';
 
-export function TagChips({ path, onOpenDoc }: { path: string; onOpenDoc: (p: string) => void }) {
-  const [data, setData] = useState<{ manual: string[]; ai: string[] } | null>(null);
+export function TagChips({ path, onOpenDoc, onOpenConcept }: { path: string; onOpenDoc: (p: string) => void; onOpenConcept?: (name: string) => void }) {
+  const [data, setData] = useState<{ manual: string[]; ai: string[]; coreConcepts: string[]; mentioned: string[] } | null>(null);
   const [openTag, setOpenTag] = useState<string | null>(null);
 
   useEffect(() => {
     let dead = false;
     api.tagsDoc(path)
-      .then((r) => { if (!dead) setData({ manual: r.manual, ai: r.ai }); })
+      .then((r) => { if (!dead) setData({ manual: r.manual, ai: r.ai, coreConcepts: r.coreConcepts || [], mentioned: r.mentioned || [] }); })
       .catch(() => { if (!dead) setData(null); });
     return () => { dead = true; };
   }, [path]);
 
   const all = [...new Set([...(data?.manual || []), ...(data?.ai || [])])];
-  if (!all.length) return null;
+  const core = (data?.coreConcepts || []);
+  const mentioned = (data?.mentioned || []).filter((m) => !core.includes(m));
+  if (!all.length && !core.length && !mentioned.length) return null;
 
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
@@ -36,6 +38,37 @@ export function TagChips({ path, onOpenDoc }: { path: string; onOpenDoc: (p: str
           </button>
         );
       })}
+      {core.length > 0 && (
+        <span className="flex items-center gap-1.5 flex-wrap ml-3">
+          <span className="text-[10px] text-muted-foreground">核心概念</span>
+          {core.map((c) => (
+            <button
+              key={c}
+              className="text-[11px] px-1.5 py-0.5 rounded-full border border-primary/40 text-primary hover:bg-primary/10 transition-colors"
+              title="本文核心概念，点击查看释义"
+              onClick={() => onOpenConcept?.(c)}
+            >
+              {c}
+            </button>
+          ))}
+        </span>
+      )}
+      {mentioned.length > 0 && (
+        <span className="flex items-center gap-1 flex-wrap ml-3">
+          <span className="text-[10px] text-muted-foreground">提及</span>
+          {mentioned.slice(0, 6).map((c) => (
+            <button
+              key={c}
+              className="text-[11px] text-muted-foreground hover:text-primary transition-colors"
+              title="本文提及的概念，点击查看释义"
+              onClick={() => onOpenConcept?.(c)}
+            >
+              {c}
+            </button>
+          ))}
+          {mentioned.length > 6 && <span className="text-[10px] text-muted-foreground">+{mentioned.length - 6}</span>}
+        </span>
+      )}
       {openTag && (
         <TagDocsCard tag={openTag} onClose={() => setOpenTag(null)} onOpenDoc={(p) => { setOpenTag(null); onOpenDoc(p); }} />
       )}

@@ -1012,7 +1012,7 @@ export default function Read() {
 
           {/* 主题标签（人工 tags + AI 标注），点击看同主题文档 */}
           <div className="mb-2">
-            <TagChips path={relPath} onOpenDoc={(p2) => navigate('/read/' + p2.split('/').map(encodeURIComponent).join('/'))} />
+            <TagChips path={relPath} onOpenDoc={(p2) => navigate('/read/' + p2.split('/').map(encodeURIComponent).join('/'))} onOpenConcept={(n) => setConceptName(n)} />
           </div>
 
           {/* 正文 */}

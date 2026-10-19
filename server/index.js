@@ -1581,7 +1581,7 @@ app.get('/api/tags', (req, res) => {
         if (Array.isArray(m?.tags)) for (const t of m.tags) if (typeof t === 'string' && t.trim()) manual.push(t.trim());
       } catch { /* 非法旁注跳过 */ }
     }
-    const auto = ai.byPath.get(f.path) || [];
+    const auto = ai.byPath.get(f.path)?.topics || [];
     if (!manual.length && !auto.length) continue;
     const title = (() => {
       try {
@@ -1625,8 +1625,20 @@ app.get('/api/tags/doc', (req, res) => {
     if (Array.isArray(m?.tags)) manual = m.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim());
   } catch { /* 无旁注 */ }
   const ai = loadTopics(lib.baseDir);
-  const auto = ai.byPath.get(target) || [];
-  res.json({ dsId: lib.id, path: target, manual, ai: auto, all: [...new Set([...manual, ...auto])] });
+  const entry = ai.byPath.get(target) || { topics: [], concepts: [] };
+  // 提及的概念：从该文档的内链里反查（target 以 concept: 开头的词条）
+  const mentioned = [];
+  try {
+    const fileLinks = lib.linkIndex?.files?.get(target)?.links || [];
+    for (const l of fileLinks) {
+      const tp = l.target?.path || '';
+      if (tp.startsWith('concept:')) {
+        const n = tp.slice('concept:'.length);
+        if (!mentioned.includes(n)) mentioned.push(n);
+      }
+    }
+  } catch { /* 索引未就绪时为空 */ }
+  res.json({ dsId: lib.id, path: target, manual, ai: entry.topics, coreConcepts: entry.concepts, mentioned, all: [...new Set([...manual, ...entry.topics])] });
 });
 
 app.get('/api/word-capability', async (req, res) => {

@@ -213,9 +213,12 @@ export function loadTopics(baseDir) {
     const p = typeof it.path === 'string' ? it.path.trim() : '';
     if (!p) continue;
     const topics = strArr(it.topics ?? it.tags);
-    if (!topics.length) continue;
-    if (!byPath.has(p)) byPath.set(p, []);
-    for (const t of topics) if (!byPath.get(p).includes(t)) byPath.get(p).push(t);
+    const concepts = strArr(it.concepts);
+    if (!topics.length && !concepts.length) continue;
+    if (!byPath.has(p)) byPath.set(p, { topics: [], concepts: [] });
+    const e = byPath.get(p);
+    for (const t of topics) if (!e.topics.includes(t)) e.topics.push(t);
+    for (const c of concepts) if (!e.concepts.includes(c)) e.concepts.push(c);
   }
   return { byPath, errors: errors || [], missing };
 }

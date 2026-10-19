@@ -139,7 +139,7 @@ export const api = {
   tags: () =>
     req<{ dsId: string; dir: string; tags: TagEntry[]; topicsMissing: boolean; errors: string[]; counts: { manual: number; ai: number } }>('/api/tags'),
   tagsDoc: (path: string) =>
-    req<{ dsId: string; path: string; manual: string[]; ai: string[]; all: string[] }>('/api/tags/doc?path=' + encodeURIComponent(path)),
+    req<{ dsId: string; path: string; manual: string[]; ai: string[]; coreConcepts: string[]; mentioned: string[]; all: string[] }>('/api/tags/doc?path=' + encodeURIComponent(path)),
   concepts: () =>
     req<{ dsId: string; dir: string; concepts: ConceptItem[]; conceptsMissing: boolean; graphMissing: boolean; nodeCount: number; edgeCount: number; errors: string[] }>('/api/concepts'),
   conceptDetail: (name: string) =>
