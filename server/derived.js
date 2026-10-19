@@ -1,11 +1,14 @@
 // 加工数据（derived）：读取语料目录下 .derived/ 的 JSONL，提供概念表、主题与知识图谱
 // 定位为派生数据：由 AI 从原始 MD 转换产出，系统只读不写；缺失时功能自动退化
 //
-// .xuewen/concepts.jsonl —— 一行一个条目（概念/人物/书名/主题…）
+// .derived/concepts.jsonl —— 一行一个条目（概念/人物/书名…）
 //   {"name":"本体","aliases":["本原"],"type":"概念","def":"释义","refs":["笔记/第1章.md"],
 //    "related":["心性"],"status":"machine","source_hash":null}
 //
-// .xuewen/graph.jsonl —— 图节点与边
+// .derived/topics.jsonl —— 文档 → 主题标注
+//   {"path":"笔记/第1章.md","topics":["基础"]}
+//
+// .derived/graph.jsonl —— 图节点与边
 //   {"kind":"node","id":"本体","label":"本体","type":"概念","desc":"…"}
 //   {"kind":"edge","from":"本体","to":"心性","rel":"包含"}
 import fs from 'node:fs';
