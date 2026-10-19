@@ -61,9 +61,9 @@ export default function Setup() {
   return (
     <div className="max-w-2xl mx-auto py-8 px-4">
       <div className="flex items-center gap-3 mb-1">
-        <img src="/logo-64.png" alt="学问 Workbench" className="w-12 h-12 rounded-xl shrink-0 select-none" draggable={false} />
+        <img src="/logo-64.png" alt="Workbench" className="w-12 h-12 rounded-xl shrink-0 select-none" draggable={false} />
         <div>
-          <h1 className="text-2xl font-bold leading-tight">学问 Workbench</h1>
+          <h1 className="text-2xl font-bold leading-tight">Workbench</h1>
           <p className="text-sm text-muted-foreground">资料库管理</p>
         </div>
       </div>

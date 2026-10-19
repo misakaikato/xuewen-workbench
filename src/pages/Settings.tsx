@@ -257,7 +257,7 @@ export default function Settings() {
       </section>
       )}
 
-      {/* 屏蔽词表（自动内链） */}
+      {tab === 'reading' && (
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="font-medium text-sm mb-1 flex items-center gap-1.5">
           <ShieldBan className="w-3.5 h-3.5" /> 屏蔽词表
@@ -311,6 +311,7 @@ export default function Settings() {
           )}
         </div>
       </section>
+      )}
 
       {tab === 'collections' && (
       <section className="bg-card border border-border rounded-lg p-4">
@@ -380,6 +381,7 @@ export default function Settings() {
       )}
 
       {/* 元数据映射 */}
+      {tab === 'metadata' && (
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="font-medium text-sm mb-1">元数据来源</h2>
         <p className="text-xs text-muted-foreground mb-3">
@@ -462,9 +464,9 @@ export default function Settings() {
           <Plus className="w-3.5 h-3.5" /> 新增元数据来源
         </button>
       </section>
+      )}
 
-      {/* 导入元数据 */}
-      <MetaImport />
+      {tab === 'metadata' && <MetaImport />}
     </div>
   );
 }

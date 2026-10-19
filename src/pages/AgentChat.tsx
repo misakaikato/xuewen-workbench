@@ -419,7 +419,7 @@ export default function AgentChat() {
                 {ep?.model || '选择模型'} <ChevronDown className="w-3 h-3" />
               </button>
               {modelOpen && (
-                <div className="absolute bottom-full left-0 mb-1 bg-card border rounded-lg shadow-lg p-1 z-30 min-w-44 max-h-56 overflow-auto">
+                <div className="absolute bottom-full left-0 mb-1 bg-card border rounded-lg shadow-lg p-1 z-30 min-w-44 max-w-[90vw] max-h-56 overflow-auto">
                   {modelList.map((m) => (
                     <button key={m} className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-mono ${m === ep?.model ? 'bg-accent text-primary' : 'hover:bg-accent'}`}
                       onClick={async () => { await api.agentSettings({ model: m }); setModelOpen(false); refresh(); }}>

@@ -112,8 +112,8 @@
     "vite": "^7.2.4"
   },
   "main": "electron/main.js",
-  "productName": "Xuewen Workbench",
-  "description": "Corpus workbench (学问 Workbench)",
+  "productName": "Workbench",
+  "description": "Corpus workbench",
   "author": "mayu",
   "build": {
     "appId": "local.mayu.corpus-workbench",
