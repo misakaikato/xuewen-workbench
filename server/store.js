@@ -33,6 +33,24 @@ const UI_THEMES = ['A', 'B', 'C'];
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
+// 一次性迁移：sources/<dsId>/ → knowledge/<dsId>/（记忆层设计要求库数据统一在 knowledge/ 下）
+try {
+  const oldSources = path.join(DATA_DIR, 'sources');
+  const newKnowledge = path.join(DATA_DIR, 'knowledge');
+  if (fs.existsSync(oldSources)) {
+    fs.mkdirSync(newKnowledge, { recursive: true });
+    for (const name of fs.readdirSync(oldSources)) {
+      const from = path.join(oldSources, name);
+      const to = path.join(newKnowledge, name);
+      if (!fs.existsSync(to)) fs.renameSync(from, to);
+    }
+    // 全部迁完才删空目录
+    if (fs.readdirSync(oldSources).length === 0) fs.rmdirSync(oldSources);
+  }
+} catch (e) {
+  console.warn('[store] sources → knowledge 迁移失败:', e.message);
+}
+
 export function dataDir() {
   return DATA_DIR;
 }
@@ -155,7 +173,7 @@ export function saveUiSettings(patch) {
 }
 
 function dsDir(dsId) {
-  const d = path.join(DATA_DIR, 'sources', dsId);
+  const d = path.join(DATA_DIR, 'knowledge', dsId);
   fs.mkdirSync(d, { recursive: true });
   return d;
 }

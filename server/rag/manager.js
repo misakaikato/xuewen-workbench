@@ -158,9 +158,9 @@ function kindOf(ext) {
 }
 
 export class RagManager {
-  constructor({ dataDir, sourcesDir, getLib }) {
+  constructor({ dataDir, knowledgeDir, getLib }) {
     this.dataDir = dataDir;
-    this.sourcesDir = sourcesDir;
+    this.knowledgeDir = knowledgeDir;
     this.getLib = getLib; // (dsId) => { snapshot, getText(relPath) } | null
     this.embed = new EmbedService(dataDir);
     this.indices = new Map(); // dsId -> RagIndex
@@ -186,7 +186,7 @@ export class RagManager {
     let ix = this.indices.get(dsId);
     if (!ix) {
       const lib = this.getLib(dsId);
-      const ix2 = new RagIndex(dsId, path.join(this.sourcesDir, dsId, 'rag.db'), () => this.getLib(dsId)?.snapshot || null, this.embed);
+      const ix2 = new RagIndex(dsId, path.join(this.knowledgeDir, dsId, 'rag.db'), () => this.getLib(dsId)?.snapshot || null, this.embed);
       ix2.whenIndexed = () => (this.getLib(dsId)?.whenIndexed || Promise.resolve())();
       ix2._getText = (p) => {
         const lib2 = this.getLib(dsId);

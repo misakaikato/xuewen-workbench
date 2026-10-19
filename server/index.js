@@ -72,10 +72,10 @@ class Lib {
 
 const libs = new Map(); // id -> Lib（已打开的资料库）
 
-// RAG 管理器：全局共享嵌入服务，按库隔离索引（sources/<dsId>/rag.db）
+// RAG 管理器：全局共享嵌入服务，按库隔离索引（knowledge/<dsId>/rag.db）
 const ragManager = new RagManager({
   dataDir: dataDir(),
-  sourcesDir: path.join(dataDir(), 'sources'),
+  knowledgeDir: path.join(dataDir(), 'knowledge'),
   getLib: (dsId) => {
     const lib = libs.get(dsId);
     if (!lib) return null;

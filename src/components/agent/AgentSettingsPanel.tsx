@@ -7,6 +7,7 @@ import {
   X, RefreshCw, Brain, Plug, Wrench, BookOpen, Plus, Trash,
   Cpu, Check,
 } from 'lucide-react';
+import { MemoryPanel } from './MemoryPanel';
 
 const THINKING_LEVELS = [
   { v: 'off', label: '关' }, { v: 'low', label: '低' },
@@ -15,6 +16,7 @@ const THINKING_LEVELS = [
 
 const TABS = [
   { id: 'model', label: '模型端点', icon: Cpu },
+  { id: 'memory', label: '记忆', icon: Brain },
   { id: 'skills', label: 'Skills', icon: BookOpen },
   { id: 'mcp', label: 'MCP', icon: Plug },
 ] as const;
@@ -143,6 +145,9 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
             </div>
           </>
         )}
+
+        {/* ===== 记忆 Tab ===== */}
+        {tab === 'memory' && <MemoryPanel />}
 
         {/* ===== Skills Tab ===== */}
         {tab === 'skills' && (
