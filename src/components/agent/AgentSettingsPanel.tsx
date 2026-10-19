@@ -112,17 +112,17 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground w-16 shrink-0 text-xs">baseURL</span>
                 <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} onBlur={() => loadModels(baseUrl)}
-                  placeholder="http://localhost:11434/v1" className="flex-1 px-2.5 py-1.5 rounded-lg border border-input bg-background" />
+                  placeholder="http://localhost:11434/v1" className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-input bg-background" />
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground w-16 shrink-0 text-xs">模型</span>
                 {models.length > 0 ? (
-                  <select value={model} onChange={(e) => setModel(e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg border border-input bg-background">
+                  <select value={model} onChange={(e) => setModel(e.target.value)} className="flex-1 min-w-0 max-w-full truncate px-2.5 py-1.5 rounded-lg border border-input bg-background">
                     {!models.includes(model) && <option value={model}>{model}（当前）</option>}
                     {models.map((m) => <option key={m} value={m}>{m}</option>)}
                   </select>
                 ) : (
-                  <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="模型名" className="flex-1 px-2.5 py-1.5 rounded-lg border border-input bg-background" />
+                  <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="模型名" className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-input bg-background" />
                 )}
                 <button className="p-1.5 rounded-lg border border-border hover:bg-accent text-muted-foreground shrink-0" title="刷新模型列表" onClick={() => loadModels(baseUrl)} disabled={modelsLoading}>
                   <RefreshCw className={`w-3.5 h-3.5 ${modelsLoading ? 'animate-spin' : ''}`} />
@@ -131,7 +131,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
               {models.length > 0 && <p className="text-xs text-muted-foreground pl-[72px] flex items-center gap-1"><Check className="w-3 h-3 text-success" />从端点拉到 {models.length} 个模型</p>}
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground w-16 shrink-0 text-xs">apiKey</span>
-                <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="本地服务通常留空" type="password" className="flex-1 px-2.5 py-1.5 rounded-lg border border-input bg-background" />
+                <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="本地服务通常留空" type="password" className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-input bg-background" />
               </div>
             </div>
 

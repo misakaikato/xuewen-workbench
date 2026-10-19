@@ -136,6 +136,9 @@ export const api = {
   getUiSettings: () => req<{ theme: Theme; autoUpdate: boolean; notesDir: string }>('/api/ui-settings'),
   saveUiSettings: (patch: { theme?: Theme; autoUpdate?: boolean; notesDir?: string }) =>
     req<{ ok: boolean; theme: Theme; autoUpdate: boolean; notesDir: string }>('/api/ui-settings', json('PUT', patch)),
+  notesFor: (path: string) =>
+    req<{ ok: boolean; notes: { notePath: string; count: number; latest: string | null }[] }>(
+      '/api/notes/for?path=' + encodeURIComponent(path)),
   notesAppend: (payload: { sourcePath: string; quote?: string; note?: string }) =>
     req<{ ok: boolean; path: string }>('/api/notes/append', json('POST', payload)),
   getConfig: () => req<ConfigResponse>('/api/config'),

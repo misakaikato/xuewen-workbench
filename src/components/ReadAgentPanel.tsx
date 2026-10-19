@@ -1,12 +1,15 @@
 // 阅读页内嵌 AI 面板：不离开文档就能问 AI，自动带上当前文档上下文
 // 复用主 agent 的会话（当前库最近一次对话），保证上下文连续
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, Send, X, Loader2, Square, Quote } from 'lucide-react';
+import { Sparkles, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { AgentMessage } from '@/lib/api';
 import { MarkdownMsg } from '@/components/agent/MarkdownMsg';
 import { ToolCard, type ToolItem } from '@/components/agent/ToolCard';
 import { readAgentStream } from '@/lib/agentStream';
+import { ChatInput } from '@/components/agent/ChatInput';
+import { type Block, initialBlocks, blocksToPrompt, hasUserText, appendQuote } from '@/components/agent/blocks';
+import { ContextBar } from '@/components/agent/Extras';
 
 interface Msg extends AgentMessage { streaming?: boolean }
 
@@ -28,10 +31,11 @@ export function ReadAgentPanel({
 }) {
   const [convId, setConvId] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [input, setInput] = useState('');
+  const [blocks, setBlocks] = useState<Block[]>(initialBlocks());
+  const [images, setImages] = useState<{ data: string; mimeType: string; name: string }[]>([]);
+  const [usage, setUsage] = useState<AgentMessage['usage'] | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [quotes, setQuotes] = useState<string[]>([]);
   const aiRef = useRef(-1);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -59,10 +63,10 @@ export function ReadAgentPanel({
     return () => { dead = true; };
   }, []);
 
-  // 消费从阅读页带来的引用
+  // 消费从阅读页带来的引用（作为引用 chip 进入输入框）
   useEffect(() => {
     if (!pendingQuote) return;
-    setQuotes((q) => [...q, pendingQuote]);
+    setBlocks((prev) => appendQuote(prev, pendingQuote, '阅读页引用'));
     onQuoteConsumed();
   }, [pendingQuote, onQuoteConsumed]);
 
@@ -73,15 +77,13 @@ export function ReadAgentPanel({
   useEffect(scroll, [msgs, scroll]);
 
   const send = async () => {
-    const text = input.trim();
-    if ((!text && !quotes.length) || !convId) return;
-    const quoteText = quotes.length
-      ? quotes.map((q) => q.split('\n').map((l) => '> ' + l).join('\n')).join('\n\n') + '\n\n'
-      : '';
-    const body = quoteText + (text || '请基于以上引用的内容回答。');
+    let body = blocksToPrompt(blocks);
+    if (body && !hasUserText(blocks)) body += '\n\n请基于以上引用的内容回答。';
+    if ((!body && !images.length) || !convId) return;
+    const pending = images;
 
-    setInput('');
-    setQuotes([]);
+    setBlocks(initialBlocks());
+    setImages([]);
     setBusy(true);
     setErr(null);
     setMsgs((m) => {
@@ -98,11 +100,12 @@ export function ReadAgentPanel({
       const resp = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: convId, text: body }),
+        body: JSON.stringify({ sessionId: convId, text: body, images: pending.length ? pending.map((im) => ({ data: im.data, mimeType: im.mimeType })) : undefined }),
         signal: ctl.signal,
       });
       await readAgentStream(resp, (d) => {
         if (d.t === 'delta') patch((msg) => ({ ...msg, text: msg.text + String(d.v || '') }));
+        else if (d.t === 'usage') setUsage(d.usage as AgentMessage['usage']);
         else if (d.t === 'thinking') patch((msg) => ({ ...msg, thinking: (msg.thinking || '') + String(d.v || '') }));
         else if (d.t === 'tool_start') patch((msg) => ({ ...msg, tools: [...(msg.tools || []), { name: String(d.name || ''), args: d.args, durationMs: 0 }] }));
         else if (d.t === 'tool_end') patch((msg) => ({ ...msg, tools: (msg.tools || []).map((t) => ((t as ToolItem).name === d.name && !(t as ToolItem).summary ? { ...t, summary: String(d.summary || ''), isError: !!d.isError, durationMs: d.durationMs as number } : t)) }));
@@ -162,49 +165,25 @@ export function ReadAgentPanel({
         ))}
       </div>
 
-      {/* 引用 chips */}
-      {quotes.length > 0 && (
-        <div className="shrink-0 px-3 pt-2 space-y-1">
-          {quotes.map((q, i) => (
-            <div key={i} className="group flex items-start gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2 py-1">
-              <Quote className="w-3 h-3 text-primary shrink-0 mt-0.5" />
-              <div className="flex-1 min-w-0 text-[10px] text-foreground/80 line-clamp-2">{q.slice(0, 120)}</div>
-              <button className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-background" onClick={() => setQuotes((qs) => qs.filter((_, j) => j !== i))}>
-                <X className="w-2.5 h-2.5" />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 输入 */}
-      <div className="shrink-0 p-2 border-t border-border">
-        <div className="flex items-end gap-1.5">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                if ((e.nativeEvent as KeyboardEvent).isComposing) return;
-                e.preventDefault();
-                send();
-              }
-            }}
-            rows={2}
-            placeholder="就这篇文档提问…"
-            className="flex-1 resize-none px-2 py-1.5 rounded-lg border border-input bg-background text-xs"
-          />
-          {busy ? (
-            <button className="p-1.5 rounded-lg border border-border hover:bg-accent" onClick={stop} title="停止">
-              <Square className="w-3.5 h-3.5" />
-            </button>
-          ) : (
-            <button className="p-1.5 rounded-lg bg-primary text-primary-foreground disabled:opacity-40" disabled={!input.trim() && !quotes.length} onClick={send} title="发送">
-              <Send className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-        {busy && <div className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1"><Loader2 className="w-2.5 h-2.5 animate-spin" />生成中…</div>}
+      {/* 输入区：完整 ChatInput（引用 chip / 附件 / @文件 / 命令） */}
+      <div className="shrink-0 border-t border-border p-2">
+        {usage && <div className="mb-1.5"><ContextBar usage={usage} contextWindow={128000} /></div>}
+        <ChatInput
+          blocks={blocks}
+          onBlocksChange={setBlocks}
+          onSend={() => void send()}
+          onStop={stop}
+          busy={busy}
+          disabled={!convId}
+          placeholder="就这篇文档提问…"
+          onCommand={(cmd) => {
+            if (cmd === '/clear') {
+              api.agentNewSession().then((c) => { setConvId(c.id); setMsgs([]); }).catch(() => {});
+            }
+          }}
+          images={images}
+          onImagesChange={setImages}
+        />
       </div>
     </div>
   );

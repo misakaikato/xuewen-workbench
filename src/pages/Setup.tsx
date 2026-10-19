@@ -4,12 +4,22 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
-import { Database, CheckCircle2, XCircle, Loader2, FolderMinus, Plus } from 'lucide-react';
+import { Database, CheckCircle2, XCircle, Loader2, FolderMinus, Plus, FolderOpen } from 'lucide-react';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+
+declare global {
+  interface Window {
+    wbHost?: {
+      isElectron?: boolean;
+      platform?: string;
+      selectDirectory?: (defaultPath?: string) => Promise<string | null>;
+    };
+  }
+}
 
 export default function Setup() {
   const { config, libraries, refreshConfig, removeLib } = useApp();
@@ -79,15 +89,32 @@ export default function Setup() {
           <Plus className="w-4 h-4 text-primary" /> 添加知识库
         </h2>
         <label className="block text-sm font-medium mb-1">知识库根目录</label>
-        <input
-          value={baseDir}
-          onChange={(e) => {
-            setBaseDir(e.target.value);
-            setResult(null);
-          }}
-          placeholder={'例如 D:\\知识库 或 /Users/me/corpus'}
-          className="w-full px-3 py-2 rounded border border-input bg-background text-sm mono"
-        />
+        <div className="flex items-center gap-2">
+          <input
+            value={baseDir}
+            onChange={(e) => {
+              setBaseDir(e.target.value);
+              setResult(null);
+            }}
+            placeholder={'例如 D:\\知识库 或 /Users/me/corpus'}
+            className="flex-1 min-w-0 px-3 py-2 rounded border border-input bg-background text-sm mono"
+          />
+          {window.wbHost?.selectDirectory && (
+            <Button
+              variant="outline"
+              className="shrink-0"
+              title="打开系统目录选择器"
+              onClick={async () => {
+                try {
+                  const picked = await window.wbHost!.selectDirectory!(baseDir.trim() || undefined);
+                  if (picked) { setBaseDir(picked); setResult(null); }
+                } catch { /* 用户取消或不可用 */ }
+              }}
+            >
+              <FolderOpen className="w-3.5 h-3.5" /> 选择目录
+            </Button>
+          )}
+        </div>
         <p className="text-xs text-muted-foreground mt-1">
           路径指向<b>本服务端所在电脑</b>的目录。浏览器本身没有磁盘权限，读写由本应用后端完成。
         </p>

@@ -80,7 +80,16 @@ export default function Read() {
   const [findMode, setFindMode] = useState<'smart' | 'exact'>('smart');
   const [findHits, setFindHits] = useState(0);
   const [sel, setSel] = useState<{ text: string; x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (!relPath) return;
+    let dead = false;
+    api.notesFor(relPath)
+      .then((r) => { if (!dead) setDocNotes(r.notes || []); })
+      .catch(() => { if (!dead) setDocNotes([]); });
+    return () => { dead = true; };
+  }, [relPath]);
   const [aiOpen, setAiOpen] = useState(false);
+  const [docNotes, setDocNotes] = useState<{ notePath: string; count: number }[]>([]);
   const [aiQuote, setAiQuote] = useState<string | null>(null);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState('');
@@ -787,6 +796,16 @@ export default function Read() {
             >
               {pinned ? <PinOff className="w-4 h-4 text-primary" /> : <Pin className="w-4 h-4" />}
             </button>
+            {docNotes.length > 0 && (
+              <button
+                className="p-1.5 rounded hover:bg-accent transition-colors text-amber-600"
+                title={`本文档有 ${docNotes.reduce((n, x) => n + x.count, 0)} 条阅读笔记，点击查看`}
+                onClick={() => navigate('/read/' + docNotes[0].notePath.split('/').map(encodeURIComponent).join('/'))}
+              >
+                <NotebookPen className="w-4 h-4" />
+                <span className="text-xs stat-num ml-0.5">{docNotes.reduce((n, x) => n + x.count, 0)}</span>
+              </button>
+            )}
             <button
               className={`p-1.5 rounded hover:bg-accent transition-colors ${aiOpen ? 'text-primary' : 'text-muted-foreground'}`}
               title="AI 助手（就当前文档提问）"

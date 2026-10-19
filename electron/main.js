@@ -1,6 +1,6 @@
 // Electron 外壳：进程内启动 Express 后端（空闲端口，默认 7410），就绪后打开窗口。
 // 开发模式（--dev）：同时启动 Vite（HMR），窗口加载 Vite 地址；打包模式：后端直接托管 dist/。
-import { app, BrowserWindow, Menu, shell, dialog } from 'electron';
+import { app, BrowserWindow, Menu, shell, dialog, ipcMain } from 'electron';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
@@ -98,6 +98,17 @@ async function start() {
   createWindow(url);
 }
 
+// 系统目录选择（供「添加知识库」使用）：渲染进程 → preload → 这里
+ipcMain.handle('wb:selectDirectory', async (_e, defaultPath) => {
+  const r = await dialog.showOpenDialog(win ?? undefined, {
+    title: '选择知识库根目录',
+    defaultPath: typeof defaultPath === 'string' && defaultPath ? defaultPath : undefined,
+    properties: ['openDirectory', 'createDirectory'],
+    buttonLabel: '选择此目录',
+  });
+  return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
+});
+
 function createWindow(url) {
   win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 960, minHeight: 600,
@@ -105,7 +116,7 @@ function createWindow(url) {
     icon: path.join(ROOT, 'assets', 'icons', 'icon.png'),
     // macOS：隐藏式标题栏，红绿灯内嵌顶栏（渲染侧顶栏做拖拽区，见 Layout wb-drag）
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: path.join(__dirname, 'preload.js') },
   });
   win.once('ready-to-show', () => win.show());
   win.webContents.setWindowOpenHandler(({ url: u }) => {

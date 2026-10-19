@@ -606,7 +606,7 @@ app.post('/api/notes/append', async (req, res) => {
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
     const body = String(note || '').trim();
     const quoted = String(quote || '').trim().split(/\r?\n/).map((line) => '> ' + line).join('\n');
-    const block = [first ? `# ${stem} 阅读笔记\n` : '', `## ${stamp}`, quoted, body ? `\n${body}` : '', `\n来源：${source}\n`, ''].filter(Boolean).join('\n');
+    const block = [first ? `# ${stem} 阅读笔记\n` : '', `## ${stamp}`, quoted, body ? `\n${body}` : '', `\n来源：[${source}](${encodeURI(source)})\n`, ''].filter(Boolean).join('\n');
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.appendFileSync(abs, (first ? '' : '\n---\n\n') + block, 'utf8');
     // 笔记元数据：标准旁注（仅 schema 允许字段）+ 逐条划线记录（独立 annotations 文件，避免污染 meta schema）
@@ -625,6 +625,40 @@ app.post('/api/notes/append', async (req, res) => {
     res.json({ ok: true, path: rel, meta: rel + SIDECAR_SUFFIX, annotations: ann.length });
   } catch (e) {
     res.status(e.status || 500).json({ error: '写入笔记失败: ' + e.message });
+  }
+});
+
+// 某文档关联的阅读笔记：反查笔记目录下的 .annotations.json
+app.get('/api/notes/for', async (req, res) => {
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const target = String(req.query.path || '');
+  if (!target) return res.status(400).json({ error: '缺少 path' });
+  const { notesDir } = getUiSettings();
+  const notesAbs = path.join(lib.baseDir, notesDir);
+  const out = [];
+  try {
+    if (fs.existsSync(notesAbs)) {
+      for (const f of fs.readdirSync(notesAbs)) {
+        if (!f.startsWith('.') || !f.endsWith('.annotations.json')) continue;
+        try {
+          const ann = JSON.parse(fs.readFileSync(path.join(notesAbs, f), 'utf8'));
+          if (!Array.isArray(ann)) continue;
+          const hits = ann.filter((a) => a && a.source === target);
+          if (!hits.length) continue;
+          // 对应的笔记文件名：.<笔记名>.annotations.json → <笔记名>.md
+          const noteName = f.slice(1, -'.annotations.json'.length) + '.md';
+          out.push({
+            notePath: path.posix.join(notesDir, noteName),
+            count: hits.length,
+            latest: hits[hits.length - 1]?.at || null,
+          });
+        } catch { /* 坏文件跳过 */ }
+      }
+    }
+    res.json({ ok: true, notes: out });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
   }
 });
 

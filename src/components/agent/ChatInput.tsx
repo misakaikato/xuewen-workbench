@@ -232,8 +232,14 @@ export function ChatInput({
         </div>
       )}
 
-      {/* 块序列：引用 chip 与文本框交替 */}
-      <div className="rounded-xl border border-input bg-card px-2 py-2 space-y-1.5">
+      {/* 输入框：左侧加号 + 右侧块序列 */}
+      <div className="flex items-end gap-1.5">
+        <button className="mb-1 p-1.5 rounded-lg border border-border hover:bg-accent text-muted-foreground shrink-0"
+          title="添加附件（图片 / 文本文件）" onClick={() => setAttachOpen((v) => !v)} disabled={disabled}>
+          <Plus className="w-4 h-4" />
+        </button>
+        <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { void handleFiles(e.target.files); e.target.value = ''; }} />
+      <div className="flex-1 min-w-0 rounded-xl border border-input bg-card px-2 py-2 space-y-1.5">
         {blocks.map((b) => b.type === 'quote' ? (
           <div key={b.id} className="group relative flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5">
             <Quote className="w-3.5 h-3.5 text-primary shrink-0 mt-0.5" />
@@ -265,14 +271,10 @@ export function ChatInput({
           />
         ))}
       </div>
+      </div>
 
       {/* 底部工具行 */}
       <div className="flex items-center gap-1.5 mt-2">
-        <button className="p-1.5 rounded-lg border border-border hover:bg-accent text-muted-foreground shrink-0"
-          title="添加附件（图片 / 文本文件）" onClick={() => setAttachOpen((v) => !v)} disabled={disabled}>
-          <Plus className="w-4 h-4" />
-        </button>
-        <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { void handleFiles(e.target.files); e.target.value = ''; }} />
         <span className="text-[11px] text-muted-foreground hidden sm:inline">
           {images.length > 0 && <><ImageIcon className="w-3 h-3 inline" /> {images.length} 图 · </>}
           Enter 发送 · Shift+Enter 换行
