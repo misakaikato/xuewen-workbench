@@ -61,7 +61,7 @@ function Highlight({ text, terms }: { text: string; terms: string[] }) {
 export default function Search() {
   const [params, setParams] = useSearchParams();
   const q = params.get('q') || '';
-  const mode = params.get('mode') === 'smart' ? 'smart' : 'exact';
+  const mode = params.get('mode') === 'exact' ? 'exact' : 'smart'; // 默认智能检索（精确用 ?mode=exact）
   const { dsId } = useApp();
   const [input, setInput] = useState(q);
   const [types, setTypes] = useState<string[]>([]);
@@ -84,7 +84,7 @@ export default function Search() {
   // 会话恢复：同一库同一查询返回时直接还原（跳过重新检索），并恢复滚动位置
   useEffect(() => {
     const q0 = new URLSearchParams(window.location.search).get('q') || '';
-    const m0 = new URLSearchParams(window.location.search).get('mode') === 'smart' ? 'smart' : 'exact';
+    const m0 = new URLSearchParams(window.location.search).get('mode') === 'exact' ? 'exact' : 'smart';
     const key = `${dsId}|${m0}|${q0}`;
     // 空会话不恢复（StrictMode 双挂载首轮会保存空态；也避免空查询恢复无意义状态）
     if (searchSession && searchSession.key === key && searchSession.input === q0 &&
@@ -181,7 +181,7 @@ export default function Search() {
   // 输入防抖
   useEffect(() => {
     const p: Record<string, string> = input.trim() ? { q: input.trim() } : {};
-    if (mode === 'smart') p.mode = 'smart';
+    if (mode === 'exact') p.mode = 'exact';
     if (hydratedRef.current) {
       hydratedRef.current = false; // 会话已恢复：本轮跳过重查，闪退即无
       return;
@@ -203,13 +203,13 @@ export default function Search() {
         <span className="inline-flex rounded-lg border border-border overflow-hidden text-xs font-normal">
           <button
             className={`px-3 py-1 flex items-center gap-1 ${mode === 'exact' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent text-muted-foreground'}`}
-            onClick={() => setParams(input.trim() ? { q: input.trim() } : {}, { replace: true })}
+            onClick={() => setParams(input.trim() ? { q: input.trim(), mode: 'exact' } : { mode: 'exact' }, { replace: true })}
           >
             精确
           </button>
           <button
             className={`px-3 py-1 flex items-center gap-1 ${mode === 'smart' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent text-muted-foreground'}`}
-            onClick={() => setParams(input.trim() ? { q: input.trim(), mode: 'smart' } : { mode: 'smart' }, { replace: true })}
+            onClick={() => setParams(input.trim() ? { q: input.trim() } : {}, { replace: true })}
             title="语义+关键词混合检索（RAG），支持繁简互通"
           >
             <Sparkles className="w-3 h-3" />智能
@@ -321,17 +321,19 @@ export default function Search() {
       )}
 
       {mode === 'smart' && smart && smart.hits.length > 0 && (
-        <ul className="space-y-3">
+        <ul className="space-y-3 wb-selectable">
           {smart.hits.map((h, i) => (
             <li key={h.path + ':' + h.ordinal + ':' + i} className="bg-card border border-border rounded-lg p-3">
               <button
                 className="flex items-center gap-2 font-medium text-sm hover:text-primary w-full text-left"
-                onClick={() =>
-                  navigate(
-                    '/read/' + h.path.split('/').map(encodeURIComponent).join('/') +
-                      '?h=' + encodeURIComponent(input.trim().split(/\s+/)[0] || '')
-                  )
-                }
+                onClick={() => {
+                  // ?h= 与 #锚点同带：词在正文则高亮并定位首个命中；
+                  // 语义命中常不含原词，此时回退到命中块的标题锚点
+                  const heading = h.headingPath ? h.headingPath.split(' > ').pop() : '';
+                  const base = '/read/' + h.path.split('/').map(encodeURIComponent).join('/');
+                  const term = input.trim().split(/\s+/)[0] || '';
+                  navigate(base + (term ? '?h=' + encodeURIComponent(term) : '') + (heading ? '#' + encodeURIComponent(heading) : ''));
+                }}
               >
                 {extIcon(h.path.includes('.') ? ('.' + h.name.split('.').pop() as string) : '')}
                 <span className="truncate">{h.name}</span>
@@ -361,7 +363,7 @@ export default function Search() {
       )}
 
       {mode === 'exact' && (
-      <ul className="space-y-3">
+      <ul className="space-y-3 wb-selectable">
         {results.map((r) => (
           <li key={r.file.path} className="bg-card border border-border rounded-lg p-3">
             <button

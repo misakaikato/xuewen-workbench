@@ -47,6 +47,17 @@
   }
 }
 
+/* 文字选择管控（DESIGN.md §8）：UI 骨架（顶栏/侧栏/按钮/标签）默认不可选，
+   只放开正文、对话内容、检索结果、编辑器与输入控件——避免拖选时选中按钮文字 */
+@layer base {
+  body { user-select: none; -webkit-user-select: none; }
+  input, textarea, [contenteditable="true"], .cm-editor,
+  [data-wb-content-card], .wb-selectable {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+}
+
 /* macOS hiddenInset 标题栏：顶栏作为窗口拖拽区，交互控件排除 */
 .wb-drag { -webkit-app-region: drag; }
 .wb-drag button, .wb-drag a, .wb-drag input, .wb-drag [role="button"] { -webkit-app-region: no-drag; }

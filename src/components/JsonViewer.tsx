@@ -46,8 +46,9 @@ function JsonNode({ k, value, depth, filter }: { k?: string; value: unknown; dep
   );
 }
 
-export function JsonViewer({ content }: { content: string }) {
-  const [raw, setRaw] = useState(false);
+export function JsonViewer({ content, highlightTerm }: { content: string; highlightTerm?: string }) {
+  // 带搜索命中词进入时默认原始源码视图：折叠结构里可能藏有命中，源码视图让高亮与定位可达
+  const [raw, setRaw] = useState(!!highlightTerm);
   const [filter, setFilter] = useState('');
   const [copied, setCopied] = useState(false);
 

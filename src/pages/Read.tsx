@@ -331,32 +331,35 @@ export default function Read() {
     if (!file) return;
     const sc = scrollRef.current;
     if (!sc) return;
-    const apply = () => {
+    const apply = (allowFallback: boolean): boolean => {
       // 搜索命中定位优先：?h= 词落到首个命中处（高亮已由装饰/DOM walker 生成）
       if (highlightTerm) {
-        if (file.type === 'markdown' && viewRef.current) {
+        if (file.type === 'markdown') {
           const v = viewRef.current;
+          if (!v) return false; // 只读实例未就绪，稍后重试
           const doc = v.state.sliceDoc(0).toLowerCase();
           const idx = doc.indexOf(highlightTerm.toLowerCase());
-          if (idx >= 0 && scrollDocToPos(v, idx, sc, Math.round(sc.clientHeight / 3))) return;
+          if (idx >= 0 && scrollDocToPos(v, idx, sc, Math.round(sc.clientHeight / 3))) return true;
+          // 词不在正文（智能检索的语义命中常见）：继续走锚点/比例/记忆位置
         } else {
           const mark = contentRef.current?.querySelector('mark');
           if (mark) {
             sc.scrollTop = Math.max(0, (mark as HTMLElement).offsetTop - sc.clientHeight / 3);
-            return;
+            return true;
           }
+          if (!allowFallback) return false; // 高亮尚未生成（渲染滞后），稍后重试
         }
       }
       const anchor = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
       if (anchor) {
         if (file.type === 'markdown' && viewRef.current) {
           const h = docHeadings(viewRef.current).find((x) => x.text === anchor);
-          if (h && scrollDocToPos(viewRef.current, h.pos, sc, 80)) return;
+          if (h && scrollDocToPos(viewRef.current, h.pos, sc, 80)) return true;
         } else {
           const el2 = document.getElementById(anchor);
           if (el2) {
             sc.scrollTop = el2.offsetTop - 80;
-            return;
+            return true;
           }
         }
       }
@@ -367,15 +370,24 @@ export default function Read() {
         const max = sc.scrollHeight - sc.clientHeight;
         if (max > 0) {
           sc.scrollTop = ratio * max;
-          return;
+          return true;
         }
       }
       if (dsId) {
         const pos = loadReadPos(dsId, relPath);
         sc.scrollTop = pos > 0 ? pos : 0;
       }
+      return true;
     };
-    const timer = setTimeout(apply, 60);
+    // 渲染滞后（只读 CM 未就绪 / Word 异步排版 / DOM walker 未跑完）时短间隔重试，
+    // 最后一轮允许回退到锚点/比例/记忆位置，避免永远停在文件开头
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const attempt = () => {
+      const settled = apply(tries >= 9);
+      if (!settled && ++tries < 10) timer = setTimeout(attempt, 100);
+    };
+    timer = setTimeout(attempt, 60);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file, viewReady, location.hash, dsId, relPath, highlightTerm]);
@@ -831,7 +843,7 @@ export default function Read() {
                   {file.content || ''}
                 </div>
               ))}
-            {file.type === 'json' && <JsonViewer content={file.content || ''} />}
+            {file.type === 'json' && <JsonViewer content={file.content || ''} highlightTerm={highlightTerm} />}
             {file.type === 'word' && (
               <WordReader path={relPath} name={file.name} html={file.html || ''} text={file.text || ''} warning={file.warning} engine={file.engine} />
             )}

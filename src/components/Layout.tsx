@@ -227,7 +227,13 @@ export function Layout() {
         {st && config?.configured && (
           <span className="text-xs text-muted-foreground hidden lg:inline">
             {st.scanning ? '扫描中…' : st.counts ? '' : ''}
-            {st.watching ? ' · 自动监听' : ''}
+            {st.watching && (
+              <span className="inline-flex items-center gap-1">
+                {'· '}
+                <span className="w-1.5 h-1.5 rounded-full bg-success inline-block shrink-0" />
+                自动监听
+              </span>
+            )}
           </span>
         )}
         <div className="flex-1" />

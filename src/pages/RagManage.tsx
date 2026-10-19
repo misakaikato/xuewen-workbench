@@ -99,7 +99,7 @@ export default function RagManage() {
   const indexPct = ix && ix.total > 0 ? Math.round((ix.done / ix.total) * 100) : null;
 
   return (
-    <div>
+    <div className="space-y-4">
       <h1 className="text-lg font-bold flex items-center gap-2">
         RAG 管理
         <span className="text-xs text-muted-foreground font-normal">智能检索与本地问答</span>

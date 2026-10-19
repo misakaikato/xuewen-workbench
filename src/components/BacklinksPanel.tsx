@@ -69,7 +69,7 @@ export function BacklinksPanel({
       ) : list.length === 0 ? (
         <div className="text-muted-foreground">还没有其他文档提到本篇</div>
       ) : (
-        <ul className="space-y-2">
+        <ul className="space-y-2 wb-selectable">
           {list.map((b) => (
             <li key={b.path} className="border border-border rounded p-1.5">
               <button
