@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 // 数据目录优先级：环境变量 > 用户目录（~/XuewenWorkbenchData）> 开发回退
 // 参考 Claude Code / Codex：数据放用户目录，不跟应用包走
-const USER_DATA_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', 'XuewenWorkbenchData');
+const USER_DATA_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.xuewen-workbench');
 
 function migrateIfNeeded() {
   // 旧位置（userData 下）存在且新位置不存在 → 自动迁移
