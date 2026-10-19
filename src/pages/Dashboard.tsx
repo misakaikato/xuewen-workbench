@@ -1,4 +1,4 @@
-// Dashboard 语料概览：统计、目录分布、最近记录、常用入口、主题/概念（有元数据映射时）
+// Dashboard 知识库概览：统计、目录分布、最近记录、常用入口、主题/概念（有元数据映射时）
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
@@ -46,9 +46,9 @@ export default function Dashboard() {
     return (
       <div className="max-w-xl mx-auto py-16 px-4 text-center">
         <h1 className="text-lg font-semibold mb-3">欢迎使用Workbench</h1>
-        <p className="text-muted-foreground mb-6">先打开一个资料库（本机的语料目录），应用将自动发现其中的 Markdown、JSON 与 Word 文件；之后可以同时打开多个。</p>
+        <p className="text-muted-foreground mb-6">先打开一个知识库（本机的知识库目录），应用将自动发现其中的 Markdown、JSON 与 Word 文件；之后可以同时打开多个。</p>
         <Button asChild>
-          <Link to="/setup">打开资料库</Link>
+          <Link to="/setup">打开知识库</Link>
         </Button>
       </div>
     );
@@ -61,7 +61,7 @@ export default function Dashboard() {
     <div className="max-w-5xl mx-auto py-6 px-4 space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h1 className="text-lg font-semibold">语料概览</h1>
+          <h1 className="text-lg font-semibold">知识库概览</h1>
           <div className="text-xs text-muted-foreground mt-0.5">
             {config.baseDir} · {config.status.scanning ? '扫描中…' : stats ? `扫描于 ${new Date(stats.scannedAt).toLocaleString('zh-CN')}` : '等待扫描'}
             {config.status.watching ? ' · 自动监听已开启' : ' · 可手动重扫'}

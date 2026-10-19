@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams, Link, useSearchParams, useBlocker, useNavigationType } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { findSearchLocation, searchLocationRange } from '@/lib/searchLocation';
+import { findSearchLocation, searchLocationRange, findAllRanges } from '@/lib/searchLocation';
 import { useApp } from '@/store/app';
 import { useReadingPrefs } from '@/lib/prefs';
 import { loadReadPos, saveReadPos, loadDraft, saveDraft, clearDraft } from '@/lib/drafts';
@@ -26,7 +26,7 @@ import { PageLoading, PageError } from '@/components/ui-states';
 import type { DocLink } from '@/lib/api';
 import type { EditorView as EditorViewType } from '@codemirror/view';
 import {
-  Pencil, Pin, PinOff, ListTree, Link2, Search, X, Settings2, ChevronUp,
+  Pencil, Pin, PinOff, ListTree, Link2, Search, X, Settings2, ChevronUp, NotebookPen,
   Save, AlertTriangle, CheckCircle2, Columns2, ArrowLeft, ArrowRight,
 } from 'lucide-react';
 
@@ -75,6 +75,13 @@ export default function Read() {
   const [showPrefs, setShowPrefs] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findQ, setFindQ] = useState('');
+  const [findMode, setFindMode] = useState<'smart' | 'exact'>('smart');
+  const [findHits, setFindHits] = useState(0);
+  const [sel, setSel] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteText, setNoteText] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [resumeHint, setResumeHint] = useState<string | null>(null);
   const [pinned, setPinned] = useState(false);
   const navType = useNavigationType();
   const [navDepth, setNavDepth] = useState({ idx: 0, max: 0 });
@@ -111,7 +118,7 @@ export default function Read() {
 
   const performSave = useCallback(
     async (text: string, overrideMtime?: number) => {
-      if (!dsId) throw new Error('未选定资料库');
+      if (!dsId) throw new Error('未选定知识库');
       const r = await api.saveFile(relPath, text, overrideMtime ?? baseMtimeRef.current, dsId);
       baseMtimeRef.current = r.mtimeMs;
       baseTextRef.current = text;
@@ -396,6 +403,10 @@ export default function Read() {
       if (dsId) {
         const pos = loadReadPos(dsId, relPath);
         sc.scrollTop = pos > 0 ? pos : 0;
+        if (pos > 40) {
+          setResumeHint(`已回到上次阅读位置（${Math.round(pos)}px）`);
+          window.setTimeout(() => setResumeHint(null), 4000);
+        }
       }
       return true;
     };
@@ -518,12 +529,14 @@ export default function Read() {
 
   // 文内查找：markdown 走只读 CM 定位；Word/JSON 沿用 DOM 文本扫描
   useEffect(() => {
-    if (!findQ) return;
+    if (!findQ) { setFindHits(0); return; }
     lastFindRef.current = null;
     if (file?.type === 'markdown' && viewRef.current && scrollRef.current) {
-      const hit = findNextInDoc(viewRef.current, findQ, 0);
+      const ranges = findAllRanges(viewRef.current.state.sliceDoc(0), findQ, findMode === 'smart');
+      setFindHits(ranges.length);
+      const hit = findMode === 'smart' ? ranges[0] : findNextInDoc(viewRef.current, findQ, 0);
       if (hit) {
-        lastFindRef.current = hit;
+        lastFindRef.current = { from: hit.from, to: hit.to };
         viewRef.current.dispatch({ selection: { anchor: hit.from, head: hit.to } });
         scrollDocToPos(viewRef.current, hit.from, scrollRef.current, 120);
       }
@@ -539,7 +552,7 @@ export default function Read() {
         break;
       }
     }
-  }, [findQ, file]);
+  }, [findQ, file, findMode]);
 
   // 查找条 Enter：下一个命中（到尾回绕）
   const findNext = useCallback(() => {
@@ -547,6 +560,16 @@ export default function Read() {
     const sc = scrollRef.current;
     if (!v || !sc || !findQ || file?.type !== 'markdown') return;
     const from = lastFindRef.current ? lastFindRef.current.to : 0;
+    if (findMode === 'smart') {
+      const ranges = findAllRanges(v.state.sliceDoc(0), findQ, true);
+      const hit = ranges.find((r) => r.from >= from) || ranges[0];
+      if (hit) {
+        lastFindRef.current = hit;
+        v.dispatch({ selection: { anchor: hit.from, head: hit.to } });
+        scrollDocToPos(v, hit.from, sc, 120);
+      }
+      return;
+    }
     let hit = findNextInDoc(v, findQ, from);
     if (!hit && from > 0) hit = findNextInDoc(v, findQ, 0);
     if (hit) {
@@ -554,7 +577,36 @@ export default function Read() {
       v.dispatch({ selection: { anchor: hit.from, head: hit.to } });
       scrollDocToPos(v, hit.from, sc, 120);
     }
-  }, [findQ, file]);
+  }, [findQ, file, findMode]);
+
+  // 划线：选中正文后在选区旁浮出「记笔记」按钮
+  useEffect(() => {
+    const onUp = (e: MouseEvent) => {
+      const card = contentRef.current;
+      if (!card || !card.contains(e.target as Node)) { setSel(null); return; }
+      const selection = window.getSelection();
+      const text = (selection?.toString() || '').trim();
+      if (!text || text.length < 2) { setSel(null); return; }
+      const rect = selection!.getRangeAt(0).getBoundingClientRect();
+      setSel({ text: text.slice(0, 2000), x: Math.min(window.innerWidth - 140, rect.left + rect.width / 2), y: rect.bottom + 6 });
+    };
+    document.addEventListener('mouseup', onUp);
+    return () => document.removeEventListener('mouseup', onUp);
+  }, []);
+
+  const saveNote = useCallback(async () => {
+    if (!sel) return;
+    setNoteSaving(true);
+    try {
+      const r = await api.notesAppend({ sourcePath: relPath, quote: sel.text, note: noteText });
+      setNoteOpen(false); setNoteText(''); setSel(null); window.getSelection()?.removeAllRanges();
+      setResumeHint(`已写入阅读笔记：${r.path}`);
+      window.setTimeout(() => setResumeHint(null), 5000);
+    } catch (err) {
+      setResumeHint('写入笔记失败：' + (err as Error).message);
+      window.setTimeout(() => setResumeHint(null), 6000);
+    } finally { setNoteSaving(false); }
+  }, [sel, relPath, noteText]);
 
   const togglePin = useCallback(async () => {
     await api.pin(relPath, pinned ? 'remove' : 'add');
@@ -752,9 +804,16 @@ export default function Read() {
                     findNext();
                   }
                 }}
-                placeholder="在当前文档内查找…（回车下一个）"
+                placeholder={findMode === 'smart' ? '文内查找（忽略空白/大小写/全角）…回车下一个' : '文内查找（精确匹配）…回车下一个'}
                 className="flex-1 text-sm bg-transparent outline-none"
               />
+              <span className="inline-flex rounded border border-border overflow-hidden text-xs shrink-0">
+                <button className={`px-2 py-1 transition-colors ${findMode === 'exact' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
+                  onClick={() => setFindMode('exact')}>精确</button>
+                <button className={`px-2 py-1 transition-colors ${findMode === 'smart' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
+                  onClick={() => setFindMode('smart')}>智能</button>
+              </span>
+              {findQ && <span className="text-xs text-muted-foreground stat-num shrink-0">{findHits} 处</span>}
               <button className="p-1 rounded hover:bg-accent transition-colors" onClick={() => { setFindOpen(false); setFindQ(''); }}>
                 <X className="w-4 h-4" />
               </button>
@@ -878,7 +937,7 @@ export default function Read() {
       </div>
 
       {/* 右侧：目录 + 反链 */}
-      {(showToc || showBacklinks) && (
+      {((showToc && toc.length > 0) || showBacklinks) && (
         <aside className="hidden lg:block w-64 shrink-0 border-l border-border overflow-auto p-3">
           {showToc && toc.length > 0 && (
             <div className="mb-4">
@@ -912,7 +971,7 @@ export default function Read() {
               </ul>
             </div>
           )}
-          {!showToc && (
+          {!showToc && toc.length > 0 && (
             <button className="text-xs text-muted-foreground flex items-center gap-1 mb-3 hover:text-primary" onClick={() => setShowToc(true)}>
               <ChevronUp className="w-3 h-3" /> 展开文档目录
             </button>
@@ -928,6 +987,49 @@ export default function Read() {
             </div>
           )}
         </aside>
+      )}
+
+      {/* 恢复阅读位置 / 笔记写入提示 */}
+      {resumeHint && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-card border border-border rounded-lg shadow-lg px-3 py-2 text-xs text-muted-foreground" role="status">
+          {resumeHint}
+        </div>
+      )}
+
+      {/* 划线笔记：选区旁的浮动按钮 */}
+      {sel && !noteOpen && (
+        <button
+          className="fixed z-40 -translate-x-1/2 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs shadow-lg transition-colors hover:opacity-90"
+          style={{ left: sel.x, top: sel.y }}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => { setNoteOpen(true); setNoteText(''); }}
+        >
+          <NotebookPen className="w-3.5 h-3.5" /> 记笔记
+        </button>
+      )}
+
+      {/* 划线笔记：编辑弹窗 */}
+      {noteOpen && sel && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setNoteOpen(false)}>
+          <div className="bg-card border border-border rounded-lg p-4 max-w-lg w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold mb-2 flex items-center gap-1.5"><NotebookPen className="w-4 h-4 text-primary" />添加到阅读笔记</h3>
+            <blockquote className="text-xs text-muted-foreground border-l-2 border-primary/50 pl-2 mb-3 max-h-24 overflow-auto whitespace-pre-wrap">
+              {sel.text}
+            </blockquote>
+            <textarea
+              autoFocus
+              value={noteText}
+              onChange={(e) => setNoteText(e.target.value)}
+              rows={4}
+              placeholder="写下你的想法（可留空，只记录划线）…"
+              className="w-full text-sm px-3 py-2 rounded border border-input bg-background resize-y"
+            />
+            <div className="flex justify-end gap-2 mt-3">
+              <Button variant="outline" size="sm" onClick={() => setNoteOpen(false)}>取消</Button>
+              <Button size="sm" disabled={noteSaving} onClick={saveNote}>{noteSaving ? '写入中…' : '保存笔记'}</Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 原位编辑：草稿恢复提示 */}

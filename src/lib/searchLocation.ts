@@ -43,3 +43,36 @@ export function searchLocationRange(root: HTMLElement, target: SearchLocation): 
   }
   return null;
 }
+
+// 文内查找：智能模式忽略空白、全角/半角与大小写；精确模式按字面匹配。
+export function findAllRanges(source: string, needle: string, smart: boolean): { from: number; to: number }[] {
+  if (!needle) return [];
+  if (!smart) {
+    const out: { from: number; to: number }[] = [];
+    for (let at = source.indexOf(needle); at >= 0; at = source.indexOf(needle, at + needle.length)) {
+      out.push({ from: at, to: at + needle.length });
+    }
+    return out;
+  }
+  const chars: string[] = [];
+  const offsets: number[] = [];
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (/\s/.test(ch)) continue;
+    const code = ch.charCodeAt(0);
+    const half = code >= 0xff01 && code <= 0xff5e ? String.fromCharCode(code - 0xfee0) : ch;
+    chars.push(half.toLowerCase());
+    offsets.push(i);
+  }
+  const haystack = chars.join('');
+  const target = [...needle.replace(/\s/g, '')].map((ch) => {
+    const code = ch.charCodeAt(0);
+    return (code >= 0xff01 && code <= 0xff5e ? String.fromCharCode(code - 0xfee0) : ch).toLowerCase();
+  }).join('');
+  const out: { from: number; to: number }[] = [];
+  if (!target) return out;
+  for (let at = haystack.indexOf(target); at >= 0; at = haystack.indexOf(target, at + 1)) {
+    out.push({ from: offsets[at], to: offsets[at + target.length - 1] + 1 });
+  }
+  return out;
+}

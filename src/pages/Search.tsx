@@ -297,7 +297,7 @@ export default function Search() {
         <div className="text-xs text-muted-foreground border border-dashed border-border rounded-lg p-4">
           {mode === 'smart'
             ? '智能检索：语义 + 关键词混合，支持繁简互通；需要先在 RAG 管理页就绪模型并建索引。'
-            : '检索范围：当前资料库的文件名、相对路径、Markdown 正文、JSON 键和值、Word 提取正文。'}
+            : '检索范围：当前知识库的文件名、相对路径、Markdown 正文、JSON 键和值、Word 提取正文。'}
           {loading && <Loader2 className="w-3.5 h-3.5 animate-spin inline ml-1" />}
         </div>
       )}
@@ -315,7 +315,7 @@ export default function Search() {
       {mode === 'smart' && !loading && q && !smartErr && smart && smart.hits.length === 0 && (
         <div className="text-center py-16 text-muted-foreground">
           <SearchX className="w-10 h-10 mx-auto mb-3" />
-          <p className="text-sm">语料中没有找到与「{q}」相关的内容</p>
+          <p className="text-sm">知识库中没有找到与「{q}」相关的内容</p>
           <p className="text-xs mt-1">换个说法试试，或用「精确」模式查关键词</p>
         </div>
       )}

@@ -1,4 +1,4 @@
-// 语料引用解析弹层：corpusRefs 扩展点击后由宿主（Read/Edit）挂起，
+// 知识库引用解析弹层：corpusRefs 扩展点击后由宿主（Read/Edit）挂起，
 // 行为对齐旧 RefChip——唯一命中直接跳转，重名列候选，缺失说明原因。
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -112,7 +112,7 @@ export function CorpusRefPopover({
             <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-warning" />
             <div>
               <div className="text-foreground mb-1">未找到引用目标</div>
-              <div className="text-xs">{res.reason || '该名称不在当前语料库中。'}</div>
+              <div className="text-xs">{res.reason || '该名称不在当前知识库中。'}</div>
               {res.suggestions && res.suggestions.length > 0 && (
                 <div className="mt-2">
                   <div className="text-xs mb-1">相近文件：</div>

@@ -57,7 +57,7 @@ function resolveAsset(docPath: string, src: string): string {
   if (/^https?:\/\//i.test(src) || src.startsWith('data:')) return src;
   const dir = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
   let url = '/api/file/raw?path=' + encodeURIComponent(joinRel(dir, decodeSrc(src)));
-  const ds = getApiScope(); // 编辑器实时预览的图片也要落在当前资料库
+  const ds = getApiScope(); // 编辑器实时预览的图片也要落在当前知识库
   if (ds) url += '&ds=' + encodeURIComponent(ds);
   return url;
 }

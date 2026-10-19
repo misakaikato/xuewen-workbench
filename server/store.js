@@ -159,10 +159,11 @@ export function saveConfig(baseDir) {
 // 界面设置：{ theme: 'A'|'B'|'C', autoUpdate?: boolean }，theme 缺省 A、autoUpdate 缺省 true；文件损坏时回退默认值
 export function getUiSettings() {
   const s = readJson(UI_SETTINGS_FILE, null);
-  if (!s || typeof s !== 'object') return { theme: 'A', autoUpdate: true };
+  if (!s || typeof s !== 'object') return { theme: 'A', autoUpdate: true, notesDir: '阅读笔记' };
   return {
     theme: UI_THEMES.includes(s.theme) ? s.theme : 'A',
     autoUpdate: typeof s.autoUpdate === 'boolean' ? s.autoUpdate : true,
+    notesDir: typeof s.notesDir === 'string' && s.notesDir.trim() ? s.notesDir.trim() : '阅读笔记',
   };
 }
 

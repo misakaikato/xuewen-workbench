@@ -98,8 +98,8 @@ export interface LinkTerm {
 
 type EntryResult = { ok: boolean; kind: 'file' | 'folder'; oldPath?: string; path: string };
 
-// ---------- 资料库作用域 ----------
-// 当前前端实例作用的资料库 id；所有请求自动携带 ?ds=，切库后旧库响应被各页 dsId 守卫丢弃。
+// ---------- 知识库作用域 ----------
+// 当前前端实例作用的知识库 id；所有请求自动携带 ?ds=，切库后旧库响应被各页 dsId 守卫丢弃。
 let scopeDs: string | null = null;
 
 export function setApiScope(ds: string | null) {
@@ -133,9 +133,11 @@ const json = (method: string, body?: unknown): RequestInit => ({
 });
 
 export const api = {
-  getUiSettings: () => req<{ theme: Theme; autoUpdate: boolean }>('/api/ui-settings'),
-  saveUiSettings: (patch: { theme?: Theme; autoUpdate?: boolean }) =>
-    req<{ ok: boolean; theme: Theme; autoUpdate: boolean }>('/api/ui-settings', json('PUT', patch)),
+  getUiSettings: () => req<{ theme: Theme; autoUpdate: boolean; notesDir: string }>('/api/ui-settings'),
+  saveUiSettings: (patch: { theme?: Theme; autoUpdate?: boolean; notesDir?: string }) =>
+    req<{ ok: boolean; theme: Theme; autoUpdate: boolean; notesDir: string }>('/api/ui-settings', json('PUT', patch)),
+  notesAppend: (payload: { sourcePath: string; quote?: string; note?: string }) =>
+    req<{ ok: boolean; path: string }>('/api/notes/append', json('POST', payload)),
   getConfig: () => req<ConfigResponse>('/api/config'),
   testDir: (baseDir: string) =>
     req<{ ok: boolean; error?: string; readable?: boolean; writable?: boolean }>(

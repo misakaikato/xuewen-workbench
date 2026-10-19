@@ -191,7 +191,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                   void r;
                   await api.agentsMdSave(`# 身份
 
-你是「学问 Workbench」的内嵌助手，帮助用户在自己的资料库中检索、阅读、问答与管理。
+你是「学问 Workbench」的内嵌助手，帮助用户在自己的知识库中检索、阅读、问答与管理。
 
 # 回答风格
 

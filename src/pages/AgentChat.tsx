@@ -28,17 +28,17 @@ const SLASH_COMMANDS = [
   { cmd: '/skills', desc: '列出 skills' },
   { cmd: '/mcp', desc: 'MCP 状态' },
   { cmd: '/model', desc: '打开设置面板' },
-  { cmd: '/status', desc: '语料库状态' },
+  { cmd: '/status', desc: '知识库状态' },
   { cmd: '/export', desc: '导出 Markdown' },
   { cmd: '/help', desc: '所有命令' },
 ];
 const TEMPLATES = [
-  { icon: Zap, title: '语料概览', prompt: '这套语料主要讲了什么？检索后按主题分类概述' },
+  { icon: Zap, title: '知识库概览', prompt: '这套知识库主要讲了什么？检索后按主题分类概述' },
   { icon: FileText, title: '找段落', prompt: '帮我找到讲「安全边际」的段落并列出出处文件' },
-  { icon: Gauge, title: '索引体检', prompt: '用 corpus_status 检查语料库和索引状态，报告是否需要重建' },
-  { icon: ListChecks, title: '概念对比', prompt: '对比语料里几本主要书籍对「风险与收益」的不同观点，列出出处' },
-  { icon: MessageSquareQuote, title: '读书笔记', prompt: '为语料中最重要的3本书各写一段读书摘要，保存为笔记' },
-  { icon: Brain, title: '深度问答', prompt: '语料里关于「量化交易」的核心观点是什么？逐本书分析并标注出处' },
+  { icon: Gauge, title: '索引体检', prompt: '用 corpus_status 检查知识库和索引状态，报告是否需要重建' },
+  { icon: ListChecks, title: '概念对比', prompt: '对比知识库里几本主要书籍对「风险与收益」的不同观点，列出出处' },
+  { icon: MessageSquareQuote, title: '读书笔记', prompt: '为知识库中最重要的3本书各写一段读书摘要，保存为笔记' },
+  { icon: Brain, title: '深度问答', prompt: '知识库里关于「量化交易」的核心观点是什么？逐本书分析并标注出处' },
 ];
 
 export default function AgentChat() {
@@ -89,7 +89,7 @@ export default function AgentChat() {
   useEffect(() => { checkBgDone(conversations); }, [conversations, checkBgDone]);
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [refresh, dsId]);
 
-  // 切换资料库：当前对话若不属于新库，立即清空（后端也会拒绝跨库对话，这里避免界面误导）
+  // 切换知识库：当前对话若不属于新库，立即清空（后端也会拒绝跨库对话，这里避免界面误导）
   useEffect(() => {
     if (!active) return;
     const belongs = conversations.some((c) => c.id === active);
@@ -192,7 +192,7 @@ export default function AgentChat() {
     if (cmd === '/model') { setSettingsOpen(true); return; }
     if (cmd === '/skills') { const sk = status?.skills || []; setMsgs((m) => [...m, { role: 'user', text: cmd }, { role: 'assistant', text: sk.length ? `可用 skills：\n${sk.map((s) => `- \`${s}\``).join('\n')}` : '暂无。放 SKILL.md 到应用数据 agent/skills/<名称>/ 即可。' }]); return; }
     if (cmd === '/mcp') { const mcp = status?.mcp || []; setMsgs((m) => [...m, { role: 'user', text: cmd }, { role: 'assistant', text: mcp.length ? `MCP：\n${mcp.map((s) => `- \`${s.name}\` (${s.type}) ${s.enabled ? '✅' : '⏸'}`).join('\n')}` : '暂无。配置 agent/mcp.json 即可。' }]); return; }
-    if (cmd === '/status') { setInput('用 corpus_status 查看资料库状态并简要报告'); return; }
+    if (cmd === '/status') { setInput('用 corpus_status 查看知识库状态并简要报告'); return; }
     if (cmd === '/export') { doExport(); return; }
   };
 

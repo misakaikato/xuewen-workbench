@@ -10,7 +10,7 @@ import {
 const SCOPES = [
   { id: 'global', label: '全局', icon: Globe, hint: '用户偏好，跨库有效 · 全量注入' },
   { id: 'agent', label: 'Agent', icon: User, hint: '这个 Agent 的习性 · 全量注入' },
-  { id: 'library', label: '本库', icon: Library, hint: '当前资料库的知识 · 摘要+固定项注入，其余需检索' },
+  { id: 'library', label: '本库', icon: Library, hint: '当前知识库的知识 · 摘要+固定项注入，其余需检索' },
 ] as const;
 
 export function MemoryPanel() {

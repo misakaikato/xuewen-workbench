@@ -742,7 +742,7 @@ export function FileTree({
   // 全部展开/折叠
   const collapseAll = () => setOpenState((prev) => (prev.dsId === dsId ? { dsId, set: new Set() } : prev));
   const expandAll = () => {
-    if (countFiles(tree) > 3000 && !window.confirm('这个资料库文件较多，全部展开可能让页面卡顿。仍要继续吗？')) return;
+    if (countFiles(tree) > 3000 && !window.confirm('这个知识库文件较多，全部展开可能让页面卡顿。仍要继续吗？')) return;
     setOpenState((prev) => (prev.dsId === dsId ? { dsId, set: new Set(allDirPaths(tree)) } : prev));
   };
 
@@ -1021,14 +1021,14 @@ export function FileTree({
           <button
             className="flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent"
             onClick={() => onCreate('', 'md')}
-            title="在资料库根目录新建文档"
+            title="在知识库根目录新建文档"
           >
             <FilePlus className="w-3.5 h-3.5" />新建文档
           </button>
           <button
             className="flex items-center gap-1 text-xs px-1.5 py-1 rounded hover:bg-sidebar-accent"
             onClick={() => onCreate('', 'folder')}
-            title="在资料库根目录新建文件夹"
+            title="在知识库根目录新建文件夹"
           >
             <FolderPlus className="w-3.5 h-3.5" />新建文件夹
           </button>
@@ -1124,7 +1124,7 @@ export function FileTree({
               <button className="text-primary hover:underline" onClick={() => navigate('/settings')}>去设置 →</button>
             </div>
           ) : emptyTree ? (
-            <div className="text-xs text-muted-foreground p-3">资料库中没有可支持的文件（.md / .txt / .json / .doc / .docx）</div>
+            <div className="text-xs text-muted-foreground p-3">知识库中没有可支持的文件（.md / .txt / .json / .doc / .docx）</div>
           ) : null
         ) : (
           <div style={{ height: rows.length * ROW_H }} className="relative">
@@ -1199,7 +1199,7 @@ export function FileTree({
                   batchMove(paths, '');
                 }}
               >
-                （资料库根目录）
+                （知识库根目录）
               </button>
               {tree.dirs.map((d) => (
                 <button
