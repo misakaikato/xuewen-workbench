@@ -173,15 +173,23 @@ export default function AgentChat() {
 
   const send = async () => {
     const text = input.trim();
-    if (!text || !active) return;
+    if (!text) return;
+    // 无活跃对话时自动新建
+    let convId = active;
+    if (!convId) {
+      const c = await api.agentNewSession();
+      convId = c.id;
+      setActive(c.id);
+      await refresh();
+    }
     setInput('');
-    autoScrollRef.current = true; // 发送时重置为跟随
+    autoScrollRef.current = true;
     setBusy(true); streamRef.current = true; aiRef.current = -1;
     setMsgs((m) => { const next = [...m, { role: 'user' as const, text }, { role: 'assistant' as const, text: '', tools: [], streaming: true, thinking: '' }]; aiRef.current = next.length - 1; return next; });
     const patch = (fn: (msg: Msg) => Msg) => setMsgs((m) => { const next = [...m]; const i = aiRef.current; if (i >= 0 && next[i]) next[i] = fn(next[i]); return next; });
     const ctl = new AbortController(); abortRef.current = ctl;
     try {
-      const resp = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: active, text }), signal: ctl.signal });
+      const resp = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: convId, text }), signal: ctl.signal });
       if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
       const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
       for (;;) {
@@ -224,10 +232,14 @@ export default function AgentChat() {
   }, [active, searchOpen]);
 
   const richRefs = (text: string) => {
-    const parts = text.split(/(@[^\s@]+\.(?:md|txt|json|docx?))/gi);
+    // 同时识别 @文件名.ext 和 [文件名.ext]（模型输出的引用格式）
+    const parts = text.split(/(@[^\s@[]+\.(?:md|txt|json|docx?)|\[[^[\]]+\.(?:md|txt|json|docx?)\])/gi);
     return parts.map((p, i) => {
-      const m = /^@(.+)$/.exec(p);
-      if (m) return <FileRef key={i} name={m[1]} />;
+      const at = /^@(.+)$/.exec(p);
+      if (at) return <FileRef key={i} name={at[1]} />;
+      // eslint-disable-next-line no-useless-escape -- 字符类内 [ 需转义以避免歧义
+      const br = /^\[([^\[\]]+)\]$/.exec(p);
+      if (br) return <FileRef key={i} name={br[1]} bracket />;
       return <span key={i}>{p}</span>;
     });
   };
@@ -261,7 +273,6 @@ export default function AgentChat() {
             <div className="p-3 border-t border-sidebar-border text-[11px] text-muted-foreground space-y-0.5">
               {(status?.skills || []).length > 0 && <div><span className="text-primary font-medium">{status!.skills.length}</span> skills</div>}
               {(status?.mcp || []).length > 0 && <div><span className="text-primary font-medium">{status!.mcp!.filter((m) => m.enabled).length}/{status!.mcp!.length}</span> MCP</div>}
-              <div><span className="text-primary font-medium">{status?.tools?.length || 0}</span> 工具</div>
             </div>
           </aside>
           {/* 拖拽条 */}
@@ -310,7 +321,7 @@ export default function AgentChat() {
               <div className="flex items-center gap-2 text-muted-foreground"><Bot className="w-8 h-8" /><span className="text-lg font-medium">智能助手</span></div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-w-2xl">
                 {TEMPLATES.map((t, i) => (
-                  <button key={i} className="flex flex-col gap-2 border rounded-xl p-4 text-left hover:border-primary/50 hover:shadow-sm transition-all group" onClick={() => { newConv().then(() => setInput(t.prompt)); }}>
+                  <button key={i} className="flex flex-col gap-2 border rounded-xl p-4 text-left hover:border-primary/50 hover:shadow-sm transition-all group" onClick={() => { setInput(t.prompt); }}>
                     <t.icon className="w-5 h-5 text-primary/70 group-hover:text-primary" />
                     <div className="text-sm font-medium">{t.title}</div>
                     <div className="text-xs text-muted-foreground line-clamp-2">{t.prompt}</div>
@@ -387,11 +398,8 @@ export default function AgentChat() {
 
         {/* 输入区（含上下文指示） */}
         <div className="shrink-0 border-t border-border bg-card">
-          <div className="max-w-3xl mx-auto px-4 pt-2">
-            {usage && <ContextBar usage={usage} contextWindow={CTX_WINDOW} />}
-          </div>
-          <div className="max-w-3xl mx-auto px-3 pb-2">
-            <ChatInput value={input} onChange={setInput} onSend={send} onStop={stop} busy={busy} disabled={!active || !ep?.ready} placeholder={active ? '提问 · / 命令 · @ 文件 · Enter 发送' : '先新建对话'} onCommand={doCommand} />
+          <div className="max-w-3xl mx-auto px-3 pt-2.5 pb-1.5">
+            <ChatInput value={input} onChange={setInput} onSend={send} onStop={stop} busy={busy} disabled={!ep?.ready} placeholder={ep?.ready ? '提问 · / 命令 · @ 文件 · Enter 发送' : '去设置面板配置端点'} onCommand={doCommand} />
           </div>
           {/* 模型/思考/模式选择器 */}
           <div className="max-w-3xl mx-auto px-4 pb-2.5 flex items-center gap-2 text-xs flex-wrap">
@@ -442,8 +450,9 @@ export default function AgentChat() {
             </div>
             {/* 模式说明 */}
             <span className="text-[10px] text-muted-foreground ml-auto hidden sm:inline">
-              {status?.mode === 'readonly' ? '仅检索阅读，不可修改' : status?.mode === 'confirm' ? '写入操作需确认' : '全自动执行'}
+              {status?.mode === 'readonly' ? '仅检索阅读' : status?.mode === 'confirm' ? '写入需确认' : '全自动'}
             </span>
+            {usage && <div className="ml-2"><ContextBar usage={usage} contextWindow={CTX_WINDOW} /></div>}
           </div>
         </div>
 
@@ -490,7 +499,7 @@ export default function AgentChat() {
   );
 }
 
-function FileRef({ name }: { name: string }) {
+function FileRef({ name, bracket }: { name: string; bracket?: boolean }) {
   const navigate = useNavigate();
   const [hit, setHit] = useState<string | null | undefined>(undefined);
   useEffect(() => {
@@ -501,7 +510,16 @@ function FileRef({ name }: { name: string }) {
       setHit(flat.find((f) => f.name === name)?.path ?? null);
     }).catch(() => setHit(null));
   }, [name]);
-  if (hit === undefined) return <span className="text-primary/50">@{name}</span>;
-  if (hit === null) return <span className="text-muted-foreground">@{name}</span>;
-  return <button className="text-primary underline underline-offset-2" onClick={() => navigate('/read/' + encPath(hit))}>@{name}</button>;
+  const label = bracket ? `[${name}]` : `@${name}`;
+  if (hit === undefined) return <span className="text-primary/50">{label}</span>;
+  if (hit === null) return <span className="text-muted-foreground">{label}</span>;
+  return (
+    <button
+      className="text-primary underline underline-offset-2 hover:text-primary/80"
+      title={`打开 ${hit}`}
+      onClick={() => navigate('/read/' + encPath(hit))}
+    >
+      {label}
+    </button>
+  );
 }

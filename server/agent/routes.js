@@ -80,12 +80,46 @@ export function mountAgent(hub, resolveLib) {
     res.json({ ok: true });
   });
 
-  // Skill 管理
+  // Skill 管理：支持 JSON 文本（name+content）和 zip 压缩包（base64 + fileName）
   r.post('/skill', async (req, res) => {
-    const { name, content } = req.body || {};
-    if (!name || !content) return res.status(400).json({ error: '缺少 name 或 content' });
+    const { name, content, zipBase64, fileName } = req.body || {};
     const fs = require('node:fs');
     const path = require('node:path');
+
+    // 方式一：zip 压缩包（含完整文件夹结构）
+    if (zipBase64) {
+      try {
+        const AdmZip = require('adm-zip');
+        const buf = Buffer.from(zipBase64, 'base64');
+        const zip = new AdmZip(buf);
+        const entries = zip.getEntries();
+        // 找 SKILL.md 的位置确定根目录名
+        const skillMd = entries.find((e) => !e.isDirectory && e.entryName.match(/(^|\/)SKILL\.md$/i));
+        if (!skillMd) return res.status(400).json({ error: '压缩包中未找到 SKILL.md' });
+        // 根目录 = SKILL.md 所在的顶层目录
+        const rootDir = skillMd.entryName.includes('/') ? skillMd.entryName.split('/')[0] : (fileName || 'skill').replace(/\.zip$/i, '');
+        const safe = rootDir.replace(/[^\w\u4e00-\u9fff-]/g, '_');
+        const dest = path.join(hub.agentDir, 'skills', safe);
+        fs.rmSync(dest, { recursive: true, force: true });
+        fs.mkdirSync(dest, { recursive: true });
+        for (const entry of entries) {
+          if (entry.isDirectory) {
+            fs.mkdirSync(path.join(dest, entry.entryName), { recursive: true });
+          } else {
+            const rel = entry.entryName.startsWith(rootDir + '/') ? entry.entryName.slice(rootDir.length + 1) : entry.entryName;
+            const fp = path.join(dest, rel);
+            fs.mkdirSync(path.dirname(fp), { recursive: true });
+            fs.writeFileSync(fp, entry.getData());
+          }
+        }
+        return res.json({ ok: true, path: `skills/${safe}/` });
+      } catch (e) {
+        return res.status(500).json({ error: 'zip 解压失败：' + String(e.message || e) });
+      }
+    }
+
+    // 方式二：纯文本（name + content）
+    if (!name || !content) return res.status(400).json({ error: '缺少 name/content 或 zipBase64' });
     const safe = name.replace(/[^\w\u4e00-\u9fff-]/g, '_');
     const dir = path.join(hub.agentDir, 'skills', safe);
     try {

@@ -14,6 +14,7 @@ import {
   Select as UISelect, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { useTheme, type Theme } from '@/lib/theme';
+import RagManage from './RagManage';
 
 function collectDirs(node: TreeNode, out: string[]) {
   if (node.path) out.push(node.path);
@@ -131,6 +132,8 @@ export default function Settings() {
       </section>
 
       {/* 关于与更新 */}
+      <RagManage />
+
       <section className="bg-card border border-border rounded-lg p-4">
         <h2 className="font-medium text-sm mb-1">关于与更新</h2>
         <p className="text-xs text-muted-foreground mb-3">
