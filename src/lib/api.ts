@@ -308,6 +308,7 @@ export interface AgentMessage {
   thinking?: string;
   failure?: AgentFailure;
   usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  compactions?: { reason: string; tokensBefore: number | null; tokensAfter: number | null; aborted: boolean; error: string | null; at: string }[];
   at?: string;
 }
 

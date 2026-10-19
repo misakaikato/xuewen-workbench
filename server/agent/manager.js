@@ -12,8 +12,8 @@ import { MemoryStore, buildMemorySection, memoryDir, FACTS_LIMIT, PINNED_LIMIT }
 const CONV_META = 'conversations.json';
 // 运行模式：auto=全自动 / confirm=破坏性工具需确认 / readonly=仅检索阅读
 const READONLY_TOOLS = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status'];
-const DESTRUCTIVE_TOOLS = ['save_note', 'word_to_markdown', 'rag_manage', 'open_doc'];
-const TOOL_NAMES = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc'];
+const DESTRUCTIVE_TOOLS = ['save_note', 'word_to_markdown', 'rag_manage', 'open_doc', 'rename_entry', 'move_entry'];
+const TOOL_NAMES = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc', 'remember', 'forget', 'recall', 'consolidate', 'rename_entry', 'move_entry'];
 
 function nowIso() {
   return new Date().toISOString();
@@ -592,6 +592,67 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
         },
       });
 
+      // ---------- 条目整理（重命名/移动） ----------
+      // 走内部 HTTP 复用 /api/file/{rename,move} 的完整逻辑（sidecar 迁移、备份随迁、大小写处理）
+      const callLocalApi = async (apiPath, body) => {
+        const port = process.env.WORKBENCH_PORT || 7410;
+        const r = await fetch(`http://127.0.0.1:${port}${apiPath}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(30000),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        return j;
+      };
+
+      pi.registerTool({
+        name: 'rename_entry',
+        label: '重命名条目',
+        description: '重命名资料库中的文件或文件夹（保留扩展名、同步元数据旁注）。用于用户要求改名时。',
+        parameters: Type.Object({
+          path: Type.String({ description: '相对路径，如 笔记/第1章.md' }),
+          newName: Type.String({ description: '新名称；文件可省略扩展名（自动沿用原扩展名）' }),
+        }),
+        execute: async (_id, params) => {
+          if (!(await hub._confirm(convId, 'rename_entry', params))) {
+            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
+          }
+          const l = lib();
+          if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
+          try {
+            const r = await callLocalApi('/api/file/rename', { path: params.path, newName: params.newName, dsId: l.id });
+            return { content: [{ type: 'text', text: `已重命名为 ${r.path}` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '重命名失败：' + (e.message || e) }], isError: true };
+          }
+        },
+      });
+
+      pi.registerTool({
+        name: 'move_entry',
+        label: '移动条目',
+        description: '把资料库中的文件或文件夹移动到另一个目录（元数据旁注与备份随迁）。用户要求整理文件结构时使用。',
+        parameters: Type.Object({
+          path: Type.String({ description: '相对路径' }),
+          targetDir: Type.String({ description: '目标目录相对路径；传空字符串表示资料库根目录' }),
+        }),
+        execute: async (_id, params) => {
+          if (!(await hub._confirm(convId, 'move_entry', params))) {
+            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
+          }
+          const l = lib();
+          if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
+          try {
+            const r = await callLocalApi('/api/file/move', { path: params.path, targetDir: params.targetDir, dsId: l.id });
+            return { content: [{ type: 'text', text: `已移动到 ${r.path}` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: '移动失败：' + (e.message || e) }], isError: true };
+          }
+        },
+      });
+
       // ---------- 记忆工具（对用户透明） ----------
       const memCtx = () => ({ agentId: hub.agentId, dsId: hub.currentDsId() });
 
@@ -777,7 +838,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       sessionManager,
       thinkingLevel: this.llm().thinkingLevel || 'off',
     });
-    entry = { session, sse: new Set(), busy: false, curText: '', curTools: [], curThinking: '', curUsage: null };
+    entry = { session, sse: new Set(), busy: false, curText: '', curTools: [], curThinking: '', curUsage: null, curCompactions: [] };
     // 会话级事件订阅：所有轮次（含 steering 追加轮）的事件都经此转发
     entry.unsubscribe = session.subscribe((event) => {
       this._onEvent(convId, entry, event);
@@ -814,6 +875,28 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       };
       send({ t: 'usage', usage: entry.curUsage });
       }
+    } else if (event.type === 'compaction_start') {
+      send({ t: 'compaction', phase: 'start', reason: event.reason });
+    } else if (event.type === 'compaction_end') {
+      const r = event.result;
+      // 压缩信息记入本轮，随 assistant 消息落盘（前端渲染为分隔条）
+      entry.curCompactions = entry.curCompactions || [];
+      entry.curCompactions.push({
+        reason: event.reason || 'threshold',
+        tokensBefore: r?.tokensBefore ?? null,
+        tokensAfter: r?.estimatedTokensAfter ?? null,
+        aborted: !!event.aborted,
+        error: event.errorMessage || null,
+        at: nowIso(),
+      });
+      send({
+        t: 'compaction',
+        phase: 'end',
+        reason: event.reason,
+        tokensBefore: r?.tokensBefore ?? null,
+        tokensAfter: r?.estimatedTokensAfter ?? null,
+        aborted: !!event.aborted,
+      });
     } else if (event.type === 'tool_execution_start') {
       const item = { id: event.toolCallId, name: event.toolName, args: event.args, summary: '', isError: false, durationMs: 0 };
       entry.curTools.push(item);
@@ -832,7 +915,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       entry.busy = false;
       const failure = entry.lastFailure || (!entry.curText.trim() ? agentFailure('', 'empty') : undefined);
       if (failure) send({ t: 'error', message: failure.message, failure });
-      this._append(convId, { role: 'assistant', text: entry.curText, failure, tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, at: nowIso() });
+      this._append(convId, { role: 'assistant', text: entry.curText, failure, tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, compactions: entry.curCompactions || [], at: nowIso() });
       this._touch(convId);
       send({ t: 'done' });
       for (const res of entry.sse) {
@@ -841,6 +924,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       entry.sse.clear();
       entry.curText = '';
       entry.curTools = [];
+      entry.curCompactions = [];
     }
   }
 
@@ -872,6 +956,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     entry.busy = true;
     entry.curText = '';
     entry.curTools = [];
+    entry.curCompactions = [];
     entry.lastFailure = null;
     entry.curThinking = '';
     entry.curUsage = null;
@@ -890,7 +975,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       send({ t: 'error', message: failure.message, failure });
       // 兜底收尾：失败提示和部分正文一并持久化，重新打开对话仍可见
       entry.busy = false;
-      this._append(convId, { role: 'assistant', text: entry.curText, failure, tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, at: nowIso() });
+      this._append(convId, { role: 'assistant', text: entry.curText, failure, tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, compactions: entry.curCompactions || [], at: nowIso() });
       send({ t: 'done' });
       try { res.end(); } catch { /* */ }
       entry.sse.delete(res);

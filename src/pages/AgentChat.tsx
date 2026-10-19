@@ -14,7 +14,7 @@ import {
   Plus, Trash2, Bot, Sparkles, Copy, Check, FileText, Zap,
   GitBranch, Download, Search, X, MessageSquareQuote, Brain, Gauge, ListChecks,
   PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash, RotateCcw, ChevronDown, ShieldCheck, ShieldAlert, Eye, ChevronRight,
-  FolderPlus, Folder, FolderOpen, MoreHorizontal, AlertCircle,
+  FolderPlus, Folder, FolderOpen, MoreHorizontal, Layers, AlertTriangle, AlertCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -229,6 +229,19 @@ export default function AgentChat() {
           else if (d.t === 'usage') setUsage(d.usage as Msg['usage']);
           else if (d.t === 'tool_start') patch((msg) => ({ ...msg, tools: [...(msg.tools || []), { name: d.name as string, args: d.args, durationMs: 0 }] }));
           else if (d.t === 'tool_end') patch((msg) => ({ ...msg, tools: (msg.tools || []).map((t) => ((t as ToolItem).name === d.name && !(t as ToolItem).summary ? { ...t, summary: d.summary as string, isError: d.isError as boolean, durationMs: d.durationMs as number } : t)) }));
+          else if (d.t === 'compaction' && d.phase === 'end') {
+            patch((msg) => ({
+              ...msg,
+              compactions: [...(msg.compactions || []), {
+                reason: String(d.reason || ''),
+                tokensBefore: (d.tokensBefore as number) ?? null,
+                tokensAfter: (d.tokensAfter as number) ?? null,
+                aborted: !!d.aborted,
+                error: null,
+                at: new Date().toISOString(),
+              }],
+            }));
+          }
           else if (d.t === 'open_doc') navigate('/read/' + encPath(d.path as string) + ((d.term as string) ? '?h=' + encodeURIComponent(d.term as string) : ''));
           else if (d.t === 'confirm') { setConfirmReq({ id: d.id as string, tool: d.tool as string, args: d.args }); }
           else if (d.t === 'error') showFailure((d.failure as AgentFailure) || {
@@ -444,6 +457,7 @@ export default function AgentChat() {
                     </div>
                   ) : (
                     <div className={`max-w-full group/msg rounded-lg ${isHit ? 'ring-2 ring-warning/60 ring-offset-2' : ''}`}>
+                      {(m.compactions || []).map((cp, ci) => <CompactionNotice key={ci} cp={cp} />)}
                       {m.thinking && <ThinkingBlock text={m.thinking} streaming={m.streaming && !m.text} />}
                       {(m.tools || []).map((t, j) => <ToolCard key={j} t={t as ToolItem} />)}
                       {m.text && <div><MarkdownMsg text={m.text} richRefs={richRefs} /></div>}
@@ -594,6 +608,29 @@ export default function AgentChat() {
       {settingsOpen && status && (
         <AgentSettingsPanel status={status} onClose={() => setSettingsOpen(false)} onSaved={() => { refresh(); }} />
       )}
+    </div>
+  );
+}
+
+// 上下文压缩提示条
+function CompactionNotice({ cp }: { cp: { reason: string; tokensBefore: number | null; tokensAfter: number | null; aborted: boolean; error: string | null } }) {
+  const fmt = (n: number | null) => (n == null ? '?' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
+  if (cp.aborted || cp.error) {
+    return (
+      <div className="my-3 flex items-center gap-2 text-[11px] text-warning border border-warning/40 rounded-lg px-3 py-1.5">
+        <AlertTriangle className="w-3 h-3 shrink-0" />
+        上下文压缩未完成{cp.error ? `：${cp.error}` : ''}
+      </div>
+    );
+  }
+  return (
+    <div className="my-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+      <div className="flex-1 h-px bg-border" />
+      <span className="flex items-center gap-1 shrink-0 px-1">
+        <Layers className="w-3 h-3" />
+        上下文已压缩{cp.tokensBefore ? `（${fmt(cp.tokensBefore)} → ${fmt(cp.tokensAfter)} tokens）` : ''}
+      </span>
+      <div className="flex-1 h-px bg-border" />
     </div>
   );
 }
