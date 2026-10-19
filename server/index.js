@@ -32,6 +32,8 @@ class Lib {
     this.name = meta.name;
     this.baseDir = meta.baseDir;
     this.scanner = new Scanner();
+    // 文件树是否显示元数据/派生文件（.annotations.json 等），来自全局界面设置
+    this.scanner.showMetaFiles = !!getUiSettings().showMetaFiles;
     this.indexer = new Indexer();
     this.linkIndex = new LinkIndex();
     this.indexing = Promise.resolve(); // 最近一次索引构建，供需要“立即可检索”的写操作等待
@@ -347,7 +349,7 @@ app.get('/api/ui-settings', (req, res) => {
 });
 
 app.put('/api/ui-settings', (req, res) => {
-  const { theme, autoUpdate, notesDir } = req.body || {};
+  const { theme, autoUpdate, notesDir, showMetaFiles } = req.body || {};
   const patch = {};
   if (theme !== undefined) {
     if (!['A', 'B', 'C'].includes(theme)) {
@@ -361,6 +363,9 @@ app.put('/api/ui-settings', (req, res) => {
     }
     patch.autoUpdate = autoUpdate;
   }
+  if (showMetaFiles !== undefined) {
+    patch.showMetaFiles = !!showMetaFiles;
+  }
   if (notesDir !== undefined) {
     const dir = String(notesDir).trim();
     if (!dir || dir.includes('..') || /[\\/]/.test(dir)) {
@@ -372,6 +377,13 @@ app.put('/api/ui-settings', (req, res) => {
     return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate / notesDir）' });
   }
   const next = saveUiSettings(patch);
+  // showMetaFiles 变化：同步到各库 scanner 并重扫，让文件树立即反映
+  if (showMetaFiles !== undefined) {
+    for (const lib of libs.values()) {
+      lib.scanner.showMetaFiles = !!next.showMetaFiles;
+    }
+    Promise.all([...libs.values()].map((l) => l.rescanAndIndex().catch(() => {}))).catch(() => {});
+  }
   res.json({ ok: true, ...next });
 });
 

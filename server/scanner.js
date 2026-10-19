@@ -9,6 +9,9 @@ export const SUPPORTED_EXTS = ['.md', '.json', '.txt', '.doc', '.docx'];
 export const SIDECAR_SUFFIX = '.meta.json';
 export const TRASH_DIR = '.trash'; // 数据源根目录下的应用回收站（不扫描）
 export const isSidecar = (name) => String(name).toLowerCase().endsWith(SIDECAR_SUFFIX);
+// 派生文件（划线笔记记录）：.<笔记名>.annotations.json —— 默认不在文件树显示，可在设置中打开
+export const isAnnotations = (name) => /\.annotations\.json$/i.test(name);
+export const isMetaFile = (name) => isSidecar(name) || isAnnotations(name);
 
 function toRel(baseDir, abs) {
   return path.relative(baseDir, abs).split(path.sep).join('/');
@@ -34,10 +37,12 @@ export function naturalCompare(a, b) {
   return 0;
 }
 
-export function scanTree(baseDir) {
+export function scanTree(baseDir, opts = {}) {
+  const showMetaFiles = !!opts.showMetaFiles;
   const files = [];
   const dirs = []; // 全部子目录相对路径（含空目录）
   const sidecars = []; // 元数据旁注文件相对路径
+  const metaFiles = []; // 派生文件（.annotations.json）相对路径，按开关决定是否进 files
   const dirErrors = []; // { path, reason }
   const fileErrors = [];
   let dirCount = 0;
@@ -83,7 +88,16 @@ export function scanTree(baseDir) {
           walk(abs, rel);
         } else if (isFile) {
           const ext = path.extname(ent.name).toLowerCase();
-          if (isSidecar(ent.name)) { sidecars.push(rel); continue; }
+          if (isSidecar(ent.name)) {
+            sidecars.push(rel);
+            metaFiles.push(rel);
+            if (!showMetaFiles) continue; // 默认隐藏；开关打开时作为普通 JSON 显示
+          }
+          // 派生文件（划线记录）：默认隐藏，仅 collected 到 metaFiles；开关打开时才当普通文件
+          if (isAnnotations(ent.name)) {
+            metaFiles.push(rel);
+            if (!showMetaFiles) continue;
+          }
           if (!SUPPORTED_EXTS.includes(ext)) continue;
           hasContent = true;
           try {
@@ -111,7 +125,7 @@ export function scanTree(baseDir) {
   walk(baseDir, '');
   files.sort((a, b) => naturalCompare(a.path, b.path));
   dirs.sort(naturalCompare);
-  return { files, dirs, sidecars, dirCount, dirErrors, fileErrors, emptyDirCount };
+  return { files, dirs, sidecars, metaFiles, dirCount, dirErrors, fileErrors, emptyDirCount };
 }
 
 export class Scanner extends EventEmitter {
@@ -123,6 +137,7 @@ export class Scanner extends EventEmitter {
     this.watcher = null;
     this.generation = 0;
     this._debounce = null;
+    this.showMetaFiles = false; // 由外部按设置注入；true 时 annotations 等派生文件也进 files
   }
 
   setBaseDir(baseDir) {
@@ -142,7 +157,7 @@ export class Scanner extends EventEmitter {
       const result = await new Promise((resolve, reject) => {
         setImmediate(() => {
           try {
-            resolve(scanTree(this.baseDir));
+            resolve(scanTree(this.baseDir, { showMetaFiles: this.showMetaFiles }));
           } catch (e) {
             reject(e);
           }

@@ -46,7 +46,7 @@ export default function Settings() {
 
   // 阅读笔记目录：全局界面设置（默认「阅读笔记」）
   useEffect(() => {
-    api.getUiSettings().then((cfg) => setNotesDir(cfg.notesDir || '阅读笔记')).catch(() => {});
+    api.getUiSettings().then((cfg) => { setNotesDir(cfg.notesDir || '阅读笔记'); setShowMetaFiles(!!cfg.showMetaFiles); }).catch(() => {});
   }, []);
   const saveNotesDir = async (dir: string) => {
     try {
@@ -62,6 +62,7 @@ export default function Settings() {
   const [mappings, setMappings] = useState<MetadataMapping[]>([]);
   const [msg, setMsg] = useState('');
   const [notesDir, setNotesDir] = useState('阅读笔记');
+  const [showMetaFiles, setShowMetaFiles] = useState(false);
   const [inspect, setInspect] = useState<Record<string, string>>({});
   const [blocklistRaw, setBlocklistRaw] = useState('');
   const [ignoredCount, setIgnoredCount] = useState<number | null>(null);
@@ -216,6 +217,31 @@ export default function Settings() {
             className="px-2 py-1 rounded border border-input bg-background text-sm w-56"
           />
           <span className="text-xs text-muted-foreground">划线笔记写入知识库中的该目录（默认「阅读笔记」），失焦即保存</span>
+        </div>
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
+          <span className="w-24 text-sm text-muted-foreground">元数据文件</span>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={showMetaFiles}
+              onChange={async (e) => {
+                const v = e.target.checked;
+                setShowMetaFiles(v);
+                try {
+                  await api.saveUiSettings({ showMetaFiles: v });
+                  setMsg(v ? '已在文件树中显示元数据文件（.meta.json / .annotations.json）' : '已隐藏元数据文件');
+                  setTimeout(() => setMsg(''), 2500);
+                } catch (err) {
+                  setMsg('保存失败：' + (err as Error).message);
+                }
+              }}
+            />
+            在文件树中显示元数据文件
+          </label>
+          <span className="text-xs text-muted-foreground">
+            包含 <code className="text-[11px]">.meta.json</code>（文档元数据）与{' '}
+            <code className="text-[11px]">.annotations.json</code>（划线与笔记记录）；默认隐藏，改动后自动重扫
+          </span>
         </div>
         <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
           <label className="flex items-center gap-2">
