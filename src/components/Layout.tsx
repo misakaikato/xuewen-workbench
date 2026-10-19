@@ -8,6 +8,7 @@ import { FileTree } from './FileTree';
 import { setEntryContext } from '@/lib/entryOps';
 import { EmptyState } from './ui-states';
 import { CommandPalette } from './CommandPalette';
+import { QuickAgent } from './QuickAgent';
 import { Kbd } from '@/components/ui/kbd';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
@@ -28,6 +29,7 @@ export function Layout() {
   const [collapsed, setCollapsed] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [treeFilter, setTreeFilter] = useState('');
   const [rescanning, setRescanning] = useState(false);
@@ -43,16 +45,13 @@ export function Layout() {
         e.preventDefault();
         setPaletteOpen((v) => !v);
       }
-      // ⌘J / Ctrl+J：任意位置唤出智能助手（跳到 /agent 并聚焦输入框）
+      // ⌘J / Ctrl+J：任意位置唤出浮层智能助手（不离开当前页面）
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
         e.preventDefault();
-        if (location.pathname !== '/agent') navigate('/agent');
-        // 等路由渲染后聚焦输入框
-        setTimeout(() => {
-          const ta = document.querySelector<HTMLTextAreaElement>('/agent textarea, main textarea');
-          ta?.focus();
-        }, 120);
+        setQuickOpen((v) => !v);
       }
+      // Esc 关闭浮层（输入框内的 Esc 由组件自己处理，这里兜底）
+      if (e.key === 'Escape') setQuickOpen(false);
       // ?：快捷键清单（输入框内不触发）
       if (e.key === '?' && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement).tagName)) {
         setShortcutsOpen(true);
@@ -317,6 +316,7 @@ export function Layout() {
 
       {/* ⌘K 命令面板与快捷键清单 */}
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+      <QuickAgent open={quickOpen} onClose={() => setQuickOpen(false)} />
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -326,6 +326,7 @@ export function Layout() {
           <div className="text-sm space-y-1.5">
             {[
               ['⌘K / Ctrl+K', '命令面板（全局检索 / 导航 / 动作）'],
+              ['⌘J / Ctrl+J', '浮层智能助手（任意页面，不离开当前页）'],
               ['?', '本快捷键清单'],
               ['Esc', '关闭浮层 / 清空侧栏过滤'],
               ['Ctrl+F', '阅读页文内查找'],
