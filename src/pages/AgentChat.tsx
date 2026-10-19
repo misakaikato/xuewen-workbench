@@ -89,6 +89,17 @@ export default function AgentChat() {
   useEffect(() => { checkBgDone(conversations); }, [conversations, checkBgDone]);
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [refresh, dsId]);
 
+  // 切换资料库：当前对话若不属于新库，立即清空（后端也会拒绝跨库对话，这里避免界面误导）
+  useEffect(() => {
+    if (!active) return;
+    const belongs = conversations.some((c) => c.id === active);
+    if (!belongs && conversations.length >= 0) {
+      // 对话列表已按新库刷新过，说明 active 不属于新库
+      openConv(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dsId]);
+
   useEffect(() => {
     if (!active) { setMsgs([]); setUsage(null); return; }
     if (sendingConvRef.current === active) { sendingConvRef.current = null; return; }

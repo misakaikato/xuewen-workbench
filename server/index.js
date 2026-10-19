@@ -241,6 +241,7 @@ app.post('/api/config', async (req, res) => {
     libs.set(lib.id, runtime);
     activeId = lib.id;
     libVersion++;
+    agentHub.onLibSwitch(); // 切库：销毁其他库的 agent session（防串上下文）
     try {
       await runtime.start();
     } catch (e) {
@@ -249,6 +250,7 @@ app.post('/api/config', async (req, res) => {
   } else if (activeId !== lib.id) {
     activeId = lib.id;
     libVersion++;
+    agentHub.onLibSwitch();
   }
   res.json({ ok: true, ...configResponse() });
 });
@@ -264,6 +266,7 @@ app.post('/api/library/activate', (req, res) => {
   activeId = id;
   libVersion++;
   setActiveLibInStore(id);
+  agentHub.onLibSwitch(); // 切库：销毁其他库的 agent session
   res.json({ ok: true, ...configResponse() });
 });
 
@@ -280,6 +283,7 @@ app.post('/api/library/remove', async (req, res) => {
   const { activeId: nextActive } = removeLibFromStore(id);
   if (activeId === id) activeId = nextActive;
   libVersion++;
+  agentHub.onLibSwitch(); // 库变更：清理不属于当前库的 session
   res.json({ ok: true, activeId, libraries: [...libs.values()].map(libMeta) });
 });
 

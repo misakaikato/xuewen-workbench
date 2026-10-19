@@ -823,6 +823,9 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     const settings = SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2 } });
     // pi 会话文件与对话投影同目录：knowledge/<dsId>/conversations/<agentId>/
     const convMeta = this._meta().conversations.find((c) => c.id === convId);
+    if (convMeta && convMeta.dsId !== this.currentDsId()) {
+      throw new Error('对话所属资料库与当前资料库不一致');
+    }
     const convDsId = convMeta?.dsId || this.currentDsId() || 'default';
     const sessionDir = this._convDir(convDsId);
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -930,6 +933,15 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
 
   /** SSE 聊天：注册响应流，prompt 或 steer（生成中插入指令），事件经会话级订阅转发 */
   async chat(convId, text, res) {
+    // 库隔离硬校验：对话绑定的资料库必须与当前激活库一致，否则拒绝
+    //（否则会复用旧库的 session 上下文，导致回答串库）
+    const convMeta = this._meta().conversations.find((c) => c.id === convId);
+    if (!convMeta) throw new Error('对话不存在');
+    const activeDs = this.currentDsId();
+    if (!activeDs) throw new Error('当前没有打开的资料库');
+    if (convMeta.dsId !== activeDs) {
+      throw new Error('该对话属于另一个资料库，当前资料库不能继续这个对话。请新建对话。');
+    }
     const entry = await this._ensureSession(convId);
     entry.sse.add(res);
     const send = (obj) => {
@@ -1128,6 +1140,23 @@ ${m.text}
     const plan = this.memory.planPrune(scope, ctx);
     if (plan.dropped.length) this.memory.applyPrune(scope, ctx, plan.kept);
     return { summaryChars: summary.length, kept: plan.kept.length, dropped: plan.dropped.length };
+  }
+
+  /**
+   * 切库钩子：销毁属于其他资料库的运行时 session。
+   * session 的 cwd / system prompt（含库记忆）在创建时固定，跨库复用必然串上下文。
+   */
+  onLibSwitch() {
+    const activeDs = this.currentDsId();
+    for (const [convId, entry] of this.live) {
+      const meta = this._meta().conversations.find((c) => c.id === convId);
+      if (!meta || meta.dsId !== activeDs) {
+        try { entry.session.abort?.(); } catch { /* */ }
+        try { if (entry.unsubscribe) entry.unsubscribe(); } catch { /* */ }
+        try { entry.session.dispose(); } catch { /* */ }
+        this.live.delete(convId);
+      }
+    }
   }
 
   async abort(convId) {
