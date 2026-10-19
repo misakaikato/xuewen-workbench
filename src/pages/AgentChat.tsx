@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { AgentStatus, AgentMessage } from '@/lib/api';
+import type { AgentStatus, AgentMessage, AgentFailure } from '@/lib/api';
+import { readAgentStream, streamFailure } from '@/lib/agentStream';
 import { useApp } from '@/store/app';
 import { MarkdownMsg } from '@/components/agent/MarkdownMsg';
 import { ChatInput } from '@/components/agent/ChatInput';
@@ -12,7 +13,7 @@ import { AgentSettingsPanel } from '@/components/agent/AgentSettingsPanel';
 import {
   Plus, Trash2, Bot, Sparkles, Copy, Check, FileText, Zap,
   GitBranch, Download, Search, X, MessageSquareQuote, Brain, Gauge, ListChecks,
-  PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash, RotateCcw, ChevronDown, ShieldCheck, ShieldAlert, Eye,
+  PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash, RotateCcw, ChevronDown, ShieldCheck, ShieldAlert, Eye, AlertCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -87,12 +88,15 @@ export default function AgentChat() {
 
   useEffect(() => {
     if (!active) { setMsgs([]); setUsage(null); return; }
+    let dead = false;
     api.agentSession(active).then((s) => {
+      if (dead || streamRef.current) return; // 新建会话的历史响应不能覆盖正在显示的流式消息
       const mapped = (s.messages || []).map((m) => ({ ...m }));
       setMsgs(mapped);
       setUsage(mapped.filter((m) => m.usage).pop()?.usage || null);
       requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; });
-    }).catch(() => setMsgs([]));
+    }).catch(() => { if (!dead && !streamRef.current) setMsgs([]); });
+    return () => { dead = true; };
   }, [active]);
 
   // 侧栏拖拽调宽：delta 式（记录按下点与初始宽度，与主侧栏同一手感），拖拽中禁文字选择
@@ -194,8 +198,8 @@ export default function AgentChat() {
     }
   }, [msgs]);
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (retryText?: string) => {
+    const text = (retryText ?? input).trim();
     if (!text) return;
     // 无活跃对话时自动新建
     let convId = active;
@@ -211,20 +215,10 @@ export default function AgentChat() {
     setMsgs((m) => { const next = [...m, { role: 'user' as const, text }, { role: 'assistant' as const, text: '', tools: [], streaming: true, thinking: '' }]; aiRef.current = next.length - 1; return next; });
     const patch = (fn: (msg: Msg) => Msg) => setMsgs((m) => { const next = [...m]; const i = aiRef.current; if (i >= 0 && next[i]) next[i] = fn(next[i]); return next; });
     const ctl = new AbortController(); abortRef.current = ctl;
+    const showFailure = (failure: AgentFailure) => patch((msg) => ({ ...msg, failure, error: failure.kind !== 'cancelled' }));
     try {
       const resp = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: convId, text }), signal: ctl.signal });
-      if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
-      const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
-      for (;;) {
-        const { done, value } = await reader.read(); if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let nl;
-        while ((nl = buf.indexOf('\n\n')) >= 0) {
-          const chunk = buf.slice(0, nl); buf = buf.slice(nl + 2);
-          const line = chunk.split('\n').find((l) => l.startsWith('data: '));
-          if (!line) continue;
-          let d: { t: string; [k: string]: unknown };
-          try { d = JSON.parse(line.slice(6)); } catch { continue; }
+      const fallback = await readAgentStream(resp, (d) => {
           if (d.t === 'delta') patch((msg) => ({ ...msg, text: msg.text + (d.v as string) }));
           else if (d.t === 'thinking') patch((msg) => ({ ...msg, thinking: (msg.thinking || '') + (d.v as string) }));
           else if (d.t === 'usage') setUsage(d.usage as Msg['usage']);
@@ -232,11 +226,14 @@ export default function AgentChat() {
           else if (d.t === 'tool_end') patch((msg) => ({ ...msg, tools: (msg.tools || []).map((t) => ((t as ToolItem).name === d.name && !(t as ToolItem).summary ? { ...t, summary: d.summary as string, isError: d.isError as boolean, durationMs: d.durationMs as number } : t)) }));
           else if (d.t === 'open_doc') navigate('/read/' + encPath(d.path as string) + ((d.term as string) ? '?h=' + encodeURIComponent(d.term as string) : ''));
           else if (d.t === 'confirm') { setConfirmReq({ id: d.id as string, tool: d.tool as string, args: d.args }); }
-          else if (d.t === 'error') patch((msg) => ({ ...msg, text: msg.text + `\n\n**错误**：${d.message}`, error: true }));
-        }
-      }
+          else if (d.t === 'error') showFailure((d.failure as AgentFailure) || {
+            kind: 'model', title: '模型未能完成回答', message: String(d.message || '模型或端点返回错误，请检查 Agent 设置后重试。'),
+          });
+      });
+      if (fallback) showFailure(fallback);
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') patch((msg) => ({ ...msg, text: msg.text + `\n\n**连接失败**：${(e as Error).message}`, error: true }));
+      showFailure((e as Error).name === 'AbortError'
+        ? streamFailure('cancelled') : streamFailure('connection', (e as Error).message));
     } finally {
       patch((msg) => ({ ...msg, streaming: false }));
       setBusy(false); streamRef.current = false; abortRef.current = null; refresh();
@@ -392,7 +389,23 @@ export default function AgentChat() {
                     <div className={`max-w-full group/msg rounded-lg ${isHit ? 'ring-2 ring-warning/60 ring-offset-2' : ''}`}>
                       {m.thinking && <ThinkingBlock text={m.thinking} streaming={m.streaming && !m.text} />}
                       {(m.tools || []).map((t, j) => <ToolCard key={j} t={t as ToolItem} />)}
-                      {m.text && <div className={m.error ? 'text-destructive' : ''}><MarkdownMsg text={m.text} richRefs={richRefs} /></div>}
+                      {m.text && <div><MarkdownMsg text={m.text} richRefs={richRefs} /></div>}
+                      {m.failure && (
+                        <div role={m.failure.kind === 'cancelled' ? 'status' : 'alert'} data-agent-failure
+                          className="my-2 rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm text-warning-foreground">
+                          <div className="flex items-center gap-2 font-medium"><AlertCircle className="w-4 h-4 shrink-0" />{m.failure.title}</div>
+                          <p className="mt-1 leading-relaxed">{m.failure.message}</p>
+                          {m.failure.details && <details className="mt-2 text-xs"><summary className="cursor-pointer">查看错误详情</summary>
+                            <pre className="mt-2 whitespace-pre-wrap break-all select-text">{m.failure.details}</pre></details>}
+                          <div className="mt-2 flex gap-2">
+                            <Button size="sm" variant="outline" disabled={busy} onClick={() => {
+                              const question = msgs.slice(0, i).reverse().find((message) => message.role === 'user');
+                              if (question) void send(question.text);
+                            }}>重新提问</Button>
+                            <Button size="sm" variant="ghost" onClick={() => setSettingsOpen(true)}>Agent 设置</Button>
+                          </div>
+                        </div>
+                      )}
                       {m.streaming && !m.text && !m.thinking && !(m.tools || []).length && (
                         <div className="flex items-center gap-1.5 py-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
@@ -431,7 +444,7 @@ export default function AgentChat() {
         {/* 输入区（含上下文指示） */}
         <div className="shrink-0 border-t border-border bg-card">
           <div className="max-w-3xl mx-auto px-3 pt-2.5 pb-1.5">
-            <ChatInput value={input} onChange={setInput} onSend={send} onStop={stop} busy={busy} disabled={!ep?.ready} placeholder={ep?.ready ? '提问 · / 命令 · @ 文件 · Enter 发送' : '去设置面板配置端点'} onCommand={doCommand} />
+            <ChatInput value={input} onChange={setInput} onSend={() => { void send(); }} onStop={stop} busy={busy} disabled={!ep?.ready} placeholder={ep?.ready ? '提问 · / 命令 · @ 文件 · Enter 发送' : '去设置面板配置端点'} onCommand={doCommand} />
           </div>
           {/* 模型/思考/模式选择器 */}
           <div className="max-w-3xl mx-auto px-4 pb-2.5 flex items-center gap-2 text-xs flex-wrap">

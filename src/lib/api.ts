@@ -260,11 +260,19 @@ export interface RagConfig {
   search: { topN: number; rrfK: number; rrfMin: number; cosFloor: number; cosSigma: number; semanticWeight: number };
 }
 
+export interface AgentFailure {
+  kind: string;
+  title: string;
+  message: string;
+  details?: string;
+}
+
 export interface AgentMessage {
   role: 'user' | 'assistant';
   text: string;
   tools?: { name: string; args?: unknown; summary?: string; isError?: boolean; durationMs?: number }[];
   thinking?: string;
+  failure?: AgentFailure;
   usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   at?: string;
 }

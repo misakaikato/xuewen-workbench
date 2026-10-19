@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, createMcpExtension } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
+import { agentFailure } from './failure.js';
 
 const CONV_META = 'conversations.json';
 // 运行模式：auto=全自动 / confirm=破坏性工具需确认 / readonly=仅检索阅读
@@ -464,9 +465,13 @@ export class AgentHub {
     } else if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'thinking_delta') {
       entry.curThinking = (entry.curThinking || '') + event.assistantMessageEvent.delta;
       send({ t: 'thinking', v: event.assistantMessageEvent.delta });
-    } else if (event.type === 'message_end' && event.message?.usage) {
-      // Token 用量：每条完成的消息附带 usage
+    } else if (event.type === 'message_end' && event.message?.role === 'assistant') {
+      // 错误常作为消息事件返回，prompt() 不一定抛异常。等自动恢复结束再决定是否报错。
+      entry.lastFailure = event.message.stopReason === 'error'
+        ? agentFailure(event.message.errorMessage || '模型返回错误')
+        : event.message.stopReason === 'aborted' ? agentFailure('', 'cancelled') : null;
       const u = event.message.usage;
+      if (u) {
       entry.curUsage = {
         input: (entry.curUsage?.input || 0) + (u.input || 0),
         output: (entry.curUsage?.output || 0) + (u.output || 0),
@@ -474,6 +479,7 @@ export class AgentHub {
         cacheWrite: (entry.curUsage?.cacheWrite || 0) + (u.cacheWrite || 0),
       };
       send({ t: 'usage', usage: entry.curUsage });
+      }
     } else if (event.type === 'tool_execution_start') {
       const item = { id: event.toolCallId, name: event.toolName, args: event.args, summary: '', isError: false, durationMs: 0 };
       entry.curTools.push(item);
@@ -490,7 +496,9 @@ export class AgentHub {
     } else if (event.type === 'agent_settled') {
       // 全部自动恢复/排队工作结束：写投影、关 SSE、清 busy
       entry.busy = false;
-      this._append(convId, { role: 'assistant', text: entry.curText || '（无输出）', tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, at: nowIso() });
+      const failure = entry.lastFailure || (!entry.curText.trim() ? agentFailure('', 'empty') : undefined);
+      if (failure) send({ t: 'error', message: failure.message, failure });
+      this._append(convId, { role: 'assistant', text: entry.curText, failure, tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, at: nowIso() });
       this._touch(convId);
       send({ t: 'done' });
       for (const res of entry.sse) {
@@ -530,6 +538,9 @@ export class AgentHub {
     entry.busy = true;
     entry.curText = '';
     entry.curTools = [];
+    entry.lastFailure = null;
+    entry.curThinking = '';
+    entry.curUsage = null;
     try {
       await entry.session.prompt(text);
       // prompt() 在 run 完成时 resolve；SSE 由 agent_settled 关闭（自动恢复可能追加轮次）
@@ -540,12 +551,12 @@ export class AgentHub {
         entry.sse.delete(res);
       }
     } catch (e) {
-      const friendly = this._friendlyError(e);
-      send({ t: 'error', message: friendly });
-      entry.curText += `\n\n（出错：${friendly}）`;
-      // 兜底收尾
+      if (!entry.busy) return; // agent_settled 已持久化并关闭响应，避免重复写入
+      const failure = agentFailure(e);
+      send({ t: 'error', message: failure.message, failure });
+      // 兜底收尾：失败提示和部分正文一并持久化，重新打开对话仍可见
       entry.busy = false;
-      this._append(convId, { role: 'assistant', text: entry.curText || '（无输出）', tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, at: nowIso() });
+      this._append(convId, { role: 'assistant', text: entry.curText, failure, tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, at: nowIso() });
       send({ t: 'done' });
       try { res.end(); } catch { /* */ }
       entry.sse.delete(res);
@@ -748,16 +759,6 @@ ${m.text}
       this._ctxWindow = ctx;
       this._syncModelsJson(); // contextWindow 变化：重建模型运行时与活跃会话
     }
-  }
-
-  /** 错误翻译：把端点原始报错转成可行动的中文提示 */
-  _friendlyError(e) {
-    const msg = String(e?.message || e);
-    if (/exceed_context_size|exceeds the available context size/i.test(msg)) {
-      const nCtx = msg.match(/"n_ctx"\s*:\s*(\d+)/) || msg.match(/context size \((\d+) tokens\)/i);
-      return `请求超出模型上下文窗口${nCtx ? `（上限 ${nCtx[1]} tokens）` : ''}。已尝试自动压缩历史；仍超限请新建对话，或在模型端点（如 LM Studio）调大上下文长度。`;
-    }
-    return msg;
   }
 
   _applyModeToSessions() {
