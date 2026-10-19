@@ -43,6 +43,7 @@ export function scanTree(baseDir, opts = {}) {
   const dirs = []; // 全部子目录相对路径（含空目录）
   const sidecars = []; // 元数据旁注文件相对路径
   const metaFiles = []; // 派生文件（.annotations.json）相对路径，按开关决定是否进 files
+  const derivedFiles = []; // .derived/ 目录内的文件，开关打开时显示（不进 files，避免被索引/检索）
   const dirErrors = []; // { path, reason }
   const fileErrors = [];
   let dirCount = 0;
@@ -84,7 +85,15 @@ export function scanTree(baseDir, opts = {}) {
         }
         if (isDir) {
           if (!relDir && ent.name === TRASH_DIR) continue;
-          if (ent.name.startsWith('.')) continue; // 隐藏目录（.git / .derived / .trash 等）一律不扫描
+          if (ent.name.startsWith('.')) {
+            // .derived/：加工数据目录，受「显示元数据文件」开关控制
+            if (ent.name === '.derived' && showMetaFiles) {
+              dirs.push(rel);
+              hasContent = true;
+              walkDerived(abs, rel);
+            }
+            continue; // 其余隐藏目录（.git / .trash 等）一律不扫描
+          }
           hasContent = true;
           walk(abs, rel);
         } else if (isFile) {
@@ -123,10 +132,43 @@ export function scanTree(baseDir, opts = {}) {
     if (!hasContent) emptyDirCount++;
   }
 
+  // .derived/ 内所有文件都收（jsonl/graphml 等不受 SUPPORTED_EXTS 限制），仅作展示
+  function walkDerived(absDir, relDir) {
+    let entries;
+    try {
+      entries = fs.readdirSync(absDir, { withFileTypes: true });
+    } catch { return; }
+    for (const ent of entries) {
+      if (ent.name.startsWith('.')) continue;
+      const abs = path.join(absDir, ent.name);
+      const rel = relDir + '/' + ent.name;
+      if (ent.isDirectory()) {
+        dirs.push(rel);
+        walkDerived(abs, rel);
+      } else if (ent.isFile()) {
+        const ext = path.extname(ent.name).toLowerCase();
+        metaFiles.push(rel);
+        try {
+          const st = fs.statSync(abs);
+          derivedFiles.push({
+            path: rel,
+            name: ent.name,
+            base: ent.name.slice(0, ent.name.length - ext.length),
+            ext,
+            dir: relDir,
+            size: st.size,
+            mtimeMs: st.mtimeMs,
+          });
+        } catch { /* 忽略读不到的文件 */ }
+      }
+    }
+  }
+
   walk(baseDir, '');
   files.sort((a, b) => naturalCompare(a.path, b.path));
+  derivedFiles.sort((a, b) => naturalCompare(a.path, b.path));
   dirs.sort(naturalCompare);
-  return { files, dirs, sidecars, metaFiles, dirCount, dirErrors, fileErrors, emptyDirCount };
+  return { files, dirs, sidecars, metaFiles, derivedFiles, dirCount, dirErrors, fileErrors, emptyDirCount };
 }
 
 export class Scanner extends EventEmitter {

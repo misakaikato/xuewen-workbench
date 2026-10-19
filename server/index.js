@@ -176,7 +176,8 @@ function resolveWithin(lib, rel) {
 }
 
 function findFile(lib, rel) {
-  return lib.scanner.snapshot.files.find((f) => f.path === rel);
+  const snap = lib.scanner.snapshot;
+  return snap.files.find((f) => f.path === rel) || snap.derivedFiles?.find((f) => f.path === rel) || null;
 }
 
 function readTextPreserve(abs) {
@@ -443,7 +444,10 @@ function buildTree(files, dirList = []) {
 app.get('/api/tree', (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;
-  res.json({ dsId: lib.id, tree: buildTree(lib.scanner.snapshot.files, lib.scanner.snapshot.dirs) });
+  const snap = lib.scanner.snapshot;
+  // 派生数据文件（.derived/）仅在「显示元数据文件」开关打开时出现在树里；不进 files，不参与索引/检索
+  const files = snap.derivedFiles?.length ? [...snap.files, ...snap.derivedFiles] : snap.files;
+  res.json({ dsId: lib.id, tree: buildTree(files, snap.dirs) });
 });
 
 app.get('/api/stats', (req, res) => {
@@ -488,12 +492,14 @@ app.get('/api/file', async (req, res) => {
     const f = findFile(lib, rel);
     if (!f) return res.status(404).json({ error: '文件不在当前扫描结果中（可能已被移动或删除）', missing: true });
     const ext = f.ext;
-    if (ext === '.md' || ext === '.json' || ext === '.txt') {
+    if (ext === '.md' || ext === '.json' || ext === '.txt' || ext === '.jsonl' || ext === '.graphml') {
       const { content, bom } = readTextPreserve(abs);
+      const isDerived = ext === '.jsonl' || ext === '.graphml';
       return res.json({
         dsId: lib.id, path: rel, name: f.name, ext,
         type: ext === '.md' ? 'markdown' : ext === '.json' ? 'json' : 'text',
-        content, bom, mtimeMs: f.mtimeMs, size: f.size, readonly: false,
+        content, bom, mtimeMs: f.mtimeMs, size: f.size,
+        readonly: isDerived, // 加工数据系统只读不写
       });
     }
     const parsed = await parseWord(lib.id, abs, rel, f.mtimeMs);
