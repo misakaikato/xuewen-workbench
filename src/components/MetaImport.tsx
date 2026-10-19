@@ -87,7 +87,7 @@ export default function MetaImport() {
 
   return (
     <section className="bg-card border border-border rounded-lg p-4">
-      <h2 className="font-medium text-sm mb-1">导入元数据</h2>
+      <h2 className="text-sm font-semibold mb-1">导入元数据</h2>
       <p className="text-xs text-muted-foreground mb-3">
         粘贴或选择 AI 产出的 JSONL（每行一个 JSON，含 path 与待导入字段），先预览再写入。只写 <span className="mono">&lt;文件名&gt;.meta.json</span> 旁注，不修改文档。
       </p>

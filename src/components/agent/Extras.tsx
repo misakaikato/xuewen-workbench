@@ -13,7 +13,7 @@ export function ThinkingBlock({ text, streaming }: { text: string; streaming?: b
       >
         <Brain className={`w-3.5 h-3.5 ${streaming ? 'animate-pulse text-primary' : ''}`} />
         <span>{streaming ? '思考中…' : '思考过程'}</span>
-        <span className="text-[10px] tabular-nums">({text.length} 字)</span>
+        <span className="text-xs tabular-nums">({text.length} 字)</span>
         {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
       </button>
       {open && (
@@ -33,7 +33,7 @@ export function ContextBar({ usage, contextWindow }: { usage: { input: number; o
   const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
   const color = pct > 80 ? 'bg-destructive' : pct > 60 ? 'bg-warning' : 'bg-primary';
   return (
-    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+    <div className="flex items-center gap-2 text-xs text-muted-foreground">
       <div className="w-24 h-1 rounded-full bg-muted overflow-hidden">
         <div className={`h-full ${color} transition-all`} style={{ width: pct + '%' }} />
       </div>

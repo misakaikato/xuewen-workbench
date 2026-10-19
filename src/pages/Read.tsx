@@ -882,7 +882,7 @@ export default function Read() {
         <aside className="hidden lg:block w-64 shrink-0 border-l border-border overflow-auto p-3">
           {showToc && toc.length > 0 && (
             <div className="mb-4">
-              <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground mb-2">
+              <div className="flex items-center gap-1 text-xs font-semibold text-muted-foreground mb-2">
                 <ListTree className="w-3.5 h-3.5" /> 文档目录
                 <button className="ml-auto p-0.5 rounded hover:bg-accent transition-colors" onClick={() => setShowToc(false)}>
                   <X className="w-3 h-3" />

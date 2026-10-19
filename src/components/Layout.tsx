@@ -204,9 +204,9 @@ export function Layout() {
                 <Check className={`w-4 h-4 shrink-0 ${l.id === dsId ? 'opacity-100' : 'opacity-0'}`} />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm truncate">{l.name}</div>
-                  <div className="text-[11px] text-muted-foreground truncate">{l.baseDir}</div>
+                  <div className="text-xs text-muted-foreground truncate">{l.baseDir}</div>
                 </div>
-                <span className="text-[11px] text-muted-foreground shrink-0">
+                <span className="text-xs text-muted-foreground shrink-0">
                   {l.status.scanning ? '扫描中…' : l.status.counts ? `${l.status.counts.files} 文件` : '未扫描'}
                 </span>
               </DropdownMenuItem>

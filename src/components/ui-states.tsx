@@ -51,7 +51,7 @@ export function PageError({ title, detail, children }: { title: string; detail?:
   return (
     <div className="max-w-xl mx-auto py-16 px-4 text-center">
       <AlertCircle className="w-10 h-10 mx-auto text-warning mb-3" />
-      <h1 className="text-lg font-bold mb-2">{title}</h1>
+      <h1 className="text-lg font-semibold mb-2">{title}</h1>
       {detail && <div className="text-sm text-muted-foreground mb-6 space-y-1">{detail}</div>}
       {children && <div className="flex gap-2 justify-center">{children}</div>}
     </div>

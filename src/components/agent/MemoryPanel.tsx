@@ -110,11 +110,11 @@ export function MemoryPanel() {
         </button>
       </div>
 
-      <p className="text-[11px] text-muted-foreground mb-3">{cur.hint}</p>
+      <p className="text-xs text-muted-foreground mb-3">{cur.hint}</p>
 
       {/* 统计 */}
       {stats && (
-        <div className="flex items-center gap-3 text-[11px] text-muted-foreground mb-3">
+        <div className="flex items-center gap-3 text-xs text-muted-foreground mb-3">
           <span><span className="text-primary font-medium tabular-nums">{stats.facts}</span> 条记忆</span>
           <span><Pin className="w-3 h-3 inline" /> <span className="tabular-nums">{stats.pinned}</span>/20 固定</span>
           <span>摘要 {stats.summaryChars} 字</span>
@@ -140,7 +140,7 @@ export function MemoryPanel() {
       {/* 摘要 */}
       {data?.summary && (
         <div className="mb-3 p-3 rounded-lg bg-muted/40 border border-border">
-          <div className="text-[11px] text-muted-foreground mb-1 flex items-center gap-1"><Brain className="w-3 h-3" />摘要（会注入对话）</div>
+          <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1"><Brain className="w-3 h-3" />摘要（会注入对话）</div>
           <div className="text-xs whitespace-pre-wrap leading-relaxed">{data.summary}</div>
         </div>
       )}
@@ -172,7 +172,7 @@ export function MemoryPanel() {
                 ) : (
                   <div className="leading-relaxed">{f.fact}</div>
                 )}
-                <div className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-2">
+                <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2">
                   <span>{f.kind}</span>
                   <span>{f.at ? new Date(f.at).toLocaleDateString('zh-CN') : ''}</span>
                   {f.source && f.source !== 'user' && <span>来自对话</span>}
@@ -195,7 +195,7 @@ export function MemoryPanel() {
         </div>
       )}
 
-      <p className="text-[11px] text-muted-foreground mt-3">
+      <p className="text-xs text-muted-foreground mt-3">
         记忆改动在下一次新建对话时生效（当前对话的系统提示词已固定）
       </p>
     </div>

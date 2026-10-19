@@ -39,7 +39,7 @@ export default function Browse() {
   const crumbs = dir ? dir.split('/') : [];
 
   return (
-    <div className="max-w-4xl mx-auto py-6 px-4">
+    <div className="max-w-5xl mx-auto py-6 px-4">
       <nav className="text-xs text-muted-foreground mb-3 flex items-center gap-1 flex-wrap">
         <Link to="/" className="hover:text-primary">概览</Link>
         <span>/</span>
@@ -59,7 +59,7 @@ export default function Browse() {
       </nav>
 
       <div className="flex items-center gap-2 mb-4">
-        <h1 className="text-lg font-bold">{dir || '全部文件'}</h1>
+        <h1 className="text-lg font-semibold">{dir || '全部文件'}</h1>
         <span className="text-xs text-muted-foreground stat-num">{files.length} 个文件</span>
         <div className="flex-1" />
         <input
@@ -85,7 +85,7 @@ export default function Browse() {
                 onClick={() => navigate('/read/' + f.path.split('/').map(encodeURIComponent).join('/'))}
               >
                 {extIcon(f.ext)}
-                <span className="font-medium text-sm">{f.name}</span>
+                <span className="text-sm font-semibold">{f.name}</span>
                 <span className="text-xs text-muted-foreground truncate flex-1">{f.dir || '(根目录)'}</span>
                 <span className="text-xs text-muted-foreground stat-num shrink-0">
                   {(f.size / 1024).toFixed(1)} KB

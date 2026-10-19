@@ -45,7 +45,7 @@ export default function Dashboard() {
   if (!config?.configured) {
     return (
       <div className="max-w-xl mx-auto py-16 px-4 text-center">
-        <h1 className="text-2xl font-bold mb-3">欢迎使用Workbench</h1>
+        <h1 className="text-lg font-semibold mb-3">欢迎使用Workbench</h1>
         <p className="text-muted-foreground mb-6">先打开一个资料库（本机的语料目录），应用将自动发现其中的 Markdown、JSON 与 Word 文件；之后可以同时打开多个。</p>
         <Button asChild>
           <Link to="/setup">打开资料库</Link>
@@ -61,7 +61,7 @@ export default function Dashboard() {
     <div className="max-w-5xl mx-auto py-6 px-4 space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h1 className="text-xl font-bold">语料概览</h1>
+          <h1 className="text-lg font-semibold">语料概览</h1>
           <div className="text-xs text-muted-foreground mt-0.5">
             {config.baseDir} · {config.status.scanning ? '扫描中…' : stats ? `扫描于 ${new Date(stats.scannedAt).toLocaleString('zh-CN')}` : '等待扫描'}
             {config.status.watching ? ' · 自动监听已开启' : ' · 可手动重扫'}
@@ -105,7 +105,7 @@ export default function Dashboard() {
             to={card.to}
             className="bg-card border border-border rounded-lg p-3 hover:border-primary/60 transition-colors"
           >
-            <div className="text-2xl font-bold stat-num">{card.value ?? '—'}</div>
+            <div className="text-lg font-semibold stat-num">{card.value ?? '—'}</div>
             <div className="text-xs text-muted-foreground mt-1">{card.label}</div>
           </Link>
         ))}
@@ -114,7 +114,7 @@ export default function Dashboard() {
       <div className="grid md:grid-cols-2 gap-4">
         {/* 目录分布 */}
         <section className="bg-card border border-border rounded-lg p-4">
-          <h2 className="font-medium text-sm mb-3">顶层目录分布</h2>
+          <h2 className="text-sm font-semibold mb-3">顶层目录分布</h2>
           {stats && stats.distribution.length > 0 ? (
             <ul className="space-y-1.5">
               {stats.distribution.slice(0, 10).map((d) => (
@@ -137,7 +137,7 @@ export default function Dashboard() {
 
         {/* 最近修改 */}
         <section className="bg-card border border-border rounded-lg p-4">
-          <h2 className="font-medium text-sm mb-3">最近修改</h2>
+          <h2 className="text-sm font-semibold mb-3">最近修改</h2>
           {stats && stats.recentModified.length > 0 ? (
             <ul className="space-y-1">
               {stats.recentModified.slice(0, 8).map((f: FileEntry) => (
@@ -157,7 +157,7 @@ export default function Dashboard() {
 
         {/* 最近打开 */}
         <section className="bg-card border border-border rounded-lg p-4">
-          <h2 className="font-medium text-sm mb-3">最近打开</h2>
+          <h2 className="text-sm font-semibold mb-3">最近打开</h2>
           {recents.length > 0 ? (
             <ul className="space-y-1">
               {recents.slice(0, 8).map((r) => (
@@ -181,8 +181,8 @@ export default function Dashboard() {
 
         {/* 常用入口 */}
         <section className="bg-card border border-border rounded-lg p-4">
-          <h2 className="font-medium text-sm mb-1">常用入口</h2>
-          <p className="text-xs text-muted-foreground mb-2">在阅读页可将文档固定到这里</p>
+          <h2 className="text-sm font-semibold mb-1">常用入口</h2>
+          <p className="text-xs text-muted-foreground mb-3">在阅读页可将文档固定到这里</p>
           {pins.length > 0 ? (
             <ul className="space-y-1">
               {pins.map((p) => (
@@ -219,7 +219,7 @@ export default function Dashboard() {
       {metaConfigured ? (
         <div className="grid md:grid-cols-2 gap-4">
           <section className="bg-card border border-border rounded-lg p-4">
-            <h2 className="font-medium text-sm mb-3">主题分布</h2>
+            <h2 className="text-sm font-semibold mb-3">主题分布</h2>
             {topics.length ? (
               <div className="flex flex-wrap gap-1.5">
                 {topics.slice(0, 30).map((t) => (
@@ -238,7 +238,7 @@ export default function Dashboard() {
             )}
           </section>
           <section className="bg-card border border-border rounded-lg p-4">
-            <h2 className="font-medium text-sm mb-3">概念频次</h2>
+            <h2 className="text-sm font-semibold mb-3">概念频次</h2>
             {concepts.length ? (
               <div className="flex flex-wrap gap-1.5">
                 {concepts.slice(0, 30).map((t) => (

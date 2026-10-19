@@ -95,7 +95,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
         <div className="flex items-center gap-1 px-5 py-2 border-b border-border shrink-0">
           {TABS.map((t) => (
             <button key={t.id}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${tab === t.id ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${tab === t.id ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
               onClick={() => setTab(t.id)}>
               <t.icon className="w-3.5 h-3.5" />{t.label}
             </button>
@@ -128,7 +128,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                   <RefreshCw className={`w-3.5 h-3.5 ${modelsLoading ? 'animate-spin' : ''}`} />
                 </button>
               </div>
-              {models.length > 0 && <p className="text-[11px] text-muted-foreground pl-[72px] flex items-center gap-1"><Check className="w-3 h-3 text-success" />从端点拉到 {models.length} 个模型</p>}
+              {models.length > 0 && <p className="text-xs text-muted-foreground pl-[72px] flex items-center gap-1"><Check className="w-3 h-3 text-success" />从端点拉到 {models.length} 个模型</p>}
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground w-16 shrink-0 text-xs">apiKey</span>
                 <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="本地服务通常留空" type="password" className="flex-1 px-2.5 py-1.5 rounded-lg border border-input bg-background" />
@@ -136,7 +136,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
             </div>
 
             <div className="mt-4">
-              <h3 className="text-xs font-medium text-muted-foreground mb-2">思考强度</h3>
+              <h3 className="text-xs font-semibold text-muted-foreground mb-2">思考强度</h3>
               <div className="flex items-center gap-1.5">
                 {THINKING_LEVELS.map((t) => (
                   <button key={t.v} className={`px-3 py-1.5 rounded-lg text-xs border ${thinking === t.v ? 'border-primary text-primary font-medium bg-primary/5' : 'border-border hover:border-primary/40'}`} onClick={() => setThinking(t.v)}>
@@ -144,12 +144,12 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                   </button>
                 ))}
               </div>
-              <p className="text-[11px] text-muted-foreground mt-1">需要模型支持扩展思考（qwen3 / o1 等）</p>
+              <p className="text-xs text-muted-foreground mt-1">需要模型支持扩展思考（qwen3 / o1 等）</p>
             </div>
 
             <div className="mt-4">
-              <h3 className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1"><Wrench className="w-3 h-3" />可用工具（{status.tools?.length || 0}）</h3>
-              <div className="flex flex-wrap gap-1">{(status.tools || []).map((t) => <code key={t} className="px-1.5 py-0.5 rounded bg-muted text-[11px]">{t}</code>)}</div>
+              <h3 className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1"><Wrench className="w-3 h-3" />可用工具（{status.tools?.length || 0}）</h3>
+              <div className="flex flex-wrap gap-1">{(status.tools || []).map((t) => <code key={t} className="px-1.5 py-0.5 rounded bg-muted text-xs">{t}</code>)}</div>
             </div>
           </>
         )}
@@ -160,7 +160,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
             <p className="text-xs text-muted-foreground mb-2">
               这份文件定义 Agent 的身份、能力与回答风格。系统固定规则（工具透明、记忆规范）会自动追加在其后。
             </p>
-            <p className="text-[11px] text-muted-foreground mb-2 font-mono truncate" title={agentsMdPath}>{agentsMdPath}</p>
+            <p className="text-xs text-muted-foreground mb-2 font-mono truncate" title={agentsMdPath}>{agentsMdPath}</p>
             <textarea
               value={agentsMd}
               onChange={(e) => setAgentsMd(e.target.value)}

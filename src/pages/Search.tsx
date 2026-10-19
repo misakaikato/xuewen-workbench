@@ -198,7 +198,7 @@ export default function Search() {
 
   return (
     <div className="max-w-3xl mx-auto py-6 px-4">
-      <h1 className="text-lg font-bold mb-3 flex items-center gap-3">
+      <h1 className="text-lg font-semibold mb-3 flex items-center gap-3">
         全局检索
         <span className="inline-flex rounded-lg border border-border overflow-hidden text-xs font-normal">
           <button
@@ -325,7 +325,7 @@ export default function Search() {
           {smart.hits.map((h, i) => (
             <li key={h.path + ':' + h.ordinal + ':' + i} className="bg-card border border-border rounded-lg p-3">
               <button
-                className="flex items-center gap-2 font-medium text-sm hover:text-primary w-full text-left"
+                className="flex items-center gap-2 text-sm font-semibold hover:text-primary w-full text-left"
                 onClick={() => {
                   // ?h= 与 #锚点同带：词在正文则高亮并定位首个命中；
                   // 语义命中常不含原词，此时回退到命中块的标题锚点
@@ -346,7 +346,7 @@ export default function Search() {
                 {h.headingPath && (
                   <span className="text-xs text-muted-foreground font-normal truncate">{h.headingPath}</span>
                 )}
-                <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground font-normal shrink-0">
+                <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground font-normal shrink-0">
                   {h.bm25 && <span className="px-1 rounded bg-muted">关键词</span>}
                   {h.cos != null && <span className="px-1 rounded bg-muted">语义 {h.cos.toFixed(2)}</span>}
                 </span>
@@ -373,7 +373,7 @@ export default function Search() {
         {results.map((r) => (
           <li key={r.file.path} className="bg-card border border-border rounded-lg p-3">
             <button
-              className="flex items-center gap-2 font-medium text-sm hover:text-primary w-full text-left"
+              className="flex items-center gap-2 text-sm font-semibold hover:text-primary w-full text-left"
               onClick={() =>
                 navigate(
                   '/read/' + r.file.path.split('/').map(encodeURIComponent).join('/') +

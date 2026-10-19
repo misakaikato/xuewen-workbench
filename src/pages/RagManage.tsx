@@ -99,8 +99,8 @@ export default function RagManage() {
   const indexPct = ix && ix.total > 0 ? Math.round((ix.done / ix.total) * 100) : null;
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-lg font-bold flex items-center gap-2">
+    <div className="space-y-6">
+      <h1 className="text-lg font-semibold flex items-center gap-2">
         RAG 管理
         <span className="text-xs text-muted-foreground font-normal">智能检索与本地问答</span>
       </h1>
@@ -234,7 +234,7 @@ export default function RagManage() {
               <RotateCcw className="w-3.5 h-3.5" />重建
             </Button>
           )}
-          <span className="text-[11px] text-muted-foreground">索引存于本机应用数据目录，删除后可随时重建；文件改动后自动增量更新。</span>
+          <span className="text-xs text-muted-foreground">索引存于本机应用数据目录，删除后可随时重建；文件改动后自动增量更新。</span>
         </div>
       </section>
 
@@ -331,7 +331,7 @@ export default function RagManage() {
         </div>
         {smart && (
           <div className="space-y-2">
-            <div className="text-[11px] text-muted-foreground">共 {smart.total ?? smart.hits.length} 段（显示 {smart.hits.length}）· {smart.took}ms · {BACKEND_LABEL[smart.backend || ''] || smart.backend}
+            <div className="text-xs text-muted-foreground">共 {smart.total ?? smart.hits.length} 段（显示 {smart.hits.length}）· {smart.took}ms · {BACKEND_LABEL[smart.backend || ''] || smart.backend}
               <Link to={'/search?q=' + encodeURIComponent(q) + '&mode=smart'} className="ml-2 text-primary underline">去检索页</Link>
             </div>
             {smart.hits.map((h, i) => (
@@ -340,7 +340,7 @@ export default function RagManage() {
                   {extIcon('.' + (h.name.split('.').pop() || ''))}
                   <span className="truncate">{h.name}</span>
                   {h.headingPath && <span className="text-muted-foreground font-normal truncate">{h.headingPath}</span>}
-                  <span className="ml-auto flex gap-1 shrink-0 text-[10px] text-muted-foreground">
+                  <span className="ml-auto flex gap-1 shrink-0 text-xs text-muted-foreground">
                     {h.bm25 && <span className="px-1 rounded bg-muted">关键词</span>}
                     {h.cos != null && <span className="px-1 rounded bg-muted">语义 {h.cos.toFixed(2)}</span>}
                     <span className="px-1 rounded bg-muted">融合 {h.score}</span>

@@ -371,7 +371,7 @@ export default function AgentChat() {
               {conversations.filter((c) => !c.folderId).map((c) => renderConvRow(c, 0))}
               {!conversations.length && <div className="text-xs text-muted-foreground p-3 text-center">还没有对话</div>}
             </div>
-            <div className="p-3 border-t border-sidebar-border text-[11px] text-muted-foreground space-y-0.5">
+            <div className="p-3 border-t border-sidebar-border text-xs text-muted-foreground space-y-0.5">
               {(status?.skills || []).length > 0 && <div><span className="text-primary font-medium">{status!.skills.length}</span> skills</div>}
               {(status?.mcp || []).length > 0 && <div><span className="text-primary font-medium">{status!.mcp!.filter((m) => m.enabled).length}/{status!.mcp!.length}</span> MCP</div>}
             </div>
@@ -555,7 +555,7 @@ export default function AgentChat() {
             <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
               {(['off', 'low', 'medium', 'high'] as const).map((lv) => (
                 <button key={lv}
-                  className={`px-1.5 py-0.5 rounded text-[11px] transition-colors ${ep?.thinkingLevel === lv ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+                  className={`px-1.5 py-0.5 rounded text-xs transition-colors ${ep?.thinkingLevel === lv ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground'}`}
                   onClick={async () => { await api.agentSettings({ thinkingLevel: lv }); refresh(); }}>
                   {lv === 'off' ? '思考关' : lv === 'low' ? '低' : lv === 'medium' ? '中' : '高'}
                 </button>
@@ -569,7 +569,7 @@ export default function AgentChat() {
                 { v: 'readonly', icon: Eye, label: '只读' },
               ] as const).map(({ v, icon: Icon, label }) => (
                 <button key={v}
-                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] ${(status?.mode || 'auto') === v ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${(status?.mode || 'auto') === v ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground'}`}
                   onClick={async () => { await api.agentSettings({ mode: v }); refresh(); }}>
                   <Icon className="w-3 h-3" />{label}
                 </button>
@@ -628,14 +628,14 @@ function CompactionNotice({ cp }: { cp: { reason: string; tokensBefore: number |
   const fmt = (n: number | null) => (n == null ? '?' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
   if (cp.aborted || cp.error) {
     return (
-      <div className="my-3 flex items-center gap-2 text-[11px] text-warning border border-warning/40 rounded-lg px-3 py-1.5">
+      <div className="my-3 flex items-center gap-2 text-xs text-warning border border-warning/40 rounded-lg px-3 py-1.5">
         <AlertTriangle className="w-3 h-3 shrink-0" />
         上下文压缩未完成{cp.error ? `：${cp.error}` : ''}
       </div>
     );
   }
   return (
-    <div className="my-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+    <div className="my-3 flex items-center gap-2 text-xs text-muted-foreground">
       <div className="flex-1 h-px bg-border" />
       <span className="flex items-center gap-1 shrink-0 px-1">
         <Layers className="w-3 h-3" />

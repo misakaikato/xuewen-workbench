@@ -4,6 +4,16 @@ module.exports = {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
+      fontSize: {
+        // 中文界面字阶：≥14px 的行高放宽到 1.6–1.75，保证中文可读性（DESIGN.md §3）
+        xs: ['12px', { lineHeight: '1.6' }],
+        sm: ['14px', { lineHeight: '1.75' }],
+        base: ['15px', { lineHeight: '1.7' }],
+        lg: ['18px', { lineHeight: '1.4' }],
+        xl: ['20px', { lineHeight: '1.35' }],
+        '2xl': ['24px', { lineHeight: '1.3' }],
+        '3xl': ['30px', { lineHeight: '1.25' }],
+      },
       fontFamily: {
         ui: ["var(--font-ui)"],
         serif: ["var(--font-serif)"],

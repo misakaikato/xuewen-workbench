@@ -32,13 +32,13 @@ export function ToolCard({ t }: { t: ToolItem }) {
           {t.args !== undefined && Object.keys(t.args as object).length > 0 && (
             <div>
               <div className="text-muted-foreground mb-0.5">参数</div>
-              <pre className="text-[11px] whitespace-pre-wrap break-all bg-card border border-border rounded p-1.5 max-h-40 overflow-auto">{JSON.stringify(t.args, null, 2)}</pre>
+              <pre className="text-xs whitespace-pre-wrap break-all bg-card border border-border rounded p-1.5 max-h-40 overflow-auto">{JSON.stringify(t.args, null, 2)}</pre>
             </div>
           )}
           {t.summary && (
             <div>
               <div className="text-muted-foreground mb-0.5">结果</div>
-              <pre className="text-[11px] whitespace-pre-wrap break-all bg-card border border-border rounded p-1.5 max-h-40 overflow-auto">{t.summary}</pre>
+              <pre className="text-xs whitespace-pre-wrap break-all bg-card border border-border rounded p-1.5 max-h-40 overflow-auto">{t.summary}</pre>
             </div>
           )}
         </div>

@@ -83,7 +83,7 @@ export default function Settings() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto py-6 px-4 space-y-8">
+    <div className="max-w-3xl mx-auto py-6 px-4 space-y-6">
       <div className="flex items-center gap-1 mb-4 border-b border-border pb-2 flex-wrap">
         {[['appearance','外观'],['reading','阅读'],['collections','集合'],['metadata','元数据'],['rag','RAG 检索'],['about','关于']].map(([id,label]) => (
           <button key={id} className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${tab === id ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`} onClick={() => setTab(id)}>
@@ -92,12 +92,12 @@ export default function Settings() {
         ))}
       </div>
 
-      <h1 className="text-lg font-bold">设置</h1>
+      <h1 className="text-lg font-semibold">设置</h1>
       {msg && <div className="text-xs text-success">{msg}</div>}
 
       {tab === 'appearance' && (
       <section className="bg-card border border-border rounded-lg p-4">
-        <h2 className="font-medium text-sm mb-1">外观主题</h2>
+        <h2 className="text-sm font-semibold mb-1">外观主题</h2>
         <p className="text-xs text-muted-foreground mb-3">界面整体配色与字体，保存在本机并随应用重启保留。</p>
         <RadioGroup
           value={theme}
@@ -131,7 +131,7 @@ export default function Settings() {
                 </div>
                 <div className="mt-2 flex items-center gap-2">
                   <span className="text-sm font-medium" style={{ fontFamily: t.ui }}>{t.name}</span>
-                  {on && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">当前</span>}
+                  {on && <span className="text-xs px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">当前</span>}
                 </div>
                 <div className="text-xs text-muted-foreground mt-0.5">{t.desc}</div>
               </Label>
@@ -145,7 +145,7 @@ export default function Settings() {
 
       {tab === 'about' && (
       <section className="bg-card border border-border rounded-lg p-4">
-        <h2 className="font-medium text-sm mb-1">关于与更新</h2>
+        <h2 className="text-sm font-semibold mb-1">关于与更新</h2>
         <p className="text-xs text-muted-foreground mb-3">
           当前版本 v{updateState?.currentVersion ?? '—'}。更新包从 GitHub Releases 获取（Windows 支持差量下载）。
         </p>
@@ -190,7 +190,7 @@ export default function Settings() {
 
       {tab === 'reading' && (
       <section className="bg-card border border-border rounded-lg p-4">
-        <h2 className="font-medium text-sm mb-3">阅读与外观</h2>
+        <h2 className="text-sm font-semibold mb-3">阅读与外观</h2>
         <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
           <label className="flex items-center gap-2">
             <span className="w-24 text-muted-foreground">正文字体</span>
@@ -259,7 +259,7 @@ export default function Settings() {
 
       {tab === 'reading' && (
       <section className="bg-card border border-border rounded-lg p-4">
-        <h2 className="font-medium text-sm mb-1 flex items-center gap-1.5">
+        <h2 className="text-sm font-semibold mb-1 flex items-center gap-1.5">
           <ShieldBan className="w-3.5 h-3.5" /> 屏蔽词表
         </h2>
         <p className="text-xs text-muted-foreground mb-3">
@@ -319,7 +319,7 @@ export default function Settings() {
 
       {tab === 'collections' && (
       <section className="bg-card border border-border rounded-lg p-4">
-        <h2 className="font-medium text-sm mb-1">逻辑集合</h2>
+        <h2 className="text-sm font-semibold mb-1">逻辑集合</h2>
         <p className="text-xs text-muted-foreground mb-3">
           集合是「名称 → 一组目录范围」的映射，用于「集合名|文件名」引用形式。多个集合可指向同一目录。目录改名后可在此重新关联。
         </p>
@@ -389,7 +389,7 @@ export default function Settings() {
       {/* 元数据映射 */}
       {tab === 'metadata' && (
       <section className="bg-card border border-border rounded-lg p-4">
-        <h2 className="font-medium text-sm mb-1">元数据来源</h2>
+        <h2 className="text-sm font-semibold mb-1">元数据来源</h2>
         <p className="text-xs text-muted-foreground mb-3">
           从已扫描的 JSON 文件识别主题/概念/文件关联。指定：来源文件、条目数组路径（如 items，留空表示顶层数组）、各字段名。不假定固定 Schema。
         </p>

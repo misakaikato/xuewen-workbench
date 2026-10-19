@@ -289,7 +289,7 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
   };
   const refBadge = (n: number) => (
     <span title={`被 ${n} 个文档引用`} className="flex items-center gap-0.5 text-muted-foreground">
-      <Link2 className="w-3 h-3" /><span className="text-[10px] tabular-nums">{n}</span>
+      <Link2 className="w-3 h-3" /><span className="text-xs tabular-nums">{n}</span>
     </span>
   );
 
@@ -325,7 +325,7 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
         {badges()}
         <span className="flex-1" />
         {row.dirLabel && (
-          <span className="shrink-0 max-w-[45%] truncate text-[11px] text-muted-foreground" title={row.dirLabel}>
+          <span className="shrink-0 max-w-[45%] truncate text-xs text-muted-foreground" title={row.dirLabel}>
             {row.dirLabel}
           </span>
         )}
@@ -408,7 +408,7 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
       >
         {row.name}
       </button>
-      {row.count !== undefined && <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">{row.count}</span>}
+      {row.count !== undefined && <span className="text-xs text-muted-foreground tabular-nums shrink-0">{row.count}</span>}
       {!isHead && (
         <span className="hidden group-hover:flex group-focus-within:flex items-center gap-0.5 shrink-0">
           <button
@@ -1081,7 +1081,7 @@ export function FileTree({
         </div>
       </div>
       {filtering && (
-        <div className="shrink-0 flex items-center gap-2 px-1.5 py-1 text-[11px] text-muted-foreground border-b border-sidebar-border">
+        <div className="shrink-0 flex items-center gap-2 px-1.5 py-1 text-xs text-muted-foreground border-b border-sidebar-border">
           <span className="stat-num">{rows.length}</span> 个匹配文件
           <span className="flex-1" />
           <button className="hover:text-primary" onClick={() => navigate('/search?q=' + encodeURIComponent(filter.trim()))}>

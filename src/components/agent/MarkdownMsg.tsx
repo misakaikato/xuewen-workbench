@@ -67,7 +67,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
   };
   return (
     <div className="my-2 rounded-lg overflow-hidden border border-border">
-      <div className="flex items-center justify-between px-3 py-1 bg-muted text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between px-3 py-1 bg-muted text-xs text-muted-foreground">
         <span>{lang || 'text'}</span>
         <button onClick={doCopy} className="flex items-center gap-1 hover:text-primary" title="复制代码">
           {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
@@ -111,7 +111,7 @@ export function MarkdownMsg({ text, richRefs }: { text: string; richRefs?: (t: s
     const h = /^(#{1,4})\s+(.*)/.exec(line);
     if (h) {
       const level = h[1].length;
-      const cls = level === 1 ? 'text-lg font-bold mt-3 mb-1' : level === 2 ? 'text-base font-bold mt-2.5 mb-1' : level === 3 ? 'text-sm font-semibold mt-2 mb-0.5' : 'text-sm font-semibold mt-1.5';
+      const cls = level === 1 ? 'text-lg font-semibold mt-3 mb-1' : level === 2 ? 'text-base font-semibold mt-2.5 mb-1' : level === 3 ? 'text-sm font-semibold mt-2 mb-0.5' : 'text-sm font-semibold mt-1.5';
       blocks.push(<div key={mk()} className={cls}>{richRefs ? richRefs(h[2]) : inline(h[2], mk())}</div>);
       i++;
       continue;
@@ -125,7 +125,7 @@ export function MarkdownMsg({ text, richRefs }: { text: string; richRefs?: (t: s
         i++;
       }
       blocks.push(
-        <ul key={mk()} className="list-disc pl-5 my-1 space-y-0.5">
+        <ul key={mk()} className="list-disc pl-5 my-2 space-y-1">
           {items.map((it, j) => <li key={j} className="text-sm">{richRefs ? richRefs(it) : inline(it, mk())}</li>)}
         </ul>
       );
@@ -140,7 +140,7 @@ export function MarkdownMsg({ text, richRefs }: { text: string; richRefs?: (t: s
         i++;
       }
       blocks.push(
-        <ol key={mk()} className="list-decimal pl-5 my-1 space-y-0.5">
+        <ol key={mk()} className="list-decimal pl-5 my-2 space-y-1">
           {items.map((it, j) => <li key={j} className="text-sm">{richRefs ? richRefs(it) : inline(it, mk())}</li>)}
         </ol>
       );
@@ -183,7 +183,7 @@ export function MarkdownMsg({ text, richRefs }: { text: string; richRefs?: (t: s
     }
     if (para.length) {
       blocks.push(
-        <p key={mk()} className="my-0.5 text-sm leading-relaxed">
+        <p key={mk()} className="my-2 text-sm">
           {richRefs ? richRefs(para.join(' ')) : inline(para.join(' '), mk())}
         </p>
       );
@@ -192,5 +192,5 @@ export function MarkdownMsg({ text, richRefs }: { text: string; richRefs?: (t: s
     }
   }
 
-  return <div className="space-y-0.5">{blocks}</div>;
+  return <div className="space-y-2">{blocks}</div>;
 }

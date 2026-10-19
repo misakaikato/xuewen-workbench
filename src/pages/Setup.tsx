@@ -60,11 +60,11 @@ export default function Setup() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto py-8 px-4">
+    <div className="max-w-3xl mx-auto py-8 px-4">
       <div className="flex items-center gap-3 mb-1">
         <img src="/logo-64.png" alt="Workbench" className="w-12 h-12 rounded-xl shrink-0 select-none" draggable={false} />
         <div>
-          <h1 className="text-2xl font-bold leading-tight">Workbench</h1>
+          <h1 className="text-lg font-semibold leading-tight">Workbench</h1>
           <p className="text-sm text-muted-foreground">资料库管理</p>
         </div>
       </div>
@@ -75,7 +75,7 @@ export default function Setup() {
 
       {/* 添加资料库 */}
       <section className="bg-card border border-border rounded-lg p-4 mb-6">
-        <h2 className="font-medium text-sm mb-3 flex items-center gap-1.5">
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
           <Plus className="w-4 h-4 text-primary" /> 添加资料库
         </h2>
         <label className="block text-sm font-medium mb-1">语料根目录</label>
@@ -132,7 +132,7 @@ export default function Setup() {
 
       {/* 已打开的资料库 */}
       <section className="bg-card border border-border rounded-lg p-4">
-        <h2 className="font-medium text-sm mb-3 flex items-center gap-1.5">
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
           <Database className="w-4 h-4 text-primary" /> 已打开的资料库（{libraries.length}）
         </h2>
         {libraries.length === 0 ? (
@@ -148,7 +148,7 @@ export default function Setup() {
                     <div className="text-sm flex items-center gap-2">
                       <span className="font-medium truncate">{l.name}</span>
                       {active && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary shrink-0">当前</span>
+                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-primary/10 text-primary shrink-0">当前</span>
                       )}
                     </div>
                     <div className="text-xs text-muted-foreground truncate" title={l.baseDir}>{l.baseDir}</div>
