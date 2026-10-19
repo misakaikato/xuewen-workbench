@@ -229,28 +229,24 @@ flowchart TB
 3. 导入：`POST /api/meta/import`（preview / apply），逐行校验、报错不影响其他行；预览后确认才写入；已有 sidecar 默认跳过，覆盖时只合并提供的字段、id 不变；id / created_at / content_hash 由程序生成。
 4. 保密：开发与测试只用 test-data；真实语料由主人自己处理，发给哪家 AI 由主人决定。
 
-### 4.3 `.derived/` 加工数据（JSONL）【v1 已实现：concepts + graph】
-位于语料目录下 `.derived/`，按类别分文件，一行一条记录：
+### 4.3 `.derived/` 加工数据【v1 已实现 concepts/topics/graph；ziyi/summaries 协议已定】
+
+**判据**：字段丢了能否从正文重算？不能 → 文档卡（`.meta.json`）；能 → 语料卡（`.derived/`）。
 
 ```
 .derived/
-├── concepts.jsonl     # 概念 / 主题 / 人物 / 书名 等“条目”
-├── ziyi.jsonl         # 讲课字义
-├── graph.jsonl        # 图谱关系（graphml 仅做导入/导出）
-└── summaries.jsonl    # 每篇摘要
+├── concepts.jsonl    # 概念 / 实体（type 区分）
+├── topics.jsonl      # 文档 → 主题 + 核心概念
+├── ziyi.jsonl        # 字义（某字在具体语境的讲法）
+├── summaries.jsonl   # 每篇摘要
+└── graph.graphml     # 图谱（行业标准，直接读，不转 JSONL）
 ```
 
-每条记录共有字段：
-
-| 字段 | 说明 |
-|---|---|
-| `status` | 机器生成 / 老师确认（老师确认或修改过的锁定，重跑不覆盖，只给“建议更新”） |
-| `anchor` | 文档 id + 标题路径 + 内容指纹，指回原文位置 |
-| `source_hash` | 生成时原文的哈希；原文变化后该记录标“待更新” |
-
-- 各类别的业务字段（名称、别名、出现位置、字义、关系类型等）参考 `research/derived-data-design-2026-10-17.md` 草案，**最终字段映射【待定】**：取决于主人在本机运行只读结构脚本（只输出字段名 / 类型 / 数量，不输出正文）的结果。
-- 注：设计草案中目录名写作 `.workbench/`；当前定为 `.derived/`，已在**代码仓库** `.gitignore` 中排除（不进代码 git）。
-- **v1 已实现**：`concepts.jsonl`（条目 + 别名 + 释义 + 出处）与 `graph.jsonl`（节点 + 边），字段协议见 `docs/derived-data-protocol.md`。概念名与别名进自动内链词条（target 为 `concept:<名称>`，点击开概念弹层）；`/api/concepts`、`/api/concept` 提供列表与详情。`summaries.jsonl` / `ziyi.jsonl` 与 `anchor` 的完整语义仍待定。
+- 全部 JSONL / GraphML，UTF-8 无 BOM，一行/一元素一条；系统**只读不写**。
+- 共用 `status: machine | confirmed`——AI 候选可重跑，确认过的升格进 `.meta.json` 并锁定。
+- 概念名与别名进自动内链词条（`concept:<名称>` 伪路径）；主题/核心概念显示在阅读页徽章与概览页。
+- 完整字段协议、关系模型、UI 落点与 AI 写作建议见 `docs/derived-data-protocol.md`。
+- 旧目录名 `.xuewen/` 首次读取时自动迁移；已在 `.gitignore` 排除。
 
 ### 4.4 SQLite 缓存【已定未做】
 - 本地 SQLite，存放切块、关键词索引、向量、自动链接词表、反向链接等派生数据。
