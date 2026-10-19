@@ -65,6 +65,7 @@ export default function AgentChat() {
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef(false);
+  const sendingConvRef = useRef<string | null>(null);
   const aiRef = useRef(-1);
 
   const refresh = useCallback(async () => {
@@ -88,6 +89,7 @@ export default function AgentChat() {
 
   useEffect(() => {
     if (!active) { setMsgs([]); setUsage(null); return; }
+    if (sendingConvRef.current === active) { sendingConvRef.current = null; return; }
     let dead = false;
     api.agentSession(active).then((s) => {
       if (dead || streamRef.current) return; // 新建会话的历史响应不能覆盖正在显示的流式消息
@@ -206,6 +208,7 @@ export default function AgentChat() {
     if (!convId) {
       const c = await api.agentNewSession();
       convId = c.id;
+      sendingConvRef.current = c.id;
       openConv(c.id);
       await refresh();
     }
