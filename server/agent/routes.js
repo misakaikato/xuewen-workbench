@@ -1,5 +1,8 @@
 // 智能助手路由：SSE 聊天流 + 会话 CRUD + 状态
 import { Router } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import AdmZip from 'adm-zip';
 
 export function mountAgent(hub, resolveLib) {
   const r = Router();
@@ -47,6 +50,58 @@ export function mountAgent(hub, resolveLib) {
       res.json({ ok: true });
     } else {
       res.status(404).json({ error: '确认请求不存在或已超时' });
+    }
+  });
+
+  // ---------- 对话文件夹 ----------
+  r.post('/folder', (req, res) => {
+    try {
+      res.json(hub.createFolder(req.body?.name));
+    } catch (e) {
+      res.status(400).json({ error: String(e.message || e) });
+    }
+  });
+
+  r.put('/folder/:id', (req, res) => {
+    try {
+      res.json(hub.renameFolder(req.params.id, req.body?.name));
+    } catch (e) {
+      res.status(400).json({ error: String(e.message || e) });
+    }
+  });
+
+  r.delete('/folder/:id', (req, res) => {
+    try {
+      res.json(hub.deleteFolder(req.params.id));
+    } catch (e) {
+      res.status(400).json({ error: String(e.message || e) });
+    }
+  });
+
+  r.put('/session/:id/folder', (req, res) => {
+    try {
+      res.json(hub.moveConversation(req.params.id, req.body?.folderId || null));
+    } catch (e) {
+      res.status(400).json({ error: String(e.message || e) });
+    }
+  });
+
+  // ---------- Agent 定义（AGENTS.md） ----------
+  r.get('/agents-md', (_req, res) => {
+    try {
+      const file = hub._ensureAgentsMd();
+      const raw = fs.readFileSync(file, 'utf8');
+      res.json({ content: raw, path: file });
+    } catch (e) {
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+
+  r.put('/agents-md', (req, res) => {
+    try {
+      res.json(hub.saveAgentsMd(req.body?.content));
+    } catch (e) {
+      res.status(500).json({ error: String(e.message || e) });
     }
   });
 
@@ -137,8 +192,6 @@ export function mountAgent(hub, resolveLib) {
     if (idx < 0 || idx >= hist.length) return res.status(404).json({ error: '消息不存在' });
     hist[idx].text = String(text || '');
     // 重写整个投影文件
-    const fs = require('node:fs');
-    const path = require('node:path');
     fs.writeFileSync(hub._convFile(id), hist.map((m) => JSON.stringify(m)).join('\n') + '\n');
     res.json({ ok: true });
   });
@@ -149,7 +202,6 @@ export function mountAgent(hub, resolveLib) {
     const hist = hub.history(id);
     if (idx < 0 || idx >= hist.length) return res.status(404).json({ error: '消息不存在' });
     hist.splice(idx, 1);
-    const fs = require('node:fs');
     fs.writeFileSync(hub._convFile(id), hist.map((m) => JSON.stringify(m)).join('\n') + '\n');
     res.json({ ok: true });
   });
@@ -157,13 +209,10 @@ export function mountAgent(hub, resolveLib) {
   // Skill 管理：支持 JSON 文本（name+content）和 zip 压缩包（base64 + fileName）
   r.post('/skill', async (req, res) => {
     const { name, content, zipBase64, fileName } = req.body || {};
-    const fs = require('node:fs');
-    const path = require('node:path');
 
     // 方式一：zip 压缩包（含完整文件夹结构）
     if (zipBase64) {
       try {
-        const AdmZip = require('adm-zip');
         const buf = Buffer.from(zipBase64, 'base64');
         const zip = new AdmZip(buf);
         const entries = zip.getEntries();
@@ -206,8 +255,6 @@ export function mountAgent(hub, resolveLib) {
   });
 
   r.delete('/skill/:name', (req, res) => {
-    const fs = require('node:fs');
-    const path = require('node:path');
     const dir = path.join(hub.agentDir, 'skills', req.params.name);
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -221,8 +268,6 @@ export function mountAgent(hub, resolveLib) {
   r.post('/mcp-server', (req, res) => {
     const { name, config } = req.body || {};
     if (!name || !config) return res.status(400).json({ error: '缺少 name 或 config' });
-    const fs = require('node:fs');
-    const path = require('node:path');
     const file = path.join(hub.agentDir, 'mcp.json');
     try {
       let cfg = {};
@@ -237,8 +282,6 @@ export function mountAgent(hub, resolveLib) {
   });
 
   r.delete('/mcp-server/:name', (req, res) => {
-    const fs = require('node:fs');
-    const path = require('node:path');
     const file = path.join(hub.agentDir, 'mcp.json');
     try {
       const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));

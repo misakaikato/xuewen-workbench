@@ -5,7 +5,7 @@ import { api } from '@/lib/api';
 import type { AgentStatus, AgentSettingsPatch } from '@/lib/api';
 import {
   X, RefreshCw, Brain, Plug, Wrench, BookOpen, Plus, Trash,
-  Cpu, Check,
+  Cpu, Check, FileText, Save,
 } from 'lucide-react';
 import { MemoryPanel } from './MemoryPanel';
 
@@ -16,6 +16,7 @@ const THINKING_LEVELS = [
 
 const TABS = [
   { id: 'model', label: '模型端点', icon: Cpu },
+  { id: 'agents', label: 'Agent 定义', icon: FileText },
   { id: 'memory', label: '记忆', icon: Brain },
   { id: 'skills', label: 'Skills', icon: BookOpen },
   { id: 'mcp', label: 'MCP', icon: Plug },
@@ -31,6 +32,9 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
   const [modelsLoading, setModelsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
+  const [agentsMd, setAgentsMd] = useState('');
+  const [agentsMdPath, setAgentsMdPath] = useState('');
+  const [agentsSaved, setAgentsSaved] = useState('');
 
   // 模型拉取：优先走服务端（无 CORS 问题），手动刷新
   const loadModels = useCallback(async (url?: string) => {
@@ -53,6 +57,10 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
   }, [status.endpoint.baseUrl]);
 
   useEffect(() => { loadModels(baseUrl); }, []); // 首次打开即拉
+  useEffect(() => {
+    if (tab !== 'agents') return;
+    api.agentsMdGet().then((r) => { setAgentsMd(r.content); setAgentsMdPath(r.path); }).catch(() => {});
+  }, [tab]);
 
   const save = async () => {
     setSaving(true); setMsg('');
@@ -142,6 +150,61 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
             <div className="mt-4">
               <h3 className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1"><Wrench className="w-3 h-3" />可用工具（{status.tools?.length || 0}）</h3>
               <div className="flex flex-wrap gap-1">{(status.tools || []).map((t) => <code key={t} className="px-1.5 py-0.5 rounded bg-muted text-[11px]">{t}</code>)}</div>
+            </div>
+          </>
+        )}
+
+        {/* ===== Agent 定义 Tab ===== */}
+        {tab === 'agents' && (
+          <>
+            <p className="text-xs text-muted-foreground mb-2">
+              这份文件定义 Agent 的身份、能力与回答风格。系统固定规则（工具透明、记忆规范）会自动追加在其后。
+            </p>
+            <p className="text-[11px] text-muted-foreground mb-2 font-mono truncate" title={agentsMdPath}>{agentsMdPath}</p>
+            <textarea
+              value={agentsMd}
+              onChange={(e) => setAgentsMd(e.target.value)}
+              rows={18}
+              spellCheck={false}
+              className="w-full px-3 py-2 rounded-lg border border-input bg-background text-xs font-mono leading-relaxed resize-none"
+            />
+            <div className="flex items-center gap-2 mt-2">
+              <button
+                className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs flex items-center gap-1 disabled:opacity-40"
+                onClick={async () => {
+                  try {
+                    await api.agentsMdSave(agentsMd);
+                    setAgentsSaved('已保存；新对话生效');
+                    setTimeout(() => setAgentsSaved(''), 3000);
+                  } catch (e) {
+                    setAgentsSaved('保存失败：' + (e as Error).message);
+                  }
+                }}
+              >
+                <Save className="w-3.5 h-3.5" />保存
+              </button>
+              <button
+                className="px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-accent"
+                onClick={async () => {
+                  if (!window.confirm('恢复为默认内容？当前修改会丢失')) return;
+                  const r = await api.agentsMdGet().catch(() => null);
+                  void r;
+                  await api.agentsMdSave(`# 身份
+
+你是「学问 Workbench」的内嵌助手，帮助用户在自己的资料库中检索、阅读、问答与管理。
+
+# 回答风格
+
+- 回答用中文，简洁分层，用 markdown 格式
+- 出处标注为 [文件名.ext]`);
+                  const fresh = await api.agentsMdGet();
+                  setAgentsMd(fresh.content);
+                  setAgentsSaved('已恢复默认');
+                }}
+              >
+                恢复默认
+              </button>
+              {agentsSaved && <span className="text-xs text-muted-foreground">{agentsSaved}</span>}
             </div>
           </>
         )}

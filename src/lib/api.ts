@@ -259,6 +259,16 @@ export const api = {
   memoryUpdate: (id: string, body: { scope: string; fact?: string; pinned?: boolean }) => req<{ ok: boolean }>('/api/agent/memory/' + encodeURIComponent(id), json('PUT', body)),
   memoryDelete: (id: string, scope: string) => req<{ ok: boolean; removed: number }>('/api/agent/memory/' + encodeURIComponent(id) + '?scope=' + encodeURIComponent(scope), json('DELETE', {})),
   memoryConsolidate: (scope: string) => req<{ ok: boolean; summaryChars: number; kept: number; dropped: number }>('/api/agent/memory/consolidate', json('POST', { scope })),
+
+  // ---- 对话文件夹 ----
+  folderCreate: (name: string) => req<AgentFolder>('/api/agent/folder', json('POST', { name })),
+  folderRename: (id: string, name: string) => req<AgentFolder>('/api/agent/folder/' + encodeURIComponent(id), json('PUT', { name })),
+  folderDelete: (id: string) => req<{ ok: boolean }>('/api/agent/folder/' + encodeURIComponent(id), json('DELETE', {})),
+  convMove: (convId: string, folderId: string | null) => req<{ ok: boolean }>(`/api/agent/session/${encodeURIComponent(convId)}/folder`, json('PUT', { folderId })),
+
+  // ---- Agent 定义 ----
+  agentsMdGet: () => req<{ content: string; path: string }>('/api/agent/agents-md'),
+  agentsMdSave: (content: string) => req<{ ok: boolean }>('/api/agent/agents-md', json('PUT', { content })),
 };
 
 export interface RagConfig {
@@ -310,6 +320,13 @@ export interface AgentSettingsPatch {
   mode?: 'auto' | 'confirm' | 'readonly';
 }
 
+export interface AgentFolder {
+  id: string;
+  name: string;
+  dsId: string;
+  order: number;
+}
+
 export interface AgentStatus {
   endpoint: { baseUrl: string; model: string; ready: boolean; enabled: boolean; thinkingLevel?: string };
   mode?: 'auto' | 'confirm' | 'readonly';
@@ -317,7 +334,8 @@ export interface AgentStatus {
   skills: string[];
   mcp?: { name: string; type: string; url?: string; enabled: boolean }[];
   tools?: string[];
-  conversations: { id: string; title: string; updatedAt: string; busy?: boolean }[];
+  conversations: { id: string; title: string; updatedAt: string; busy?: boolean; folderId?: string | null }[];
+  folders?: AgentFolder[];
 }
 
 export interface RagModelStatus {

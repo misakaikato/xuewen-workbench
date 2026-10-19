@@ -31,6 +31,7 @@ export class AgentHub {
     this.memory = new MemoryStore(dataDir);
     fs.mkdirSync(path.join(dataDir, 'memory'), { recursive: true });
     this._migrateLegacyAgentDir(dataDir);
+    this._ensureAgentsMd();
     this.getLib = getLib; // (dsId?) => Lib | null（当前库）
     this.ragManager = ragManager;
     this.getRagConfig = getRagConfig; // () => llm 配置 {enabled, baseUrl, model, apiKey}
@@ -41,6 +42,72 @@ export class AgentHub {
     this._ctxWindow = 0; // 端点模型的真实上下文窗口（0=未知，回退 128000）
     this._syncModelsJson();
     this._detectContextWindow().catch(() => {}); // 启动时探测一次，写正 models.json
+  }
+
+  /** 默认 AGENTS.md：身份 + 能力 + 回答风格（用户可编辑） */
+  static DEFAULT_AGENTS_MD = `---
+name: 学问助手
+description: 在用户自己的资料库中检索、阅读、问答与管理的助手
+---
+
+# 身份
+
+你是「学问 Workbench」的内嵌助手，帮助用户在自己的资料库中检索、阅读、问答与管理。
+
+# 能力
+
+- 检索资料库：语义检索与关键词检索并行，能定位到具体段落
+- 阅读文档：Markdown / 纯文本 / JSON / Word 的正文
+- 管理资料库：查看状态、重建索引、整理笔记
+- 记忆：跨对话保留用户的偏好与重要结论
+
+# 回答风格
+
+- 回答用中文，简洁分层，用 markdown 格式
+- 语料中没有依据时明确说明，不编造
+- 出处标注为 [文件名.ext]，便于点击跳转
+- 不向用户展示工具调用的细节
+
+---
+
+（以下是你的补充，可自由编辑；系统固定规则会自动追加在后面）
+`;
+
+  /** 确保 AGENTS.md 存在（首次写入默认内容） */
+  _ensureAgentsMd() {
+    const file = path.join(this.agentDir, 'AGENTS.md');
+    if (fs.existsSync(file)) return file;
+    try {
+      fs.mkdirSync(this.agentDir, { recursive: true });
+      fs.writeFileSync(file, AgentHub.DEFAULT_AGENTS_MD);
+    } catch (e) {
+      console.warn('[agent] 写入默认 AGENTS.md 失败:', e.message);
+    }
+    return file;
+  }
+
+  /** 读取 AGENTS.md（剥离 YAML frontmatter） */
+  _loadAgentsMd() {
+    const file = this._ensureAgentsMd();
+    try {
+      const raw = fs.readFileSync(file, 'utf8');
+      return raw.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
+    } catch {
+      return '';
+    }
+  }
+
+  /** 写入 AGENTS.md（保留/更新 frontmatter） */
+  saveAgentsMd(content) {
+    const file = this._ensureAgentsMd();
+    const body = String(content || '').trim();
+    const existing = (() => {
+      try { return fs.readFileSync(file, 'utf8'); } catch { return ''; }
+    })();
+    const fm = /^---\n([\s\S]*?)\n---/.exec(existing);
+    const head = fm ? `---\n${fm[1]}\n---\n\n` : '';
+    fs.writeFileSync(file, head + body + '\n');
+    return { ok: true };
   }
 
   /**
@@ -149,9 +216,12 @@ export class AgentHub {
   _meta() {
     try {
       const m = JSON.parse(fs.readFileSync(this._metaPath(), 'utf8'));
-      return { conversations: Array.isArray(m.conversations) ? m.conversations : [] };
+      return {
+        conversations: Array.isArray(m.conversations) ? m.conversations : [],
+        folders: Array.isArray(m.folders) ? m.folders : [],
+      };
     } catch {
-      return { conversations: [] };
+      return { conversations: [], folders: [] };
     }
   }
 
@@ -201,6 +271,63 @@ export class AgentHub {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(this._convFile(id), '');
     return conv;
+  }
+
+  // ---------- 对话文件夹 ----------
+
+  listFolders(dsId = null) {
+    const want = dsId ?? this.currentDsId();
+    return this._meta().folders
+      .filter((f) => !want || f.dsId === want)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name, 'zh-CN'));
+  }
+
+  createFolder(name, dsId = null) {
+    const label = String(name || '').trim();
+    if (!label) throw new Error('文件夹名不能为空');
+    if (/[\\/:*?"<>|]/.test(label)) throw new Error('文件夹名不能包含 / \\ : * ? " < > |');
+    const belong = dsId || this.currentDsId();
+    if (!belong) throw new Error('当前没有打开的资料库');
+    const m = this._meta();
+    if (m.folders.some((f) => f.dsId === belong && f.name === label)) throw new Error('同名文件夹已存在');
+    const folder = { id: crypto.randomBytes(5).toString('hex'), name: label, dsId: belong, order: m.folders.filter((f) => f.dsId === belong).length };
+    m.folders.push(folder);
+    this._saveMeta(m);
+    return folder;
+  }
+
+  renameFolder(id, name) {
+    const label = String(name || '').trim();
+    if (!label) throw new Error('文件夹名不能为空');
+    const m = this._meta();
+    const f = m.folders.find((x) => x.id === id);
+    if (!f) throw new Error('文件夹不存在');
+    f.name = label;
+    this._saveMeta(m);
+    return f;
+  }
+
+  deleteFolder(id) {
+    const m = this._meta();
+    m.folders = m.folders.filter((f) => f.id !== id);
+    // 该文件夹内的对话回到根目录（不删对话）
+    for (const c of m.conversations) if (c.folderId === id) c.folderId = null;
+    this._saveMeta(m);
+    return { ok: true };
+  }
+
+  /** 把对话移入文件夹（folderId=null 表示根目录） */
+  moveConversation(convId, folderId) {
+    const m = this._meta();
+    const c = m.conversations.find((x) => x.id === convId);
+    if (!c) throw new Error('对话不存在');
+    if (folderId && !m.folders.some((f) => f.id === folderId && f.dsId === c.dsId)) {
+      throw new Error('目标文件夹不存在或不属于同一资料库');
+    }
+    c.folderId = folderId || null;
+    c.updatedAt = nowIso();
+    this._saveMeta(m);
+    return c;
   }
 
   deleteConversation(id) {
@@ -579,8 +706,15 @@ export class AgentHub {
       cwd,
       agentDir: this.agentDir,
       systemPromptOverride: () => [
-        '你是「学问 Workbench」的内嵌助手，帮助用户在自己的资料库中检索、阅读、问答与管理。',
-        '',
+        // Agent 定义（AGENTS.md，用户可编辑）
+        ...(() => {
+          try {
+            const md = this._loadAgentsMd();
+            return md ? [md, ''] : [];
+          } catch {
+            return [];
+          }
+        })(),
         ...(() => {
           // 三层记忆注入：全局 + Agent + 库(summary+pinned)
           try {
@@ -615,7 +749,7 @@ export class AgentHub {
         '- 如果用户的任务匹配某个 skill（如分析文档、生成报告等），可以读取该 skill 的 SKILL.md 了解如何执行，然后按 skill 指引操作。',
         '- 用户可以直接在对话中发送 skill 的 zip 包路径，你收到后用 open_doc 打开查看内容。',
         '',
-        '## 回答风格',
+        '## 系统固定规则（优先级高于以上 AGENTS.md 中的同类表述）',
         '- 回答用中文，简洁分层，用 markdown 格式。',
         '- 语料中没有依据时明确说明，不编造。',
         '- 绝不在回答中出现「工具」「rag_search」「search_corpus」「read_doc」等系统术语。',
@@ -936,6 +1070,7 @@ ${m.text}
       tools: TOOL_NAMES,
       mode: this.mode,
       conversations: this.listConversations(),
+      folders: this.listFolders(),
     };
   }
 

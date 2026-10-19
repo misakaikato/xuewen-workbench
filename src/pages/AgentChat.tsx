@@ -13,11 +13,12 @@ import { AgentSettingsPanel } from '@/components/agent/AgentSettingsPanel';
 import {
   Plus, Trash2, Bot, Sparkles, Copy, Check, FileText, Zap,
   GitBranch, Download, Search, X, MessageSquareQuote, Brain, Gauge, ListChecks,
-  PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash, RotateCcw, ChevronDown, ShieldCheck, ShieldAlert, Eye, AlertCircle,
+  PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash, RotateCcw, ChevronDown, ShieldCheck, ShieldAlert, Eye, ChevronRight,
+  FolderPlus, Folder, FolderOpen, MoreHorizontal, AlertCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-interface Conv { id: string; title: string; updatedAt: string; busy?: boolean }
+interface Conv { id: string; title: string; updatedAt: string; busy?: boolean; folderId?: string | null }
 interface Msg extends AgentMessage { streaming?: boolean; error?: boolean; editing?: boolean }
 
 const encPath = (p: string) => p.split('/').map(encodeURIComponent).join('/');
@@ -62,6 +63,7 @@ export default function AgentChat() {
     const n = Number(localStorage.getItem('wb.agent.sidebar.w'));
     return Number.isFinite(n) && n >= 200 && n <= 480 ? n : 240;
   });
+  const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef(false);
@@ -267,6 +269,36 @@ export default function AgentChat() {
     });
   };
 
+  const renderConvRow = (c: Conv, indent: number) => (
+    <div
+      key={c.id}
+      className={`group flex items-center gap-1.5 pr-2 py-2 rounded-lg cursor-pointer text-sm transition-colors ${active === c.id ? 'bg-sidebar-accent text-primary font-medium' : 'hover:bg-sidebar-accent'}`}
+      style={{ paddingLeft: 8 + indent * 14 }}
+      onClick={() => open(c.id)}
+    >
+      <div className="truncate flex-1">{c.title || '新对话'}</div>
+      <button
+        className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-background shrink-0"
+        title="移动到文件夹"
+        onClick={(e) => {
+          e.stopPropagation();
+          const folders = status?.folders || [];
+          if (!folders.length) { alert('还没有文件夹，先新建一个'); return; }
+          const pick = window.prompt(`输入序号移动到文件夹：\n0. （根目录）\n${folders.map((f, i) => `${i + 1}. ${f.name}`).join('\n')}`);
+          if (pick === null) return;
+          const idx = Number(pick);
+          const target = idx === 0 ? null : folders[idx - 1]?.id;
+          if (idx === 0 || target) api.convMove(c.id, target || null).then(refresh).catch(() => {});
+        }}
+      >
+        <MoreHorizontal className="w-3 h-3" />
+      </button>
+      <button className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-background shrink-0" onClick={(e) => { e.stopPropagation(); del(c.id); }}>
+        <Trash2 className="w-3 h-3" />
+      </button>
+    </div>
+  );
+
   const ep = status?.endpoint;
   const searchHits = searchQ ? msgs.filter((m) => m.text?.toLowerCase().includes(searchQ.toLowerCase())).length : 0;
 
@@ -280,17 +312,39 @@ export default function AgentChat() {
               <Button className="flex-1 text-xs rounded-lg font-medium" onClick={newConv}>
                 <Plus className="w-4 h-4" />新对话
               </Button>
-
+              <Button variant="outline" size="icon" className="h-8 w-8 rounded-lg shrink-0" title="新建文件夹" onClick={async () => {
+                const name = window.prompt('新文件夹名称');
+                if (name) await api.folderCreate(name).then(refresh).catch((e) => alert((e as Error).message));
+              }}>
+                <FolderPlus className="w-4 h-4" />
+              </Button>
             </div>
             <div className="flex-1 overflow-auto p-2 space-y-0.5">
-              {conversations.map((c) => (
-                <div key={c.id} className={`group flex items-center gap-1.5 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${active === c.id ? 'bg-sidebar-accent text-primary font-medium' : 'hover:bg-sidebar-accent'}`} onClick={() => open(c.id)}>
-                  <div className="truncate flex-1">{c.title || '新对话'}</div>
-                  <button className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-background shrink-0" onClick={(e) => { e.stopPropagation(); del(c.id); }}>
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
+              {(status?.folders || []).map((f) => {
+                const inFolder = conversations.filter((c) => c.folderId === f.id);
+                const isOpen = openFolders.has(f.id);
+                return (
+                  <div key={f.id}>
+                    <div className="group flex items-center gap-1 px-2 py-1.5 rounded-lg cursor-pointer text-xs text-muted-foreground hover:bg-sidebar-accent" onClick={() => setOpenFolders((st) => { const n = new Set(st); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; })}>
+                      {isOpen ? <ChevronDown className="w-3 h-3 shrink-0" /> : <ChevronRight className="w-3 h-3 shrink-0" />}
+                      {isOpen ? <FolderOpen className="w-3.5 h-3.5 shrink-0" /> : <Folder className="w-3.5 h-3.5 shrink-0" />}
+                      <span className="truncate flex-1">{f.name}</span>
+                      <span className="tabular-nums opacity-60">{inFolder.length}</span>
+                      <button className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-background shrink-0" title="重命名" onClick={(e) => {
+                        e.stopPropagation();
+                        const name = window.prompt('重命名文件夹', f.name);
+                        if (name) api.folderRename(f.id, name).then(refresh).catch(() => {});
+                      }}><Pencil className="w-2.5 h-2.5" /></button>
+                      <button className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-background shrink-0" title="删除文件夹" onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm(`删除文件夹「${f.name}」？里面的对话会回到根目录`)) api.folderDelete(f.id).then(refresh).catch(() => {});
+                      }}><Trash className="w-2.5 h-2.5" /></button>
+                    </div>
+                    {isOpen && inFolder.map((c) => renderConvRow(c, 1))}
+                  </div>
+                );
+              })}
+              {conversations.filter((c) => !c.folderId).map((c) => renderConvRow(c, 0))}
               {!conversations.length && <div className="text-xs text-muted-foreground p-3 text-center">还没有对话</div>}
             </div>
             <div className="p-3 border-t border-sidebar-border text-[11px] text-muted-foreground space-y-0.5">
