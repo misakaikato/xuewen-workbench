@@ -342,13 +342,6 @@ export default function RagManage() {
         )}
       </section>
 
-      {/* AI 模型端点已迁移到 Agent 设置（智能助手页 ⚙ 按钮） */}
-      <div className="text-xs text-muted-foreground border border-dashed border-border rounded-lg p-3 flex items-center gap-2">
-        AI 模型与端点配置已迁移到
-        <Link to="/agent" className="text-primary underline">智能助手 → ⚙ 设置</Link>
-        <span>（唯一的 AI 配置入口）</span>
-      </div>
-
     </div>
   );
 }

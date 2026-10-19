@@ -67,6 +67,68 @@ export function mountAgent(hub, resolveLib) {
     res.json({ ok: true });
   });
 
+  // Skill 管理
+  r.post('/skill', async (req, res) => {
+    const { name, content } = req.body || {};
+    if (!name || !content) return res.status(400).json({ error: '缺少 name 或 content' });
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const safe = name.replace(/[^\w\u4e00-\u9fff-]/g, '_');
+    const dir = path.join(hub.agentDir, 'skills', safe);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'SKILL.md'), content);
+      res.json({ ok: true, path: `skills/${safe}/SKILL.md` });
+    } catch (e) {
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+
+  r.delete('/skill/:name', (req, res) => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const dir = path.join(hub.agentDir, 'skills', req.params.name);
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+
+  // MCP 服务器管理（读写 mcp.json）
+  r.post('/mcp-server', (req, res) => {
+    const { name, config } = req.body || {};
+    if (!name || !config) return res.status(400).json({ error: '缺少 name 或 config' });
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const file = path.join(hub.agentDir, 'mcp.json');
+    try {
+      let cfg = {};
+      try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* */ }
+      if (!cfg.mcpServers) cfg.mcpServers = {};
+      cfg.mcpServers[name] = config;
+      fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+
+  r.delete('/mcp-server/:name', (req, res) => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const file = path.join(hub.agentDir, 'mcp.json');
+    try {
+      const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+      delete (cfg.mcpServers || {})[req.params.name];
+      fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+
   r.get('/models', async (_req, res) => {
     res.json(await hub.listModels());
   });

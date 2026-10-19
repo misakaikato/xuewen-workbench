@@ -41,7 +41,7 @@ const TEMPLATES = [
 export default function AgentChat() {
   const { dsId } = useApp();
   const navigate = useNavigate();
-  const [convs, setConvs] = useState<Conv[]>([]);
+  
   const [active, setActive] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
@@ -61,8 +61,22 @@ export default function AgentChat() {
   const dragRef = useRef(false);
 
   const refresh = useCallback(async () => {
-    try { const st = await api.agentStatus(); setStatus(st); setConvs(st.conversations || []); } catch { /* */ }
+    try { const st = await api.agentStatus(); setStatus(st); setConversations(st.conversations || []); } catch { /* */ }
   }, []);
+  const [conversations, setConversations] = useState<Conv[]>([]);
+  const prevBusyRef = useRef<Map<string, boolean>>(new Map());
+  const [toast, setToast] = useState<string | null>(null);
+  const checkBgDone = useCallback((convs: Conv[]) => {
+    for (const c of convs) {
+      const was = prevBusyRef.current.get(c.id) || false;
+      if (was && !c.busy && c.id !== active) {
+        setToast(`「${c.title || '对话'}」已完成生成`);
+        setTimeout(() => setToast(null), 5000);
+      }
+      prevBusyRef.current.set(c.id, !!c.busy);
+    }
+  }, [active]);
+  useEffect(() => { checkBgDone(conversations); }, [conversations, checkBgDone]);
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [refresh, dsId]);
 
   useEffect(() => {
@@ -86,7 +100,7 @@ export default function AgentChat() {
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, []);
 
-  const open = (id: string) => { if (!streamRef.current) setActive(id); };
+  const open = (id: string) => { setActive(id); };
   const newConv = async () => { const c = await api.agentNewSession(); await refresh(); setActive(c.id); setInput(''); };
   const del = async (id: string) => { if (!window.confirm('删除这个对话？')) return; await api.agentDeleteSession(id); if (active === id) setActive(null); refresh(); };
   const fork = async (msgIndex: number) => { const c = await api.agentFork(active!, msgIndex); await refresh(); setActive(c.id); };
@@ -209,12 +223,10 @@ export default function AgentChat() {
               <button className="flex-1 flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:opacity-90 font-medium" onClick={newConv}>
                 <Plus className="w-4 h-4" />新对话
               </button>
-              <button className="p-1.5 rounded-lg hover:bg-sidebar-accent text-muted-foreground" onClick={() => setSidebarOpen(false)} title="折叠侧栏">
-                <PanelLeftClose className="w-4 h-4" />
-              </button>
+
             </div>
             <div className="flex-1 overflow-auto p-2 space-y-0.5">
-              {convs.map((c) => (
+              {conversations.map((c) => (
                 <div key={c.id} className={`group flex items-center gap-1.5 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${active === c.id ? 'bg-sidebar-accent text-primary font-medium' : 'hover:bg-sidebar-accent'}`} onClick={() => open(c.id)}>
                   <div className="truncate flex-1">{c.title || '新对话'}</div>
                   <button className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-background shrink-0" onClick={(e) => { e.stopPropagation(); del(c.id); }}>
@@ -222,7 +234,7 @@ export default function AgentChat() {
                   </button>
                 </div>
               ))}
-              {!convs.length && <div className="text-xs text-muted-foreground p-3 text-center">还没有对话</div>}
+              {!conversations.length && <div className="text-xs text-muted-foreground p-3 text-center">还没有对话</div>}
             </div>
             <div className="p-3 border-t border-sidebar-border text-[11px] text-muted-foreground space-y-0.5">
               {(status?.skills || []).length > 0 && <div><span className="text-primary font-medium">{status!.skills.length}</span> skills</div>}
@@ -233,16 +245,15 @@ export default function AgentChat() {
           {/* 拖拽条 */}
           <div className="w-1 cursor-col-resize hover:bg-primary/30 transition-colors shrink-0" onMouseDown={() => { dragRef.current = true; document.body.style.cursor = 'col-resize'; }} />
         </>
-      ) : (
-        <button className="shrink-0 w-8 flex items-center justify-center border-r border-border hover:bg-accent text-muted-foreground transition-colors" onClick={() => setSidebarOpen(true)} title="展开对话列表">
-          <PanelLeftOpen className="w-4 h-4" />
-        </button>
-      )}
+      ) : null}
 
       {/* 主区域 */}
       <div className="flex-1 min-w-0 flex flex-col">
         {/* 顶栏 */}
         <div className="shrink-0 px-4 py-2.5 border-b border-border flex items-center gap-2.5 flex-wrap bg-card">
+          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground shrink-0" onClick={() => setSidebarOpen((v) => !v)} title={sidebarOpen ? '折叠对话列表' : '展开对话列表'}>
+            {sidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
+          </button>
           <div className="flex items-center gap-1.5">
             <Sparkles className="w-4 h-4 text-primary" />
             <span className="text-sm font-semibold">智能助手</span>
@@ -370,6 +381,19 @@ export default function AgentChat() {
           </div>
         </div>
       </div>
+
+      {/* 后台完成 toast */}
+      {toast && (
+        <div className="fixed bottom-24 right-4 z-50 bg-card border border-primary/30 rounded-xl shadow-lg px-4 py-2.5 text-sm flex items-center gap-2">
+          <Check className="w-4 h-4 text-green-600" />
+          {toast}
+          <button className="ml-2 text-xs text-primary underline" onClick={() => {
+            const c = conversations.find((x) => toast.includes(x.title || ''));
+            if (c) setActive(c.id);
+            setToast(null);
+          }}>查看</button>
+        </div>
+      )}
 
       {/* 设置面板 */}
       {settingsOpen && status && (
