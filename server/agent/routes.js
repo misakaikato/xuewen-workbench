@@ -37,6 +37,19 @@ export function mountAgent(hub, resolveLib) {
     res.send(md);
   });
 
+  // confirm 模式：客户端确认/拒绝工具执行
+  r.post('/confirm', (req, res) => {
+    const { id, approved } = req.body || {};
+    const cb = hub._confirmCb.get(String(id || ''));
+    if (cb) {
+      hub._confirmCb.delete(String(id || ''));
+      cb(!!approved);
+      res.json({ ok: true });
+    } else {
+      res.status(404).json({ error: '确认请求不存在或已超时' });
+    }
+  });
+
   r.put('/settings', (req, res) => {
     res.json(hub.updateSettings(req.body || {}));
   });

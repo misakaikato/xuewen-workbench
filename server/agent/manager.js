@@ -8,6 +8,9 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { Type } from '@sinclair/typebox';
 
 const CONV_META = 'conversations.json';
+// 运行模式：auto=全自动 / confirm=破坏性工具需确认 / readonly=仅检索阅读
+const READONLY_TOOLS = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status'];
+const DESTRUCTIVE_TOOLS = ['save_note', 'word_to_markdown', 'rag_manage', 'open_doc'];
 const TOOL_NAMES = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc'];
 
 function nowIso() {
@@ -26,7 +29,9 @@ export class AgentHub {
     this.getLib = getLib; // (dsId?) => Lib | null（当前库）
     this.ragManager = ragManager;
     this.getRagConfig = getRagConfig; // () => llm 配置 {enabled, baseUrl, model, apiKey}
-    this.live = new Map(); // convId → { session, sse:Set, busy, seq }
+    this.live = new Map(); // convId
+    this.mode = 'auto'; // auto | confirm | readonly
+    this._confirmCb = new Map(); // confirmId → (ok) => void → { session, sse:Set, busy, seq }
     this._modelRuntime = null;
     this._syncModelsJson();
   }
@@ -287,6 +292,9 @@ export class AgentHub {
             hub.ragManager.pause(l.id);
             return { content: [{ type: 'text', text: '已请求暂停' }] };
           }
+          if (params.action === 'rebuild' && !(await hub._confirm(convId, 'rag_manage', params))) {
+            return { content: [{ type: 'text', text: '用户取消了重建操作' }] };
+          }
           hub.ragManager.build(l.id, { rebuild: params.action === 'rebuild' }).catch(() => {});
           return { content: [{ type: 'text', text: params.action === 'rebuild' ? '已开始全量重建（后台）' : '已开始增量构建（后台）' }] };
         },
@@ -315,6 +323,9 @@ export class AgentHub {
         description: '将一个 Word 文档（.docx）另存为同目录下的 Markdown 副本（不改原件）。',
         parameters: Type.Object({ path: Type.String({ description: 'Word 文件相对路径' }) }),
         execute: async (_id, params) => {
+          if (!(await hub._confirm(convId, 'word_to_markdown', params))) {
+            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
+          }
           const l = lib();
           if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
           try {
@@ -339,6 +350,9 @@ export class AgentHub {
           content: Type.String({ description: 'Markdown 内容' }),
         }),
         execute: async (_id, params) => {
+          if (!(await hub._confirm(convId, 'save_note', params))) {
+            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
+          }
           const l = lib();
           if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
           try {
@@ -601,6 +615,24 @@ ${m.text}
     }
   }
 
+  /** confirm 模式下：发确认请求到前端，等待 approve/deny（30s 超时自动 deny） */
+  _confirm(convId, toolName, args) {
+    if (this.mode !== 'confirm') return Promise.resolve(true);
+    if (!DESTRUCTIVE_TOOLS.includes(toolName)) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const id = 'cf_' + Date.now().toString(36);
+      const timer = setTimeout(() => { this._confirmCb.delete(id); resolve(false); }, 30000);
+      this._confirmCb.set(id, (ok) => { clearTimeout(timer); resolve(ok); });
+      // 推确认事件到该会话的全部 SSE
+      const entry = this.live.get(convId);
+      if (entry) {
+        for (const res of entry.sse) {
+          try { res.write(`data: ${JSON.stringify({ t: 'confirm', id, tool: toolName, args })}\n\n`); } catch { /* */ }
+        }
+      }
+    });
+  }
+
   async abort(convId) {
     const entry = this.live.get(convId);
     if (!entry) return { ok: false, error: '会话不在内存' };
@@ -624,6 +656,7 @@ ${m.text}
       skills: this._listSkills(),
       mcp: this._mcpStatus(),
       tools: TOOL_NAMES,
+      mode: this.mode,
       conversations: this.listConversations(),
     };
   }
@@ -636,9 +669,27 @@ ${m.text}
       if (k in patch) next[k] = patch[k];
     }
     if (!['off', 'low', 'medium', 'high'].includes(next.thinkingLevel)) next.thinkingLevel = 'off';
-    Object.assign(c, next); // ragManager.llm 是引用，直接改
+    Object.assign(c, next);
+    // 模式切换：更新活跃会话的工具集
+    if (patch.mode && ['auto', 'confirm', 'readonly'].includes(patch.mode)) {
+      this.mode = patch.mode;
+      this._applyModeToSessions();
+    }
+    // 思考强度切换：直接改活跃会话
+    if (patch.thinkingLevel) {
+      for (const [, entry] of this.live) {
+        try { entry.session.setThinkingLevel(patch.thinkingLevel); } catch { /* */ }
+      }
+    }
     this._syncModelsJson();
     return this.status();
+  }
+
+  _applyModeToSessions() {
+    const tools = this.mode === 'readonly' ? READONLY_TOOLS : TOOL_NAMES;
+    for (const [, entry] of this.live) {
+      try { entry.session.setActiveToolsByName(tools); } catch { /* */ }
+    }
   }
 
   _mcpStatus() {

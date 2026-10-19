@@ -251,6 +251,7 @@ export const api = {
   agentSettings: (patch: Partial<AgentSettingsPatch>) => req<AgentStatus>('/api/agent/settings', json('PUT', patch)),
   agentEditMessage: (id: string, idx: number, text: string) => req<{ ok: boolean }>(`/api/agent/session/${encodeURIComponent(id)}/message/${idx}`, json('PUT', { text })),
   agentDeleteMessage: (id: string, idx: number) => req<{ ok: boolean }>(`/api/agent/session/${encodeURIComponent(id)}/message/${idx}`, json('DELETE', {})),
+  agentConfirm: (confirmId: string, approved: boolean) => req<{ ok: boolean }>('/api/agent/confirm', json('POST', { id: confirmId, approved })),
 };
 
 export interface RagConfig {
@@ -274,10 +275,12 @@ export interface AgentSettingsPatch {
   apiKey?: string;
   thinkingLevel?: 'off' | 'low' | 'medium' | 'high';
   enabled?: boolean;
+  mode?: 'auto' | 'confirm' | 'readonly';
 }
 
 export interface AgentStatus {
   endpoint: { baseUrl: string; model: string; ready: boolean; enabled: boolean; thinkingLevel?: string };
+  mode?: 'auto' | 'confirm' | 'readonly';
   agentDir: string;
   skills: string[];
   mcp?: { name: string; type: string; url?: string; enabled: boolean }[];

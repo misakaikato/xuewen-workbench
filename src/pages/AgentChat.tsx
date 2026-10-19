@@ -12,7 +12,7 @@ import { AgentSettingsPanel } from '@/components/agent/AgentSettingsPanel';
 import {
   Plus, Trash2, Bot, Sparkles, Copy, Check, FileText, Zap,
   GitBranch, Download, Search, X, MessageSquareQuote, Brain, Gauge, ListChecks,
-  PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash, RotateCcw,
+  PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash, RotateCcw, ChevronDown, ShieldCheck, ShieldAlert, Eye,
 } from 'lucide-react';
 
 interface Conv { id: string; title: string; updatedAt: string; busy?: boolean }
@@ -52,6 +52,9 @@ export default function AgentChat() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQ, setSearchQ] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelList, setModelList] = useState<string[]>([]);
+  const [confirmReq, setConfirmReq] = useState<{ id: string; tool: string; args: unknown } | null>(null);
+  const [modelOpen, setModelOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarW, setSidebarW] = useState(240);
   const abortRef = useRef<AbortController | null>(null);
@@ -179,6 +182,7 @@ export default function AgentChat() {
           else if (d.t === 'tool_start') patch((msg) => ({ ...msg, tools: [...(msg.tools || []), { name: d.name as string, args: d.args, durationMs: 0 }] }));
           else if (d.t === 'tool_end') patch((msg) => ({ ...msg, tools: (msg.tools || []).map((t) => ((t as ToolItem).name === d.name && !(t as ToolItem).summary ? { ...t, summary: d.summary as string, isError: d.isError as boolean, durationMs: d.durationMs as number } : t)) }));
           else if (d.t === 'open_doc') navigate('/read/' + encPath(d.path as string) + ((d.term as string) ? '?h=' + encodeURIComponent(d.term as string) : ''));
+          else if (d.t === 'confirm') { setConfirmReq({ id: d.id as string, tool: d.tool as string, args: d.args }); }
           else if (d.t === 'error') patch((msg) => ({ ...msg, text: msg.text + `\n\n**错误**：${d.message}`, error: true }));
         }
       }
@@ -258,14 +262,6 @@ export default function AgentChat() {
             <Sparkles className="w-4 h-4 text-primary" />
             <span className="text-sm font-semibold">智能助手</span>
           </div>
-          <span className={`text-xs px-2 py-0.5 rounded-full font-mono ${ep?.ready ? 'bg-primary/10 text-primary' : 'bg-amber-500/10 text-amber-600'}`}>
-            {ep?.model || '未配置'}
-          </span>
-          {ep?.thinkingLevel && ep.thinkingLevel !== 'off' && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-500/10 text-violet-600 flex items-center gap-0.5">
-              <Brain className="w-2.5 h-2.5" />{ep.thinkingLevel}
-            </span>
-          )}
           {!ep?.ready && <Link to="/rag" className="text-xs text-amber-600 underline">去配置</Link>}
           <span className="flex-1" />
           {active && (
@@ -376,10 +372,85 @@ export default function AgentChat() {
           <div className="max-w-3xl mx-auto px-4 pt-2">
             {usage && <ContextBar usage={usage} contextWindow={CTX_WINDOW} />}
           </div>
-          <div className="max-w-3xl mx-auto p-3">
+          <div className="max-w-3xl mx-auto px-3 pb-2">
             <ChatInput value={input} onChange={setInput} onSend={send} onStop={stop} busy={busy} disabled={!active || !ep?.ready} placeholder={active ? '提问 · / 命令 · @ 文件 · Enter 发送' : '先新建对话'} onCommand={doCommand} />
           </div>
+          {/* 模型/思考/模式选择器 */}
+          <div className="max-w-3xl mx-auto px-4 pb-2.5 flex items-center gap-2 text-xs flex-wrap">
+            {/* 模型选择 */}
+            <div className="relative">
+              <button className="flex items-center gap-1 px-2 py-1 rounded-lg border border-border hover:border-primary/40 text-muted-foreground font-mono" onClick={async () => {
+                if (!modelList.length) {
+                  const r = await api.agentModels().catch(() => ({ models: [] }));
+                  setModelList(r.models || []);
+                }
+                setModelOpen((v) => !v);
+              }}>
+                {ep?.model || '选择模型'} <ChevronDown className="w-3 h-3" />
+              </button>
+              {modelOpen && (
+                <div className="absolute bottom-full left-0 mb-1 bg-card border rounded-lg shadow-lg p-1 z-30 min-w-44 max-h-56 overflow-auto">
+                  {modelList.map((m) => (
+                    <button key={m} className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-mono ${m === ep?.model ? 'bg-accent text-primary' : 'hover:bg-accent'}`}
+                      onClick={async () => { await api.agentSettings({ model: m }); setModelOpen(false); refresh(); }}>
+                      {m}
+                    </button>
+                  ))}
+                  {!modelList.length && <div className="px-2.5 py-2 text-xs text-muted-foreground">未拉到列表</div>}
+                </div>
+              )}
+            </div>
+            {/* 思考强度 */}
+            <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+              {(['off', 'low', 'medium', 'high'] as const).map((lv) => (
+                <button key={lv}
+                  className={`px-1.5 py-0.5 rounded text-[11px] ${ep?.thinkingLevel === lv ? 'bg-violet-500/15 text-violet-600 font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+                  onClick={async () => { await api.agentSettings({ thinkingLevel: lv }); refresh(); }}>
+                  {lv === 'off' ? '思考关' : lv === 'low' ? '低' : lv === 'medium' ? '中' : '高'}
+                </button>
+              ))}
+            </div>
+            {/* 运行模式 */}
+            <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+              {([
+                { v: 'auto', icon: ShieldCheck, label: '自动' },
+                { v: 'confirm', icon: ShieldAlert, label: '确认' },
+                { v: 'readonly', icon: Eye, label: '只读' },
+              ] as const).map(({ v, icon: Icon, label }) => (
+                <button key={v}
+                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] ${(status?.mode || 'auto') === v ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+                  onClick={async () => { await api.agentSettings({ mode: v }); refresh(); }}>
+                  <Icon className="w-3 h-3" />{label}
+                </button>
+              ))}
+            </div>
+            {/* 模式说明 */}
+            <span className="text-[10px] text-muted-foreground ml-auto hidden sm:inline">
+              {status?.mode === 'readonly' ? '仅检索阅读，不可修改' : status?.mode === 'confirm' ? '写入操作需确认' : '全自动执行'}
+            </span>
+          </div>
         </div>
+
+        {/* 确认对话框 */}
+        {confirmReq && (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+            <div className="bg-card border border-amber-400/50 rounded-2xl shadow-2xl p-5 w-96 max-w-[90vw]">
+              <h3 className="text-sm font-semibold flex items-center gap-2 mb-2">
+                <ShieldAlert className="w-4 h-4 text-amber-500" />
+                确认执行：{confirmReq.tool}
+              </h3>
+              <pre className="text-xs bg-muted rounded-lg p-2.5 max-h-40 overflow-auto mb-3">{JSON.stringify(confirmReq.args, null, 2)}</pre>
+              <div className="flex gap-2 justify-end">
+                <button className="px-3 py-1.5 rounded-lg border text-sm hover:bg-accent" onClick={async () => { await api.agentConfirm(confirmReq.id, false); setConfirmReq(null); }}>
+                  取消
+                </button>
+                <button className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm" onClick={async () => { await api.agentConfirm(confirmReq.id, true); setConfirmReq(null); }}>
+                  确认执行
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 后台完成 toast */}
