@@ -647,7 +647,7 @@ async function main() {
     // 管理页与检索页智能 tab（UI 冒烟）
     await win.loadURL(BASE + '/rag');
     await sleep(800);
-    check('RAG 管理页渲染（四区）', await exec(`!!document.querySelector('input[placeholder^="手动导入模型目录路径"]') && !!document.body.textContent.includes('检索测试台') && !!document.body.textContent.includes('语义索引') && !!document.body.textContent.includes('生成端点')`));
+    check('RAG 管理页渲染（四区）', await exec(`!!document.querySelector('input[placeholder^="手动导入模型目录路径"]') && !!document.body.textContent.includes('检索测试台') && !!document.body.textContent.includes('语义索引') && !!document.body.textContent.includes('切块与检索参数')`));
     check('管理页显示索引就绪统计', await exec(`document.body.textContent.includes('就绪') && document.body.textContent.includes('块')`));
     await win.loadURL(BASE + '/search?mode=smart&q=' + encodeURIComponent('基本概念'));
     await sleep(1500);

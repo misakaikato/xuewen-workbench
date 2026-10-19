@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { RagStatus, RagLlmConfig, RagConfig } from '@/lib/api';
+import type { RagStatus, RagConfig } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { extIcon } from '@/lib/extIcon';
-import { Download, FolderInput, Play, Pause, RotateCcw, RefreshCw, Cpu, Zap, FlaskConical, CheckCircle2, AlertTriangle, SlidersHorizontal } from 'lucide-react';
+import { Download, FolderInput, Play, Pause, RotateCcw, Cpu, Zap, FlaskConical, CheckCircle2, AlertTriangle, SlidersHorizontal } from 'lucide-react';
 
 const fmtBytes = (n: number) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : String(n));
 
@@ -46,8 +46,6 @@ export default function RagManage() {
   const [importDir, setImportDir] = useState('');
   const [q, setQ] = useState('');
   const [smart, setSmart] = useState<Awaited<ReturnType<typeof api.ragSearch>> | null>(null);
-  const [llm, setLlm] = useState<RagLlmConfig | null>(null);
-  const [llmTest, setLlmTest] = useState<string | null>(null);
   const [cfg, setCfg] = useState<RagConfig | null>(null);
   const [cfgSaved, setCfgSaved] = useState<string | null>(null);
 
@@ -69,7 +67,6 @@ export default function RagManage() {
   }, [poll, dsId]);
 
   useEffect(() => {
-    api.ragLlmGet().then(setLlm).catch(() => {});
     api.ragConfigGet().then((r) => setCfg(r.config)).catch(() => {});
   }, [dsId]);
 
@@ -345,44 +342,13 @@ export default function RagManage() {
         )}
       </section>
 
-      {/* 生成端点（v2 预留配置） */}
-      <section className="bg-card border border-border rounded-lg p-4">
-        <h2 className="text-sm font-semibold mb-3">本地问答（生成端点 · v2 预留）</h2>
-        <div className="grid sm:grid-cols-2 gap-3 text-xs mb-3">
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={!!llm?.enabled} onChange={(e) => setLlm((p) => p ? { ...p, enabled: e.target.checked } : p)} />
-            启用生成回答（基于检索段落，带引用）
-          </label>
-          <div className="flex items-center gap-1">
-            <span className="text-muted-foreground shrink-0">baseURL</span>
-            <input value={llm?.baseUrl || ''} onChange={(e) => setLlm((p) => p ? { ...p, baseUrl: e.target.value } : p)} placeholder="http://localhost:11434/v1" className="px-2 py-1 rounded border border-input bg-card w-full" />
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="text-muted-foreground shrink-0">model</span>
-            <input value={llm?.model || ''} onChange={(e) => setLlm((p) => p ? { ...p, model: e.target.value } : p)} placeholder="如 qwen2.5:7b" className="px-2 py-1 rounded border border-input bg-card w-full" />
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="text-muted-foreground shrink-0">apiKey</span>
-            <input value={llm?.apiKey || ''} onChange={(e) => setLlm((p) => p ? { ...p, apiKey: e.target.value } : p)} placeholder="（本地服务通常留空）" className="px-2 py-1 rounded border border-input bg-card w-full" />
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent disabled:opacity-40"
-            disabled={!llm}
-            onClick={async () => {
-              await api.ragLlmSave(llm!);
-              setLlmTest('测试中…');
-              const r = await api.ragLlmTest();
-              setLlmTest(r.ok ? '连通 OK' + (r.models?.length ? '：' + r.models.slice(0, 5).join('、') : '') : '失败：' + r.error);
-            }}
-          >保存并测试连通</button>
-          <button className="text-xs px-3 py-1.5 rounded border border-border hover:bg-accent flex items-center gap-1" onClick={poll}>
-            <RefreshCw className="w-3.5 h-3.5" />刷新状态
-          </button>
-          {llmTest && <span className={'text-xs ' + (llmTest.startsWith('连通') ? 'text-green-700 dark:text-green-400' : 'text-red-600')}>{llmTest}</span>}
-        </div>
-      </section>
+      {/* AI 模型端点已迁移到 Agent 设置（智能助手页 ⚙ 按钮） */}
+      <div className="text-xs text-muted-foreground border border-dashed border-border rounded-lg p-3 flex items-center gap-2">
+        AI 模型与端点配置已迁移到
+        <Link to="/agent" className="text-primary underline">智能助手 → ⚙ 设置</Link>
+        <span>（唯一的 AI 配置入口）</span>
+      </div>
+
     </div>
   );
 }

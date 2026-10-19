@@ -12,7 +12,7 @@ import { AgentSettingsPanel } from '@/components/agent/AgentSettingsPanel';
 import {
   Plus, Trash2, Bot, Sparkles, Copy, Check, FileText, Zap,
   GitBranch, Download, Search, X, MessageSquareQuote, Brain, Gauge, ListChecks,
-  PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash,
+  PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash, RotateCcw,
 } from 'lucide-react';
 
 interface Conv { id: string; title: string; updatedAt: string; busy?: boolean }
@@ -100,6 +100,31 @@ export default function AgentChat() {
   const deleteMsg = async (idx: number) => {
     setMsgs((m) => m.filter((_, i) => i !== idx));
     if (active) await api.agentDeleteMessage(active, idx).catch(() => {});
+  };
+
+  // 刷新（重新生成）：截断消息到 fromIndex，重发用户输入（利用 pi 分支语义）
+  const regenerate = async (fromIndex: number) => {
+    if (!active || busy) return;
+    // 找到 fromIndex 之前最近的用户消息（含 fromIndex 自身如果是用户消息）
+    let userIdx = -1;
+    if (msgs[fromIndex]?.role === 'user') userIdx = fromIndex;
+    else {
+      for (let i = fromIndex; i >= 0; i--) {
+        if (msgs[i].role === 'user') { userIdx = i; break; }
+      }
+    }
+    if (userIdx < 0) return;
+    const userText = msgs[userIdx].text;
+    // 截断：保留到 userIdx（不含），后续全部丢弃
+    const kept = msgs.slice(0, userIdx);
+    setMsgs(kept);
+    // 删掉投影中后续消息（服务端）
+    for (let i = msgs.length - 1; i > userIdx - 1; i--) {
+      await api.agentDeleteMessage(active, i).catch(() => {});
+    }
+    // 重新发送
+    setInput(userText);
+    requestAnimationFrame(() => send());
   };
 
   const doCommand = (cmd: string) => {
@@ -209,7 +234,7 @@ export default function AgentChat() {
           <div className="w-1 cursor-col-resize hover:bg-primary/30 transition-colors shrink-0" onMouseDown={() => { dragRef.current = true; document.body.style.cursor = 'col-resize'; }} />
         </>
       ) : (
-        <button className="shrink-0 p-2 border-r border-border hover:bg-accent text-muted-foreground" onClick={() => setSidebarOpen(true)}>
+        <button className="shrink-0 w-8 flex items-center justify-center border-r border-border hover:bg-accent text-muted-foreground transition-colors" onClick={() => setSidebarOpen(true)} title="展开对话列表">
           <PanelLeftOpen className="w-4 h-4" />
         </button>
       )}
@@ -288,6 +313,7 @@ export default function AgentChat() {
                         <>
                           <div className="rounded-2xl rounded-br-md px-4 py-2.5 text-sm whitespace-pre-wrap break-words bg-primary text-primary-foreground leading-relaxed">{m.text}</div>
                           <div className="opacity-0 group-hover/msg:opacity-100 flex justify-end gap-0.5 mt-0.5 transition-opacity">
+                            <button className="p-1 rounded hover:bg-accent text-muted-foreground" title="重新生成此后内容" onClick={() => regenerate(i)}><RotateCcw className="w-3 h-3" /></button>
                             <button className="p-1 rounded hover:bg-accent text-muted-foreground" title="编辑" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: true } : x)))}><Pencil className="w-3 h-3" /></button>
                             <button className="p-1 rounded hover:bg-accent text-muted-foreground" title="删除" onClick={() => deleteMsg(i)}><Trash className="w-3 h-3" /></button>
                           </div>
@@ -312,6 +338,7 @@ export default function AgentChat() {
                             {copied === i ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
                           </button>
                           <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="分叉" onClick={() => fork(i)}><GitBranch className="w-3.5 h-3.5" /></button>
+                          <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="重新生成此回复" onClick={() => regenerate(i)}><RotateCcw className="w-3.5 h-3.5" /></button>
                           <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="编辑" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: true } : x)))}><Pencil className="w-3.5 h-3.5" /></button>
                           <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" title="删除" onClick={() => deleteMsg(i)}><Trash className="w-3.5 h-3.5" /></button>
                         </div>
