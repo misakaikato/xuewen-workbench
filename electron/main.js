@@ -57,7 +57,7 @@ async function start() {
   process.env.WORKBENCH_PORT = String(port);
   process.env.WORKBENCH_HOST = HOST;
   if (app.isPackaged) {
-    process.env.WORKBENCH_DATA_DIR = process.env.WORKBENCH_DATA_DIR || path.join(app.getPath('userData'), 'data');
+    // WORKBENCH_DATA_DIR 不设 → server/store.js 默认用 ~/XuewenWorkbenchData（用户目录，不跟 app 走）
   }
   if (!DEV) process.env.WORKBENCH_STATIC_DIR = path.join(ROOT, 'dist');
 

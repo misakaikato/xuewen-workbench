@@ -4,10 +4,29 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-// 可通过 WORKBENCH_DATA_DIR 覆盖（Electron 打包版指向 userData）
+// 数据目录优先级：环境变量 > 用户目录（~/XuewenWorkbenchData）> 开发回退
+// 参考 Claude Code / Codex：数据放用户目录，不跟应用包走
+const USER_DATA_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', 'XuewenWorkbenchData');
+
+function migrateIfNeeded() {
+  // 旧位置（userData 下）存在且新位置不存在 → 自动迁移
+  const oldDir = process.env.WORKBENCH_DATA_DIR
+    ? path.join(process.env.WORKBENCH_DATA_DIR) // electron 传入的 userData 路径
+    : path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
+  if (oldDir !== USER_DATA_DIR && fs.existsSync(oldDir) && !fs.existsSync(USER_DATA_DIR)) {
+    try {
+      fs.mkdirSync(path.dirname(USER_DATA_DIR), { recursive: true });
+      fs.renameSync(oldDir, USER_DATA_DIR);
+      console.log(`[store] 数据目录迁移: ${oldDir} → ${USER_DATA_DIR}`);
+    } catch (e) {
+      console.warn('[store] 迁移失败，继续使用旧位置:', e.message);
+    }
+  }
+}
+
 const DATA_DIR = process.env.WORKBENCH_DATA_DIR
   ? path.resolve(process.env.WORKBENCH_DATA_DIR)
-  : path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
+  : (migrateIfNeeded(), USER_DATA_DIR);
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const UI_SETTINGS_FILE = path.join(DATA_DIR, 'ui-settings.json'); // 外观主题等界面设置（跨数据源、跨端口）
 const UI_THEMES = ['A', 'B', 'C'];
