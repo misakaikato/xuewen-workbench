@@ -653,11 +653,21 @@ app.get('/api/notes/for', async (req, res) => {
           if (!hits.length) continue;
           // 对应的笔记文件名：.<笔记名>.annotations.json → <笔记名>.md
           const noteName = f.slice(1, -'.annotations.json'.length) + '.md';
+          const noteAbs = path.join(notesAbs, noteName);
+          // 旧版笔记没有 anchor 字段：按「annotations 顺序 ↔ 笔记文件里 ## 标题顺序」推断
+          const headings = [];
+          try {
+            const md = fs.readFileSync(noteAbs, 'utf8');
+            for (const line of md.split(/\r?\n/)) {
+              const m = /^##\s+(.+?)\s*$/.exec(line);
+              if (m) headings.push(m[1]);
+            }
+          } catch { /* 笔记文件不存在则无法推断 */ }
           out.push({
             notePath: path.posix.join(notesDir, noteName),
             count: hits.length,
             latest: hits[hits.length - 1]?.at || null,
-            quotes: hits.map((h) => ({ quote: h.quote, anchor: h.anchor || null })),
+            quotes: hits.map((h, i) => ({ quote: h.quote, anchor: h.anchor || headings[i] || null })),
           });
         } catch { /* 坏文件跳过 */ }
       }

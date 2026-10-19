@@ -357,6 +357,37 @@ export default function Read() {
     });
     setToc(headings);
 
+    // 划线笔记标记（纯文本/JSON/Word 走 DOM；markdown 由 livePreview 装饰处理）
+    if (noteMarks.length) {
+      for (const mk of noteMarks) {
+        const q = (mk.quote || '').split('\n')[0].slice(0, 80);
+        if (q.length < 2) continue;
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        const nodes: Text[] = [];
+        let n2: Node | null;
+        while ((n2 = walker.nextNode())) nodes.push(n2 as Text);
+        for (const t of nodes) {
+          const idx = t.data.indexOf(q);
+          if (idx < 0 || !t.parentElement) continue;
+          if (['SCRIPT', 'STYLE', 'MARK', 'A'].includes(t.parentElement.tagName)) continue;
+          const after = t.splitText(idx);
+          after.splitText(q.length);
+          const a = document.createElement('a');
+          a.className = 'cm-note-mark';
+          a.setAttribute('data-note-href', mk.href);
+          a.setAttribute('title', '此处有笔记，点击查看');
+          a.href = mk.href;
+          a.textContent = after.data;
+          a.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            navigate(mk.href);
+          });
+          after.parentNode?.replaceChild(a, after);
+          break; // 每段原文只标第一处
+        }
+      }
+    }
+
     // 搜索命中高亮（Word/JSON）
     if (highlightTerm) {
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -374,7 +405,7 @@ export default function Read() {
         }
       }
     }
-  }, [file, highlightTerm, viewReady]);
+  }, [file, highlightTerm, viewReady, noteMarks, navigate]);
 
   // 导航深度（react-router 在 history.state.idx 维护栈位）：后退/前进按钮可用性
   useEffect(() => {
