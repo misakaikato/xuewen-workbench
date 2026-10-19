@@ -1038,7 +1038,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
   }
 
   /** SSE 聊天：注册响应流，prompt 或 steer（生成中插入指令），事件经会话级订阅转发 */
-  async chat(convId, text, res) {
+  async chat(convId, text, res, images = []) {
     // 库隔离硬校验：对话绑定的资料库必须与当前激活库一致，否则拒绝
     //（否则会复用旧库的 session 上下文，导致回答串库）
     const convMeta = this._meta().conversations.find((c) => c.id === convId);
@@ -1054,7 +1054,8 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* 断开 */ }
     };
     send({ t: 'start' });
-    this._append(convId, { role: 'user', text, at: nowIso() });
+    const imageMeta = images.map((im) => ({ mimeType: im.mimeType, bytes: Math.round((im.data?.length || 0) * 0.75) }));
+    this._append(convId, { role: 'user', text, images: imageMeta, at: nowIso() });
     this._touch(convId, this._autoTitle(convId, text));
 
     if (entry.busy) {
@@ -1079,7 +1080,9 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     entry.curThinking = '';
     entry.curUsage = null;
     try {
-      await entry.session.prompt(text);
+      // images: [{ data(base64), mimeType }] —— pi 原生支持图片附件
+      const promptOpts = images.length ? { images } : undefined;
+      await entry.session.prompt(text, promptOpts);
       // prompt() 在 run 完成时 resolve；SSE 由 agent_settled 关闭（自动恢复可能追加轮次）
       // 若 agent_settled 已触发但 SSE 未关（时序差），兜底关闭
       if (entry.sse.has(res) && !entry.busy) {

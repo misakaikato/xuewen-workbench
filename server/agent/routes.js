@@ -303,9 +303,17 @@ export function mountAgent(hub, resolveLib) {
 
   // SSE 聊天：POST /api/agent/chat {sessionId, text} → text/event-stream
   r.post('/chat', async (req, res) => {
-    const { sessionId, text } = req.body || {};
-    if (!sessionId || !String(text || '').trim()) {
-      return res.status(400).json({ error: '缺少 sessionId 或 text' });
+    const { sessionId, text, images } = req.body || {};
+    if (!sessionId || (!String(text || '').trim() && !(Array.isArray(images) && images.length))) {
+      return res.status(400).json({ error: '缺少 sessionId 或内容' });
+    }
+    // 图片附件校验：只收 data url 解出的 base64 + mimeType，单张上限 8MB
+    const imgs = (Array.isArray(images) ? images : [])
+      .filter((im) => im && typeof im.data === 'string' && typeof im.mimeType === 'string')
+      .slice(0, 4)
+      .map((im) => ({ type: 'image', data: im.data.replace(/^data:[^;]+;base64,/, ''), mimeType: im.mimeType }));
+    if (imgs.some((im) => im.data.length * 0.75 > 8 * 1024 * 1024)) {
+      return res.status(413).json({ error: '单张图片不能超过 8MB' });
     }
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -315,7 +323,7 @@ export function mountAgent(hub, resolveLib) {
     });
     res.write(`data: ${JSON.stringify({ t: 'open' })}\n\n`);
     try {
-      await hub.chat(sessionId, String(text).trim(), res);
+      await hub.chat(sessionId, String(text || '').trim(), res, imgs);
     } catch (e) {
       try {
         res.write(`data: ${JSON.stringify({ t: 'error', message: String(e.message || e) })}\n\n`);

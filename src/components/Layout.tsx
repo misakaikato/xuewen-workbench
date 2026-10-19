@@ -43,6 +43,16 @@ export function Layout() {
         e.preventDefault();
         setPaletteOpen((v) => !v);
       }
+      // ⌘J / Ctrl+J：任意位置唤出智能助手（跳到 /agent 并聚焦输入框）
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        if (location.pathname !== '/agent') navigate('/agent');
+        // 等路由渲染后聚焦输入框
+        setTimeout(() => {
+          const ta = document.querySelector<HTMLTextAreaElement>('/agent textarea, main textarea');
+          ta?.focus();
+        }, 120);
+      }
       // ?：快捷键清单（输入框内不触发）
       if (e.key === '?' && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement).tagName)) {
         setShortcutsOpen(true);

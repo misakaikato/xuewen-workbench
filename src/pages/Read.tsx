@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams, Link, useSearchParams, useBlocker, useNavigationType } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { Sparkles } from 'lucide-react';
 import { findSearchLocation, searchLocationRange, findAllRanges } from '@/lib/searchLocation';
 import { useApp } from '@/store/app';
 import { useReadingPrefs } from '@/lib/prefs';
@@ -1008,19 +1009,36 @@ export default function Read() {
         </div>
       )}
 
-      {/* 划线笔记：选区旁的浮动按钮 */}
+      {/* 选区旁的浮动操作：记笔记 / 问 AI */}
       {sel && !noteOpen && (
-        <button
-          className="fixed z-40 -translate-x-1/2 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs shadow-lg transition-colors hover:opacity-90"
+        <div
+          className="fixed z-40 -translate-x-1/2 flex items-center gap-1"
           style={{ left: sel.x, top: sel.y }}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => {
-            setNoteOpen(true);
-            try { setNoteText(localStorage.getItem('wb:note-draft:' + relPath) || ''); } catch { setNoteText(''); }
-          }}
         >
-          <NotebookPen className="w-3.5 h-3.5" /> 记笔记
-        </button>
+          <button
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs shadow-lg transition-colors hover:opacity-90"
+            onClick={() => {
+              setNoteOpen(true);
+              try { setNoteText(localStorage.getItem('wb:note-draft:' + relPath) || ''); } catch { setNoteText(''); }
+            }}
+          >
+            <NotebookPen className="w-3.5 h-3.5" /> 记笔记
+          </button>
+          <button
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-card border border-border text-xs shadow-lg transition-colors hover:border-primary/50 hover:text-primary"
+            title="把选中内容引用到智能助手"
+            onClick={() => {
+              const quote = sel.text.split('\n').map((l) => '> ' + l).join('\n');
+              sessionStorage.setItem('wb.agent.prefill', quote);
+              window.getSelection()?.removeAllRanges();
+              setSel(null);
+              navigate('/agent');
+            }}
+          >
+            <Sparkles className="w-3.5 h-3.5" /> 问 AI
+          </button>
+        </div>
       )}
 
       {/* 划线笔记：编辑弹窗 */}

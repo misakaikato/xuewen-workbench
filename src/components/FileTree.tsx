@@ -320,10 +320,10 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
         }}
         title={row.path}
       >
-        {extIcon(row.file!.ext)}
-        <span className="truncate">{ctx.q ? <Highlight text={row.name} q={ctx.q} /> : row.name}</span>
+        <span className="shrink-0 flex-none">{extIcon(row.file!.ext)}</span>
+        <span className="min-w-0 flex-1 truncate">{ctx.q ? <Highlight text={row.name} q={ctx.q} /> : row.name}</span>
         {badges()}
-        <span className="flex-1" />
+        <span className="w-0" />
         {row.dirLabel && (
           <span className="shrink-0 max-w-[45%] truncate text-xs text-muted-foreground" title={row.dirLabel}>
             {row.dirLabel}
