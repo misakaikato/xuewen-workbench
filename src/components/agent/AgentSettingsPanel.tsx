@@ -58,8 +58,8 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
       const patch: AgentSettingsPatch = { baseUrl, model, thinkingLevel: thinking as AgentSettingsPatch['thinkingLevel'] };
       if (apiKey) patch.apiKey = apiKey;
       await api.agentSettings(patch);
-      setMsg('已保存' + (baseUrl !== status.endpoint.baseUrl ? '（端点变更，现有对话将重建上下文）' : ''));
       onSaved();
+      onClose(); // 保存成功即关弹窗（与其他弹窗的「动作即关闭」一致）
     } catch (e) { setMsg('保存失败：' + (e as Error).message);
     } finally { setSaving(false); }
   };
@@ -68,7 +68,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
     setMsg('测试中…');
     try {
       const r = await api.ragLlmTest();
-      setMsg(r.ok ? `连通 OK${r.models?.length ? '（${r.models.length} 个模型）' : ''}` : '失败：' + r.error);
+      setMsg(r.ok ? `连通 OK${r.models?.length ? `（${r.models.length} 个模型）` : ''}` : '失败：' + r.error);
     } catch (e) { setMsg('失败：' + (e as Error).message); }
   };
 

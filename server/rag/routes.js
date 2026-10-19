@@ -76,12 +76,7 @@ export function mountRag(manager, resolveLib) {
   });
 
   r.put('/llm', (req, res) => {
-    const b = req.body || {};
-    for (const k of ['enabled', 'baseUrl', 'model', 'apiKey']) {
-      if (k in b) manager.llm[k] = b[k];
-    }
-    manager.onLlmChanged?.();
-    res.json({ ok: true, llm: { ...manager.llm, apiKey: undefined } });
+    res.json({ ok: true, llm: manager.setLlm(req.body || {}) });
   });
 
   r.post('/llm/test', async (_req, res) => {

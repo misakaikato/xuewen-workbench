@@ -1,6 +1,6 @@
 // 智能助手 M4.1：可折叠侧栏 + 上下文指示在输入框上方 + 可编辑消息 + 设置面板 + 模型快切
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { AgentStatus, AgentMessage } from '@/lib/api';
 import { useApp } from '@/store/app';
@@ -57,12 +57,14 @@ export default function AgentChat() {
   const [confirmReq, setConfirmReq] = useState<{ id: string; tool: string; args: unknown } | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [sidebarW, setSidebarW] = useState(240);
+  const [sidebarW, setSidebarW] = useState(() => {
+    const n = Number(localStorage.getItem('wb.agent.sidebar.w'));
+    return Number.isFinite(n) && n >= 200 && n <= 480 ? n : 240;
+  });
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef(false);
   const aiRef = useRef(-1);
-  const dragRef = useRef(false);
 
   const refresh = useCallback(async () => {
     try { const st = await api.agentStatus(); setStatus(st); setConversations(st.conversations || []); } catch { /* */ }
@@ -93,16 +95,30 @@ export default function AgentChat() {
     }).catch(() => setMsgs([]));
   }, [active]);
 
-  // 侧栏拖拽调宽
+  // 侧栏拖拽调宽：delta 式（记录按下点与初始宽度，与主侧栏同一手感），拖拽中禁文字选择
+  const dragRef = useRef<{ startX: number; w0: number } | null>(null);
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (dragRef.current) setSidebarW(Math.max(180, Math.min(400, e.clientX)));
+      const d = dragRef.current;
+      if (d) setSidebarW(Math.max(200, Math.min(480, d.w0 + (e.clientX - d.startX))));
     };
-    const onUp = () => { dragRef.current = false; document.body.style.cursor = ''; };
+    const onUp = () => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, []);
+  // 宽度持久化（防抖落盘）
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try { localStorage.setItem('wb.agent.sidebar.w', String(Math.round(sidebarW))); } catch { /* 忽略 */ }
+    }, 200);
+    return () => clearTimeout(t);
+  }, [sidebarW]);
 
   const openConv = (id: string | null) => {
     setActive(id);
@@ -282,8 +298,17 @@ export default function AgentChat() {
               {(status?.mcp || []).length > 0 && <div><span className="text-primary font-medium">{status!.mcp!.filter((m) => m.enabled).length}/{status!.mcp!.length}</span> MCP</div>}
             </div>
           </aside>
-          {/* 拖拽条 */}
-          <div className="w-1 cursor-col-resize hover:bg-primary/30 transition-colors shrink-0" onMouseDown={() => { dragRef.current = true; document.body.style.cursor = 'col-resize'; }} />
+          {/* 拖拽条：delta 式调宽，拖拽中高亮 */}
+          <div
+            className={`w-1.5 cursor-col-resize transition-colors shrink-0 ${dragRef.current ? 'bg-primary/40' : 'hover:bg-primary/30'}`}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              dragRef.current = { startX: e.clientX, w0: sidebarW };
+              document.body.style.cursor = 'col-resize';
+              document.body.style.userSelect = 'none';
+            }}
+            title="拖拽调整列表宽度"
+          />
         </>
       ) : null}
 
@@ -298,7 +323,7 @@ export default function AgentChat() {
             <Sparkles className="w-4 h-4 text-primary" />
             <span className="text-sm font-semibold">智能助手</span>
           </div>
-          {!ep?.ready && <Link to="/rag" className="text-xs text-warning underline">去配置</Link>}
+          {!ep?.ready && <button className="text-xs text-warning underline" onClick={() => setSettingsOpen(true)}>去配置</button>}
           <span className="flex-1" />
           {active && (
             <>
@@ -322,7 +347,7 @@ export default function AgentChat() {
         )}
 
         {/* 消息 */}
-        <div ref={scrollRef} className="flex-1 overflow-auto px-4 py-6">
+        <div ref={scrollRef} className="flex-1 overflow-auto px-4 py-6 wb-selectable">
           {!active && (
             <div className="h-full flex flex-col items-center justify-center gap-6">
               <div className="flex items-center gap-2 text-muted-foreground"><Bot className="w-8 h-8" /><span className="text-lg font-medium">智能助手</span></div>

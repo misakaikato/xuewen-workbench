@@ -8,6 +8,7 @@ import { chunkFile, embedTextOf } from './chunk.js';
 // embedTextOf 统一拼装 [文件名\n标题路径\n\n正文]，FTS 与向量共用
 import { EmbedService, t2s, DIM } from './embed.js';
 import { loadRagConfig, saveRagConfig, indexConfigFingerprint, DEFAULT_RAG_CONFIG } from './config.js';
+import { readJson, writeJsonAtomic } from '../store.js';
 
 // 检索参数来自按库配置（loadRagConfig），以下仅为回退默认
 const { rrfK: RRF_K, topN: TOPN } = DEFAULT_RAG_CONFIG.search;
@@ -163,8 +164,22 @@ export class RagManager {
     this.getLib = getLib; // (dsId) => { snapshot, getText(relPath) } | null
     this.embed = new EmbedService(dataDir);
     this.indices = new Map(); // dsId -> RagIndex
-    this.llm = { enabled: false, baseUrl: 'http://localhost:11434/v1', model: '', apiKey: '' };
+    this.llm = {
+      enabled: false, baseUrl: 'http://localhost:11434/v1', model: '', apiKey: '', thinkingLevel: 'off',
+      // 持久化：生成端点配置是全局设置（跨资料库），重启后必须恢复
+      ...readJson(path.join(dataDir, 'llm-settings.json'), {}),
+    };
     this.onLlmChanged = null; // 由 agent 模块挂接：端点变化时同步 models.json
+  }
+
+  /** 更新并持久化生成端点配置（含 agent 侧 thinkingLevel） */
+  setLlm(patch) {
+    for (const k of ['enabled', 'baseUrl', 'model', 'apiKey', 'thinkingLevel']) {
+      if (patch && k in patch) this.llm[k] = patch[k];
+    }
+    writeJsonAtomic(path.join(this.dataDir, 'llm-settings.json'), this.llm);
+    this.onLlmChanged?.();
+    return { ...this.llm, apiKey: undefined };
   }
 
   index(dsId) {

@@ -33,7 +33,9 @@ export class AgentHub {
     this.mode = 'auto'; // auto | confirm | readonly
     this._confirmCb = new Map(); // confirmId → (ok) => void → { session, sse:Set, busy, seq }
     this._modelRuntime = null;
+    this._ctxWindow = 0; // 端点模型的真实上下文窗口（0=未知，回退 128000）
     this._syncModelsJson();
+    this._detectContextWindow().catch(() => {}); // 启动时探测一次，写正 models.json
   }
 
   // ---------- 端点与模型 ----------
@@ -64,7 +66,7 @@ export class AgentHub {
           baseUrl: c.baseUrl.replace(/\/$/, ''),
           api: 'openai-completions',
           apiKey: c.apiKey || 'workbench',
-          models: [{ id: c.model, name: c.model, contextWindow: 128000, toolUse: true }],
+          models: [{ id: c.model, name: c.model, contextWindow: this._ctxWindow || 128000, toolUse: true }],
         },
       },
     };
@@ -538,8 +540,9 @@ export class AgentHub {
         entry.sse.delete(res);
       }
     } catch (e) {
-      send({ t: 'error', message: String(e.message || e) });
-      entry.curText += `\n\n（出错：${e.message || e}）`;
+      const friendly = this._friendlyError(e);
+      send({ t: 'error', message: friendly });
+      entry.curText += `\n\n（出错：${friendly}）`;
       // 兜底收尾
       entry.busy = false;
       this._append(convId, { role: 'assistant', text: entry.curText || '（无输出）', tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, at: nowIso() });
@@ -683,7 +686,8 @@ ${m.text}
       if (k in patch) next[k] = patch[k];
     }
     if (!['off', 'low', 'medium', 'high'].includes(next.thinkingLevel)) next.thinkingLevel = 'off';
-    Object.assign(c, next);
+    this.ragManager.setLlm(next); // 落盘 + 触发 onLlmChanged → 同步 models.json
+    if (patch.baseUrl || patch.model) this._detectContextWindow().catch(() => {});
     // 模式切换：更新活跃会话的工具集
     if (patch.mode && ['auto', 'confirm', 'readonly'].includes(patch.mode)) {
       this.mode = patch.mode;
@@ -697,6 +701,63 @@ ${m.text}
     }
     this._syncModelsJson();
     return this.status();
+  }
+
+  /** 探测端点模型的真实上下文窗口：LM Studio(/api/v0/models) → llama.cpp(/props) → Ollama(/api/show)。
+      写正 models.json 的 contextWindow 后，pi 会在接近上限时自动压缩历史，避免 400 超窗报错。 */
+  async _detectContextWindow() {
+    const c = this.llm();
+    if (!c.baseUrl || !c.model) return;
+    const origin = String(c.baseUrl).replace(/\/v1\/?$/, '');
+    const headers = c.apiKey ? { Authorization: `Bearer ${c.apiKey}` } : {};
+    let ctx = 0;
+    try {
+      const r = await fetch(origin + '/api/v0/models', { headers, signal: AbortSignal.timeout(4000) });
+      if (r.ok) {
+        const j = await r.json();
+        const m = (j.data || []).find((x) => x.id === c.model);
+        if (m) ctx = m.loaded_instances?.[0]?.context_length || m.max_context_length || 0;
+      }
+    } catch { /* 非 LM Studio */ }
+    if (!ctx) {
+      try {
+        const r = await fetch(origin + '/props', { headers, signal: AbortSignal.timeout(4000) });
+        if (r.ok) {
+          const j = await r.json();
+          ctx = j?.default_generation_settings?.n_ctx || 0;
+        }
+      } catch { /* 非 llama.cpp */ }
+    }
+    if (!ctx) {
+      try {
+        const r = await fetch(origin + '/api/show', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: c.model }),
+          signal: AbortSignal.timeout(4000),
+        });
+        if (r.ok) {
+          const j = await r.json();
+          for (const [k, v] of Object.entries(j.model_info || {})) {
+            if (k.endsWith('.context_length') && Number.isFinite(v)) { ctx = v; break; }
+          }
+        }
+      } catch { /* 非 Ollama */ }
+    }
+    if (ctx && ctx !== this._ctxWindow) {
+      this._ctxWindow = ctx;
+      this._syncModelsJson(); // contextWindow 变化：重建模型运行时与活跃会话
+    }
+  }
+
+  /** 错误翻译：把端点原始报错转成可行动的中文提示 */
+  _friendlyError(e) {
+    const msg = String(e?.message || e);
+    if (/exceed_context_size|exceeds the available context size/i.test(msg)) {
+      const nCtx = msg.match(/"n_ctx"\s*:\s*(\d+)/) || msg.match(/context size \((\d+) tokens\)/i);
+      return `请求超出模型上下文窗口${nCtx ? `（上限 ${nCtx[1]} tokens）` : ''}。已尝试自动压缩历史；仍超限请新建对话，或在模型端点（如 LM Studio）调大上下文长度。`;
+    }
+    return msg;
   }
 
   _applyModeToSessions() {
