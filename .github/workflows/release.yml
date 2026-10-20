@@ -55,6 +55,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # gh 的 release 子命令默认靠 git remote 推断仓库，job 未 checkout 时会报
+      # "fatal: not a git repository"——用 GH_REPO 显式指定，省掉整个 checkout
       - name: 清理带空格的重复资产（mac 双发布器命名差异遗留）
         run: |
           gh release view "$GITHUB_REF_NAME" --json assets \
@@ -65,6 +67,7 @@ jobs:
               done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
 
       # 两个平台都构建成功才走到这里：发布 draft 并标为 latest。
       # 不发布的话客户端永远查不到新版本（electron-updater 只认已发布 release）。
@@ -72,3 +75,4 @@ jobs:
         run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
