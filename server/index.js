@@ -336,6 +336,8 @@ app.post('/api/config/test', async (req, res) => {
 app.post('/api/rescan', async (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;
+  // 用户点「重新扫描」= 期望彻底重建：先让链接索引失效，别按签名/mtime 复用旧结果
+  try { lib.linkIndex.invalidate(); } catch { /* 索引未初始化 */ }
   await lib.scanner.rescan();
   res.json({ ok: true, status: lib.scanner.status() });
 });

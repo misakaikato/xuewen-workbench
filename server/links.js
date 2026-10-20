@@ -179,6 +179,13 @@ export class LinkIndex {
     // 不自动链，但作为长词整体消费，阻止其内部短词成链
   }
 
+  /** 强制下次 rebuild 全量重算（忽略缓存与 mtime/size 复用）——「重新扫描」用 */
+  invalidate() {
+    this._cache = null;
+    this._vocabSig = null;
+    this._dirty = true;
+  }
+
   vocabSignature(entries, blocklist) {
     const h = crypto.createHash('sha256');
     // 引擎版本进签名：匹配逻辑升级后，即使词条未变也要全量重算链接
