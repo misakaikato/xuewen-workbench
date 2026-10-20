@@ -848,6 +848,7 @@ export default function Read() {
         title="无法打开文件"
         detail={<><p className="mono">{relPath}</p><p>{error.message}</p></>}
       >
+        <Button onClick={() => navigate(-1)}>返回上一页</Button>
         <Button variant="outline" asChild><Link to="/browse">浏览目录</Link></Button>
         <Button asChild>
           <Link to={'/search?q=' + encodeURIComponent(relPath.split('/').pop() || '')}>搜索同名文件</Link>

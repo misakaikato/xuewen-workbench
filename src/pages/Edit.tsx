@@ -3,6 +3,8 @@
 // 草稿自动本地保存、打开时提示恢复；重命名/移动时缓冲区跟随新路径不丢失。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useBlocker, useLocation } from 'react-router-dom';
+import { ExternalLinkDialog } from '@/components/ExternalLinkDialog';
+import { resolveDocTarget } from '@/lib/docLink';
 import { EditorState } from '@codemirror/state';
 import type { Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
@@ -47,16 +49,7 @@ declare global {
   }
 }
 
-// 相对路径解析（与 livePreview / ReadOnlyDoc 同口径）
-function joinRel(baseDir: string, rel: string): string {
-  const parts = (baseDir ? baseDir.split('/') : []).filter(Boolean);
-  for (const seg of rel.split('/')) {
-    if (seg === '.' || seg === '') continue;
-    if (seg === '..') parts.pop();
-    else parts.push(seg);
-  }
-  return parts.join('/');
-}
+// 相对链接解析走 @/lib/docLink 的 resolveDocTarget（越库根判外部，弹确认框）
 
 const encPath = (p: string) => p.split('/').map(encodeURIComponent).join('/');
 
@@ -70,7 +63,11 @@ const jsonTheme = (codeFontSize: number) =>
 export default function Edit() {
   const params = useParams();
   const relPath = useMemo(() => decodeURIComponent(params['*'] || ''), [params]);
-  const { dsId } = useApp();
+  const { dsId, config } = useApp();
+  // 库外链接确认：预览区相对链接解析越过知识库根时弹出
+  const [extPath, setExtPath] = useState<string | null>(null);
+  const baseDirRef = useRef(config?.baseDir ?? null);
+  baseDirRef.current = config?.baseDir ?? null;
   const { prefs } = useReadingPrefs();
   const navigate = useNavigate();
   const location = useLocation();
@@ -442,13 +439,18 @@ export default function Edit() {
     }
     const [filePart, anchor] = href.split('#');
     if (!filePart) return;
-    let target: string;
+    let decoded: string;
     try {
-      target = joinRel(docDirRef.current, decodeURIComponent(filePart));
+      decoded = decodeURIComponent(filePart);
     } catch {
       return;
     }
-    const nav = '/read/' + encPath(target);
+    const target = resolveDocTarget(docDirRef.current, decoded, baseDirRef.current);
+    if (target.kind === 'external') {
+      setExtPath(target.path);
+      return;
+    }
+    const nav = '/read/' + encPath(target.path);
     navRef.current(anchor ? nav + '#' + encodeURIComponent(anchor) : nav);
   }, []);
 
@@ -796,6 +798,7 @@ export default function Edit() {
           </div>
         </div>
       )}
+      <ExternalLinkDialog path={extPath} onClose={() => setExtPath(null)} />
     </div>
   );
 }

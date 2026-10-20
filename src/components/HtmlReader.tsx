@@ -10,6 +10,8 @@ import DOMPurify from 'dompurify';
 import { rawFileUrl } from '@/lib/api';
 import { useApp } from '@/store/app';
 import type { TreeNode } from '@/lib/types';
+import { ExternalLinkDialog } from '@/components/ExternalLinkDialog';
+import { resolveDocTarget } from '@/lib/docLink';
 
 const encPath = (p: string) => p.split('/').map(encodeURIComponent).join('/');
 // 与 server/links.js 的 HTML_DOC_EXTS 对齐：这些扩展名的 href 按文档处理
@@ -122,8 +124,9 @@ export const HtmlReader = memo(function HtmlReader({
   onContentReady?: () => void;
 }) {
   const navigate = useNavigate();
-  const { tree } = useApp();
+  const { tree, config } = useApp();
   const bodyRef = useRef<HTMLDivElement>(null);
+  const [extPath, setExtPath] = useState<string | null>(null);
   const docDir = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
 
   const existing = useMemo(() => collectPaths(tree, new Set<string>()), [tree]);
@@ -230,12 +233,19 @@ export const HtmlReader = memo(function HtmlReader({
       }
       return;
     }
-    let target: string;
+    let decoded: string;
     try {
-      target = joinRel(docDir, decodeURIComponent(filePart));
+      decoded = decodeURIComponent(filePart);
     } catch {
       return;
     }
+    const resolved = resolveDocTarget(docDir, decoded, config?.baseDir);
+    if (resolved.kind === 'external') {
+      // 越过知识库根的链接：弹确认框，用户同意后才用系统默认应用打开
+      setExtPath(resolved.path);
+      return;
+    }
+    const target = resolved.path;
     if (DOC_EXTS.includes(extOf(target))) {
       const nav = '/read/' + encPath(target);
       navigate(anchor ? nav + '#' + encodeURIComponent(anchor) : nav);
@@ -246,9 +256,12 @@ export const HtmlReader = memo(function HtmlReader({
   };
 
   return (
-    <div ref={bodyRef} className="reader wb-html-body min-w-0" onClick={onClick}>
-      {scopedCss && <style>{scopedCss}</style>}
-      <div dangerouslySetInnerHTML={{ __html: html }} />
-    </div>
+    <>
+      <div ref={bodyRef} className="reader wb-html-body min-w-0" onClick={onClick}>
+        {scopedCss && <style>{scopedCss}</style>}
+        <div dangerouslySetInnerHTML={{ __html: html }} />
+      </div>
+      <ExternalLinkDialog path={extPath} onClose={() => setExtPath(null)} />
+    </>
   );
 });

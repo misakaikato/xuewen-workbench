@@ -19,18 +19,11 @@ import { linksExtensionFor, pushDocLinks } from '@/components/editor/autoLinks';
 import { copyAsRendered } from '@/components/editor/copyAsRendered';
 import { findAllRanges } from '@/lib/searchLocation';
 import { CorpusRefPopover, PathListPopover, type CorpusRefRequest, type PathListRequest } from '@/components/CorpusRefPopover';
+import { ExternalLinkDialog } from '@/components/ExternalLinkDialog';
+import { resolveDocTarget } from '@/lib/docLink';
+import { useApp } from '@/store/app';
 
 const encPath = (p: string) => p.split('/').map(encodeURIComponent).join('/');
-
-function joinRel(baseDir: string, rel: string): string {
-  const parts = (baseDir ? baseDir.split('/') : []).filter(Boolean);
-  for (const seg of rel.split('/')) {
-    if (seg === '.' || seg === '') continue;
-    if (seg === '..') parts.pop();
-    else parts.push(seg);
-  }
-  return parts.join('/');
-}
 
 import { findHlField } from '@/lib/readFindHighlight';
 
@@ -85,6 +78,11 @@ export function ReadOnlyDoc({
   const viewRef = useRef<EditorView | null>(null);
   const [crReq, setCrReq] = useState<CorpusRefRequest | null>(null);
   const [candReq, setCandReq] = useState<PathListRequest | null>(null);
+  // 库外链接确认：解析越过知识库根的相对链接
+  const [extPath, setExtPath] = useState<string | null>(null);
+  const { config } = useApp();
+  const baseDirRef = useRef(config?.baseDir ?? null);
+  baseDirRef.current = config?.baseDir ?? null;
 
   const docDir = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
   const docDirRef = useRef(docDir);
@@ -105,13 +103,18 @@ export function ReadOnlyDoc({
       if (anchor) navRef.current('#' + encodeURIComponent(decodeURIComponent(anchor)));
       return;
     }
-    let target: string;
+    let decoded: string;
     try {
-      target = joinRel(docDirRef.current, decodeURIComponent(filePart));
+      decoded = decodeURIComponent(filePart);
     } catch {
       return;
     }
-    const nav = '/read/' + encPath(target);
+    const target = resolveDocTarget(docDirRef.current, decoded, baseDirRef.current);
+    if (target.kind === 'external') {
+      setExtPath(target.path);
+      return;
+    }
+    const nav = '/read/' + encPath(target.path);
     navRef.current(anchor ? nav + '#' + encodeURIComponent(anchor) : nav);
   }, []);
 
@@ -200,6 +203,7 @@ export function ReadOnlyDoc({
       />
       <CorpusRefPopover req={crReq} onClose={() => setCrReq(null)} />
       <PathListPopover req={candReq} onClose={() => setCandReq(null)} />
+      <ExternalLinkDialog path={extPath} onClose={() => setExtPath(null)} />
     </div>
   );
 }

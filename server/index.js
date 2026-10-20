@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import express from 'express';
 import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir } from './store.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
+import { hostOpenPath } from './hostOpen.js';
 import { planImport, applyImport, contentHash } from './meta.js';
 import { getTrashHandler } from './trash.js';
 import { mountUpdateRoutes, getUpdateBridge, disabledUpdateState } from './update.js';
@@ -528,6 +529,27 @@ app.get('/api/file/raw', (req, res) => {
 });
 
 // 在系统文件管理器中定位显示（Finder / 资源管理器 / xdg-open）；路径必须在当前资料库内且存在
+// 用系统默认应用打开知识库外部路径（文档内越库根链接，前端已弹确认框）。
+// 仅接受绝对路径；打开动作本身由宿主桥接（Electron shell.openPath）或平台 opener 执行。
+app.post('/api/open-external', async (req, res) => {
+  const p = String(req.body?.path || '');
+  if (!p || p.includes('\0')) return res.status(400).json({ error: '非法路径' });
+  if (!path.isAbsolute(p) && !/^[a-zA-Z]:[\/]/.test(p)) {
+    return res.status(400).json({ error: '仅接受绝对路径' });
+  }
+  try {
+    await fs.promises.access(p);
+  } catch {
+    return res.status(404).json({ error: '路径不存在：' + p });
+  }
+  try {
+    await hostOpenPath(p);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: '打开失败: ' + e.message });
+  }
+});
+
 app.post('/api/reveal', (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;

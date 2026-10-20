@@ -134,6 +134,8 @@ const json = (method: string, body?: unknown): RequestInit => ({
 
 export const api = {
   getUiSettings: () => req<{ theme: Theme; autoUpdate: boolean; notesDir: string; showMetaFiles: boolean }>('/api/ui-settings'),
+  // 用系统默认应用打开知识库外部的本地路径（文档内越库根链接，经用户确认后调用）
+  openExternal: (path: string) => req<{ ok: boolean }>('/api/open-external', json('POST', { path })),
   saveUiSettings: (patch: { theme?: Theme; autoUpdate?: boolean; notesDir?: string; showMetaFiles?: boolean }) =>
     req<{ ok: boolean; theme: Theme; autoUpdate: boolean; notesDir: string; showMetaFiles: boolean }>('/api/ui-settings', json('PUT', patch)),
   tags: () =>

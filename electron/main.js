@@ -66,6 +66,13 @@ async function start() {
   const { setTrashHandler } = await import(pathToFileURL(path.join(ROOT, 'server', 'trash.js')).href);
   setTrashHandler((absPath) => shell.trashItem(absPath));
 
+  // 「用系统默认应用打开」走 Electron shell（库外链接确认后调用，见 /api/open-external）
+  const { setOpenHandler } = await import(pathToFileURL(path.join(ROOT, 'server', 'hostOpen.js')).href);
+  setOpenHandler(async (p) => {
+    const err = await shell.openPath(p);
+    if (err) throw new Error(err);
+  });
+
   // 自动更新：仅打包模式注入桥接（dev / 独立 dev:server 时功能停用）。
   // 必须在加载后端之前注入，路由挂载时才能拿到桥接。
   if (app.isPackaged) {
