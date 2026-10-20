@@ -5,7 +5,7 @@ import { T2S_MAP } from './t2s.js';
 
 // 匹配引擎版本：凡是改变 extractLinks / termCore 输出结果的改动都要 +1。
 // 它参与 links 缓存的词汇签名——不 bump 的话老库会继续复用旧引擎算出的链接。
-export const MATCH_ENGINE_VERSION = 3;
+export const MATCH_ENGINE_VERSION = 4;
 
 // ---------- 归一化：逐字符 1:1 映射（繁→简 / 全角 ASCII→半角 / 拉丁小写） ----------
 
@@ -74,8 +74,10 @@ const HEAD_NUM_RE = /^(?:\d+[年月日号]?[\s._\-/:]+)+/;
 const HEAD_ID_RE = /^[A-Za-z]{1,3}\d+[\s._\-/:]+/;
 // 结尾成对括号段（内容任意，≤12 字）
 const TAIL_PAREN_RE = /[(（][^()（）]{0,12}[)）]$/;
-// 结尾短尾巴：闭合括号（含书名号/引号）或短横线之后接 1-4 个「非空白非括号」字符
-const TAIL_SHORT_RE = /(?:[)）》」』】]|[-—–]\s*)[^\s()（）《》「」『』【】]{1,4}$/;
+// 结尾短尾巴：闭合括号（含书名号/引号）或短横之后接 1-4 个「非空白非括号」字符。
+// 用后行断言：只剥尾巴本身，保留前面的闭合括号——「（三）后续」先剥「后续」，
+// 下一轮再剥「（三）」，否则右括号会被一起吃掉，核心变成残缺的「（三」。
+const TAIL_SHORT_RE = /(?<=[)）》」』】]|[-—–]\s*)[^\s()（）《》「」『』【】]{1,4}$/;
 
 function stripOnce(t) {
   // 外层书名号成对剥离
@@ -117,17 +119,29 @@ export function termCore(normTerm) {
 
 // ---------- 命中后的范围吸收（同样的结构判据，只是方向相反） ----------
 
-function absorbWrap(norm, i, j) {
+function absorbWrap(norm, i, j, targetPath, shortTail = true) {
   let from = i, to = j;
   // 向右：先吸收成对括号段（循环，可连续多层）
   for (let k = 0; k < 4; k++) {
-    const m = new RegExp('^[(（][^()（）]{0,8}[)）]').exec(norm.slice(to));
+    const m = new RegExp('^\\s*[(（][^()（）]{0,8}[)）]').exec(norm.slice(to));
     if (!m) break;
     to += m[0].length;
   }
-  // 向右：闭合括号后的短尾巴 / 短横线后的短尾巴
-  const m3 = /^(?:[-—–]|[)）])?\s*[^\s()（）]{1,4}$/.exec(norm.slice(to, to + 8));
-  if (m3 && m3[0].length && /^(?:[-—–]|[)）])/.test(m3[0].trim())) to += m3[0].length;
+  // 向右：闭合括号/分隔符之后的短尾巴，可连续吸（「（三）后续」「---风水先生」）。
+  // 有 target 时校验 target 文件名以该段结尾；消歧（无 target）直接吸，由调用方回退。
+  for (let k = 0; shortTail && k < 3; k++) {
+    const rest = norm.slice(to);
+    const sepM = /^(?:[-—–]+|\s+)/.exec(rest);
+    const sepLen = sepM ? sepM[0].length : 0;
+    const tailM = /^[^\s()（）《》「」『』【】，。；：、？！]{1,6}/.exec(rest.slice(sepLen));
+    if (!tailM) break;
+    const cand = rest.slice(0, sepLen + tailM[0].length);
+    if (targetPath) {
+      const stemNorm = normalizeText(targetPath.split('/').pop()).replace(/\.[^.]+$/, '');
+      if (!stemNorm.endsWith(normalizeText(cand))) break;
+    }
+    to += cand.length;
+  }
   // 向左：尾部匹配「数字骨架 + 分隔符」的前缀（日期/编号），遇到语义字即停
   const win = norm.slice(Math.max(0, from - 16), from);
   const dm = /(?:\d+[年月日号]?[\s._\-/:]*)+$/.exec(win);
@@ -160,9 +174,9 @@ function absorbPathExt(norm, i, j, targetPath) {
   return [from, to];
 }
 
-function absorbAll(norm, i, j, targetPath) {
+function absorbAll(norm, i, j, targetPath, shortTail = true) {
   let [from, to] = absorbPathExt(norm, i, j, targetPath);
-  [from, to] = absorbWrap(norm, from, to);
+  [from, to] = absorbWrap(norm, from, to, targetPath, shortTail);
   return [from, to];
 }
 
@@ -510,15 +524,26 @@ export function extractLinks(text, autoIndex, opts = {}) {
         } else if (item.targets.length >= 2) {
           // 歧义词条：文本自带路径段/扩展名（笔记/同名文件.md）时消歧到唯一文档；
           // 消歧失败则产出候选链接（前端点击弹候选选择，与 [[..]] 歧义同交互）
-          const [ef, et] = absorbAll(norm, i, j, null);
+          // 消歧：三级回退——完整吸收（含「（三）后续」这类尾巴）→ 只吸括号/路径 → 核心原文。
+          // 裸提及（「同名」）在宽松吸收下会连后文一起吸走，必须能退回核心本身。
           const cands = item.targets.filter((c) => c.path !== selfPath);
-          let hits = [];
-          if (ef < i || et > j) {
-            const mention = norm.slice(ef, et);
-            hits = cands.filter((c) => {
+          const matchFor = (from, to) => {
+            const mention = norm.slice(from, to);
+            return cands.filter((c) => {
               const pn = normalizeText(c.path);
-              return pn === mention || pn.endsWith('/' + mention);
+              const tail = pn.split('/').pop().replace(/\.(md|txt|json|docx?|doc)$/i, '');
+              return tail === mention || tail.endsWith(mention) || pn === mention || pn.endsWith('/' + mention);
             });
+          };
+          let hits = [];
+          let ef = i, et = j;
+          for (const [f2, t2] of [
+            absorbAll(norm, i, j, null, true),
+            absorbAll(norm, i, j, null, false),
+            [i, j],
+          ]) {
+            const hs = matchFor(f2, t2);
+            if (hs.length === 1) { hits = hs; ef = f2; et = t2; break; }
           }
           if (hits.length === 1 && !seen.has(item.norm)) {
             seen.add(item.norm);
@@ -530,8 +555,9 @@ export function extractLinks(text, autoIndex, opts = {}) {
             // 消歧失败：产出候选链接。候选是「待用户点选」状态，不占用 seen——
             // 同节再次出现时仍给消歧入口（否则首次出现在列表里，表格/后文就永远没有入口了）
             const show = hits.length >= 2 ? hits : cands;
+            const [cf, ct] = absorbAll(norm, i, j, null, false);
             out.push({
-              from: ef, to: et, term: text.slice(ef, et), norm: item.norm,
+              from: cf, to: ct, term: text.slice(cf, ct), norm: item.norm,
               target: null, candidates: show.map((c) => c.path),
             });
             consumeTo = Math.max(consumeTo, et);
