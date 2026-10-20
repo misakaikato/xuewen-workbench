@@ -15,8 +15,8 @@ import { generateImage, uniapiKey } from './imagegen.js';
 const CONV_META = 'conversations.json';
 // 运行模式：auto=全自动 / confirm=破坏性工具需确认 / readonly=仅检索阅读
 const READONLY_TOOLS = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status'];
-const DESTRUCTIVE_TOOLS = ['save_note', 'word_to_markdown', 'rag_manage', 'open_doc', 'rename_entry', 'move_entry', 'settings_set', 'generate_image'];
-const TOOL_NAMES = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc', 'remember', 'forget', 'recall', 'consolidate', 'rename_entry', 'move_entry', 'settings_get', 'settings_set', 'generate_image'];
+const DESTRUCTIVE_TOOLS = ['bash', 'save_note', 'word_to_markdown', 'rag_manage', 'open_doc', 'rename_entry', 'move_entry', 'settings_set', 'generate_image'];
+const TOOL_NAMES = ['read', 'bash', 'search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc', 'remember', 'forget', 'recall', 'consolidate', 'rename_entry', 'move_entry', 'settings_get', 'settings_set', 'generate_image'];
 
 function nowIso() {
   return new Date().toISOString();
@@ -390,6 +390,12 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     const hub = this;
     return (pi) => {
       const lib = () => hub.getLib();
+      // 内置 bash 也走 confirm 确认链（它是 pi 内置工具，不经过我们自定义工具的 execute 包装）
+      pi.on('tool_call', async (event) => {
+        if (event.toolName !== 'bash') return undefined;
+        const ok = await hub._confirm(convId, 'bash', event.input);
+        return ok ? undefined : { block: true, reason: '用户拒绝了该命令的执行' };
+      });
       pi.registerTool({
         name: 'search_corpus',
         label: '精确检索语料',
@@ -942,6 +948,11 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
         '  · scope=library（默认）：只与当前资料库内容有关的知识',
         '- 拿不准时：涉及「用户希望我怎么回答」→ global；涉及「这个库里有什么」→ library。',
         '',
+        '## Shell 执行',
+        '- 可以执行 shell 命令完成批量操作（跑脚本、处理文件、调用本机工具），工作目录是语料库根目录。',
+        '- 执行破坏性命令（删除、覆盖、移动语料外文件）前先说明要做什么。',
+        '- 对用户透明：说「已跑完提取」「已生成列表」，不要说「我用 bash 执行了 xxx」。',
+        '',
         '## 图像生成',
         '- 用户要配图/插图/封面时，用 generate_image 生成（描述要具体：主体、风格、配色、构图）。',
         '- 生成后直接说「已生成」并给出图片，不要复述 prompt。',
@@ -982,6 +993,10 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     const { session } = await createAgentSession({
       cwd,
       agentDir: this.agentDir,
+      // 工具白名单（全局，内置+自定义都受控）：pi 默认的 edit/write 不启用——
+      // 那是全机任意写；语料内写入一律走 save_note/rename_entry 等专用工具。
+      // read 保留（skills/引用文件），bash 保留（shell 执行，confirm 模式需确认）。
+      tools: TOOL_NAMES,
       model,
       modelRuntime: runtime,
       resourceLoader: loader,
