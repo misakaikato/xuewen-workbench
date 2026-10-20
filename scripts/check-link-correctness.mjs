@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { buildAutoIndex, extractLinks } from '../server/linkMatch.js';
 
 const BASE = '/Users/mayu/Projects/workbench-text';
-const read = (f) => fs.readFileSync(BASE + '/' + f, 'utf8');
+const read = (f) => fs.readFileSync(BASE + '/' + f, 'utf8').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
 
 // ── 词条源（与真实库同规则：路径 -> stem）──
 const paths = [];

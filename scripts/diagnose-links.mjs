@@ -79,7 +79,7 @@ for (const x of stripped.slice(0, 10)) console.log(`  ${x.term}  →  核心「$
 let totalLinks = 0, totalCand = 0, noLinkDocs = 0;
 const noLinkList = [];
 for (const f of files) {
-  const text = fs.readFileSync(f.abs, 'utf8');
+  const text = fs.readFileSync(f.abs, 'utf8').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   const links = extractLinks(text, idx, { selfPath: f.rel });
   const direct = links.filter((l) => l.target).length;
   const cand = links.filter((l) => l.candidates).length;
