@@ -58,16 +58,38 @@ const WRAP_OPEN = '《「『【';
 const WRAP_CLOSE = { '《': '》', '「': '」', '『': '』', '【': '】' };
 // 日期前缀（归一化形态：- 已统一；覆盖横线/点/斜线/中文/紧凑写法）
 const DATE_PREFIX_NORM_RE = /^(?:\d{4}(?:[-/.]\d{1,2}[-/.]\d{1,2}|年\d{1,2}月\d{1,2}日?)|\d{8})[-\s]*/;
+// 编号前缀（文件排序/卡片编号）：1. 1、 01_ C01_ R10_ S01_ 314-11-37
+const ID_PREFIX_RES = [
+  /^\d+-\d+-\d+\s+/,       // 314-11-37 第十一季…（非日期语义的怪编号；须在最前，否则被 \d+[-_] 先吃一段）
+  /^\d+[.、]\s*/,            // 1.劝学 / 1、劝学
+  /^[A-Za-z]+\d+[-_]\s*/,    // C01_心的定义 / R10_同气相求（归一化后 _ 已转为 -）
+  /^\d+[-_]\s*/,             // 01_总览 / 04_内容索引（同上）
+];
+// 后缀包装（系列序号/版本/注释）：可叠加，循环剥离直到稳定
+const SUFFIX_RES = [
+  /[(（][一二三四五六七八九十]+[)）]\s*$/,          // （一）（二）
+  /[(（](?:上|下|完结篇?|前言|序言|总卡|后续)[)）]\s*$/, // （上）（完结篇）（总卡）
+  / - 拷贝\s*$/,                              //  - 拷贝
+  /后续\s*$/,                                 // （三）后续 → 循环两轮剥净
+  /序言[一二三四五六七八九十]?\s*$/,           // 序言二
+  /[(（][^()（）]{1,12}[)）]\s*$/,             // 任意括号尾注（心形之道）
+];
 
-/** 提取词条核心：剥离外层成对书名号与日期前缀。返回值可能为空串（纯包装） */
+/** 提取词条核心：剥离前缀（日期/编号）、后缀（系列/注释）、外层书名号，循环到稳定 */
 export function termCore(normTerm) {
   let t = String(normTerm ?? '').trim();
-  // 外层书名号成对剥离（可叠层：《《X》》极少见但顺手处理）
-  while (t.length > 2 && WRAP_OPEN.includes(t[0]) && t[t.length - 1] === WRAP_CLOSE[t[0]]) {
-    t = t.slice(1, -1).trim();
+  for (let round = 0; round < 6 && t; round++) {
+    const before = t;
+    // 外层书名号成对剥离（可叠层）
+    while (t.length > 2 && WRAP_OPEN.includes(t[0]) && t[t.length - 1] === WRAP_CLOSE[t[0]]) {
+      t = t.slice(1, -1).trim();
+    }
+    t = t.replace(DATE_PREFIX_NORM_RE, '');
+    for (const re of ID_PREFIX_RES) t = t.replace(re, '');
+    for (const re of SUFFIX_RES) t = t.replace(re, '');
+    t = t.replace(/^[-\s]+|[-\s]+$/g, '');
+    if (t === before) break;
   }
-  t = t.replace(DATE_PREFIX_NORM_RE, '');
-  t = t.replace(/^[-\s]+|[-\s]+$/g, '');
   return t;
 }
 
@@ -113,9 +135,47 @@ function absorbPathExt(norm, i, j, targetPath) {
   return [from, to];
 }
 
-// 全包装吸收：路径/扩展名 → 日期前缀 → 书名号
+// 系列后缀向右吸收（target 的文件名以该后缀结尾才吸收，「（一）班的同学」不误吸）
+const SERIES_HEAD_RES = [
+  /^[(（][一二三四五六七八九十]+[)）]/,
+  /^[(（](?:上|下|完结篇?|前言|序言|总卡|后续)[)）]/,
+  /^序言[一二三四五六七八九十]?/,
+  /^后续/,
+  /^ - 拷贝/,
+];
+// 编号前缀向左吸收（target 的文件名以该编号开头才吸收）
+const ID_TAIL_RES = [
+  /(\d+[.、])$/,
+  /([A-Za-z]+\d+[-_])$/,
+  /(\d+[-_])$/,
+  /(\d+-\d+-\d+\s+)$/,
+];
+function absorbSeriesAndId(norm, i, j, targetPath) {
+  let from = i, to = j;
+  if (!targetPath) return [from, to];
+  const stem = targetPath.split('/').pop().replace(/\.[^.]+$/, '');
+  const stemNorm = normalizeText(stem);
+  // 向右：系列后缀
+  for (const re of SERIES_HEAD_RES) {
+    const m = re.exec(norm.slice(to, to + 16));
+    if (m && stemNorm.endsWith(normalizeText(m[0].trim()))) { to += m[0].length; break; }
+  }
+  // 向左：编号前缀（含后续分隔符）
+  const win = norm.slice(Math.max(0, from - 12), from);
+  for (const re of ID_TAIL_RES) {
+    const m = re.exec(win);
+    if (m && stemNorm.startsWith(normalizeText(m[1].replace(/[-_]$/, '-')))) {
+      from -= m[1].length;
+      break;
+    }
+  }
+  return [from, to];
+}
+
+// 全包装吸收：路径/扩展名 → 系列后缀/编号前缀 → 日期前缀 → 书名号
 function absorbAll(norm, i, j, targetPath) {
   let [from, to] = absorbPathExt(norm, i, j, targetPath);
+  [from, to] = absorbSeriesAndId(norm, from, to, targetPath);
   [from, to] = absorbWrap(norm, from, to);
   return [from, to];
 }
