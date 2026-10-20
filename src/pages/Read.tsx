@@ -5,6 +5,8 @@ import { useLocation, useNavigate, useParams, Link, useSearchParams, useBlocker,
 import { api } from '@/lib/api';
 import { Sparkles } from 'lucide-react';
 import { findSearchLocation, searchLocationRange, findAllRanges } from '@/lib/searchLocation';
+import { markDomFind, unmarkDomFind } from '@/lib/domFind';
+import { setFindHl } from '@/lib/readFindHighlight';
 import { useApp } from '@/store/app';
 import { useReadingPrefs } from '@/lib/prefs';
 import { loadReadPos, saveReadPos, loadDraft, saveDraft, clearDraft } from '@/lib/drafts';
@@ -13,13 +15,17 @@ import { detectLineSeparator } from '@/components/editor/lineSeparator';
 import { FormatToolbar } from '@/components/editor/FormatToolbar';
 import { pushDocLinks } from '@/components/editor/autoLinks';
 import type { FilePayload, FileEntry } from '@/lib/types';
-import { ReadOnlyDoc, docHeadings, scrollDocToPos, findNextInDoc } from '@/components/ReadOnlyDoc';
+import { ReadOnlyDoc, docHeadings, scrollDocToPos } from '@/components/ReadOnlyDoc';
 import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
 import { editorBaseExtensions, editorBaseThemeSpec } from '@/components/editor/setup';
 import { EditorState, type Extension } from '@codemirror/state';
+import { html as htmlLang } from '@codemirror/lang-html';
 import { EditorView } from '@codemirror/view';
 import { JsonViewer } from '@/components/JsonViewer';
 import { WordReader } from '@/components/WordReader';
+import { HtmlReader } from '@/components/HtmlReader';
+import { TxtReadBody } from '@/components/TxtReadBody';
+import { PathListPopover, type PathListRequest } from '@/components/CorpusRefPopover';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
 import { ReadAgentPanel } from '@/components/ReadAgentPanel';
 import { ConceptCard } from '@/components/ConceptCard';
@@ -33,7 +39,7 @@ import type { DocLink } from '@/lib/api';
 import type { EditorView as EditorViewType } from '@codemirror/view';
 import {
   Pencil, Pin, PinOff, ListTree, Link2, Search, X, Settings2, ChevronUp, NotebookPen,
-  Save, AlertTriangle, CheckCircle2, Columns2, ArrowLeft, ArrowRight,
+  Save, AlertTriangle, CheckCircle2, Columns2, ArrowLeft, ArrowRight, Loader2,
 } from 'lucide-react';
 
 type EditSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -147,6 +153,8 @@ export default function Read() {
     });
   }, [dsId, relPath, navigate]);
   const [conceptName, setConceptName] = useState<string | null>(null);
+  // TXT 阅读正文的歧义链接候选弹层（md 的同类弹层在 ReadOnlyDoc 内部）
+  const [txtCandReq, setTxtCandReq] = useState<PathListRequest | null>(null);
   const [aiWidth, setAiWidth] = useState(() => {
     const n = Number(localStorage.getItem('wb.read.aiWidth'));
     return Number.isFinite(n) && n >= 260 && n <= 720 ? n : 380;
@@ -171,6 +179,8 @@ export default function Read() {
   const [noteSaving, setNoteSaving] = useState(false);
   const [noteDraftSaved, setNoteDraftSaved] = useState(false);
   const [resumeHint, setResumeHint] = useState<string | null>(null);
+  // 定位中：从检索结果/锚点进入时，跳转完成前给出提示，避免「先到顶部再猛跳」看起来像卡死
+  const [locating, setLocating] = useState(false);
   const [pinned, setPinned] = useState(false);
   const navType = useNavigationType();
   const [navDepth, setNavDepth] = useState({ idx: 0, max: 0 });
@@ -179,6 +189,8 @@ export default function Read() {
   const viewRef = useRef<EditorViewType | null>(null);
   const [viewReady, setViewReady] = useState(0);
   const lastFindRef = useRef<{ from: number; to: number } | null>(null);
+  const onWordReady = useCallback(() => setViewReady((n) => n + 1), []);
+  const findDomIdxRef = useRef(-1); // 非 markdown：DOM mark 循环游标
 
   // ---------- 原位编辑会话（与 Edit 页保存机制同源：原子写/备份/冲突/草稿） ----------
   const [editing, setEditing] = useState(false);
@@ -392,7 +404,7 @@ export default function Read() {
     }
     const el = contentRef.current;
     if (!el) return;
-    const headings = [...el.querySelectorAll('h1, h2, h3, h4')].map((h, i) => {
+    const headings = [...el.querySelectorAll('h1, h2, h3, h4, h5, h6')].map((h, i) => {
       const id = h.id || 'h-' + i;
       h.id = id;
       return { key: id, id, text: h.textContent || '', level: Number(h.tagName[1]) };
@@ -452,7 +464,7 @@ export default function Read() {
       let n: Node | null;
       while ((n = walker.nextNode())) nodes.push(n as Text);
       for (const t of nodes) {
-        const idx = t.data.indexOf(highlightTerm);
+        const idx = t.data.toLowerCase().indexOf(highlightTerm.toLowerCase());
         if (idx >= 0 && t.parentElement && !['SCRIPT', 'STYLE', 'MARK'].includes(t.parentElement.tagName)) {
           const after = t.splitText(idx);
           after.splitText(highlightTerm.length);
@@ -476,6 +488,12 @@ export default function Read() {
     if (!file) return;
     const sc = scrollRef.current;
     if (!sc) return;
+    const hasTarget = !!(hitText || highlightTerm || location.hash);
+    // 提示延迟 150ms 出现：定位本身很快时（多数情况）根本不亮，只有真卡才提示，
+    // 避免提示一闪而过（入场动画还没播完就消失，等于没有）
+    let showTimer: ReturnType<typeof setTimeout> | undefined;
+    if (hasTarget) showTimer = setTimeout(() => setLocating(true), 150);
+    else setLocating(false);
     const apply = (allowFallback: boolean): boolean => {
       // 优先定位点击的结果块；查询词只负责高亮，避免总跳到全文第一次命中。
       if (hitText) {
@@ -483,7 +501,7 @@ export default function Read() {
         if (file.type === 'markdown') {
           const v = viewRef.current;
           if (!v) return false;
-          const hit = findSearchLocation(v.state.sliceDoc(0), target);
+          const hit = findSearchLocation(v.state.doc.toString(), target);
           if (hit && scrollDocToPos(v, hit.from, sc, Math.round(sc.clientHeight / 3))) return true;
         } else if (contentRef.current) {
           const range = searchLocationRange(contentRef.current, target);
@@ -499,7 +517,7 @@ export default function Read() {
         if (file.type === 'markdown') {
           const v = viewRef.current;
           if (!v) return false; // 只读实例未就绪，稍后重试
-          const doc = v.state.sliceDoc(0).toLowerCase();
+          const doc = v.state.doc.toString().toLowerCase();
           const idx = doc.indexOf(highlightTerm.toLowerCase());
           if (idx >= 0 && scrollDocToPos(v, idx, sc, Math.round(sc.clientHeight / 3))) return true;
           // 词不在正文（智能检索的语义命中常见）：继续走锚点/比例/记忆位置
@@ -520,7 +538,7 @@ export default function Read() {
         } else {
           const el2 = document.getElementById(anchor);
           if (el2) {
-            sc.scrollTop = el2.offsetTop - 80;
+            sc.scrollTop += el2.getBoundingClientRect().top - sc.getBoundingClientRect().top - 80;
             return true;
           }
         }
@@ -551,10 +569,22 @@ export default function Read() {
     let timer: ReturnType<typeof setTimeout>;
     const attempt = () => {
       const settled = apply(tries >= 9);
-      if (!settled && ++tries < 10) timer = setTimeout(attempt, 100);
+      if (!settled && ++tries < 10) {
+        timer = setTimeout(attempt, 100);
+        return;
+      }
+      // 定位落点后再留 180ms：scrollDocToPos 的 rAF 排版校正最多还要跑 8 帧，
+      // 提前揭提示会把校正过程露出来
+      if (hasTarget) {
+        if (showTimer) clearTimeout(showTimer);
+        timer = setTimeout(() => setLocating(false), 180);
+      }
     };
     timer = setTimeout(attempt, 60);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      if (showTimer) clearTimeout(showTimer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file, viewReady, location.hash, dsId, relPath, highlightTerm, hitText, hitOccurrence]);
 
@@ -605,6 +635,7 @@ export default function Read() {
       }
       if (e.key === 'Escape') {
         setFindOpen(false);
+        setFindQ('');
         setShowPrefs(false);
       }
     };
@@ -662,56 +693,68 @@ export default function Read() {
     };
   });
 
-  // 文内查找：markdown 走只读 CM 定位；Word/JSON 沿用 DOM 文本扫描
+  // 文内查找：命中全部高亮 + 当前命中选中。markdown 走 CM 装饰；Word/JSON/TXT 走 DOM mark
   useEffect(() => {
-    if (!findQ) { setFindHits(0); return; }
+    const v = viewRef.current;
+    const isMd = file?.type === 'markdown';
+    if (!findQ) {
+      setFindHits(0);
+      lastFindRef.current = null;
+      findDomIdxRef.current = -1;
+      if (isMd && v) v.dispatch({ effects: setFindHl.of({ ranges: [], current: null }) });
+      else if (contentRef.current) unmarkDomFind(contentRef.current);
+      return;
+    }
     lastFindRef.current = null;
-    if (file?.type === 'markdown' && viewRef.current && scrollRef.current) {
-      const ranges = findAllRanges(viewRef.current.state.sliceDoc(0), findQ, findMode === 'smart');
+    findDomIdxRef.current = -1;
+    if (isMd && v && scrollRef.current) {
+      const ranges = findAllRanges(v.state.doc.toString(), findQ, findMode === 'smart');
       setFindHits(ranges.length);
-      const hit = findMode === 'smart' ? ranges[0] : findNextInDoc(viewRef.current, findQ, 0);
+      const hit = ranges[0];
+      v.dispatch({ effects: setFindHl.of({ ranges, current: hit || null }) });
       if (hit) {
-        lastFindRef.current = { from: hit.from, to: hit.to };
-        viewRef.current.dispatch({ selection: { anchor: hit.from, head: hit.to } });
-        scrollDocToPos(viewRef.current, hit.from, scrollRef.current, 120);
+        lastFindRef.current = hit;
+        v.dispatch({ selection: { anchor: hit.from, head: hit.to } });
+        scrollDocToPos(v, hit.from, scrollRef.current, 120);
       }
       return;
     }
     const el = contentRef.current;
     if (!el) return;
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    let n: Node | null;
-    while ((n = walker.nextNode())) {
-      if ((n as Text).data.includes(findQ)) {
-        (n.parentElement as HTMLElement)?.scrollIntoView({ block: 'center' });
-        break;
-      }
-    }
-  }, [findQ, file, findMode]);
+    const n = markDomFind(el, findQ, findMode === 'smart');
+    setFindHits(n);
+    const first = el.querySelector('mark.wb-find-hl');
+    if (first) { findDomIdxRef.current = 0; first.classList.add('wb-find-current'); (first as HTMLElement).scrollIntoView({ block: 'center' }); }
+    return () => unmarkDomFind(el);
+  }, [findQ, file, findMode, viewReady]);
 
   // 查找条 Enter：下一个命中（到尾回绕）
   const findNext = useCallback(() => {
+    if (!findQ) return;
     const v = viewRef.current;
     const sc = scrollRef.current;
-    if (!v || !sc || !findQ || file?.type !== 'markdown') return;
-    const from = lastFindRef.current ? lastFindRef.current.to : 0;
-    if (findMode === 'smart') {
-      const ranges = findAllRanges(v.state.sliceDoc(0), findQ, true);
+    if (file?.type === 'markdown') {
+      if (!v || !sc) return;
+      const ranges = findAllRanges(v.state.doc.toString(), findQ, findMode === 'smart');
+      const from = lastFindRef.current ? lastFindRef.current.to : 0;
       const hit = ranges.find((r) => r.from >= from) || ranges[0];
       if (hit) {
         lastFindRef.current = hit;
-        v.dispatch({ selection: { anchor: hit.from, head: hit.to } });
+        v.dispatch({ selection: { anchor: hit.from, head: hit.to }, effects: setFindHl.of({ ranges, current: hit }) });
         scrollDocToPos(v, hit.from, sc, 120);
       }
       return;
     }
-    let hit = findNextInDoc(v, findQ, from);
-    if (!hit && from > 0) hit = findNextInDoc(v, findQ, 0);
-    if (hit) {
-      lastFindRef.current = hit;
-      v.dispatch({ selection: { anchor: hit.from, head: hit.to } });
-      scrollDocToPos(v, hit.from, sc, 120);
-    }
+    const el = contentRef.current;
+    if (!el) return;
+    const marks = [...el.querySelectorAll<HTMLElement>('mark.wb-find-hl')];
+    if (!marks.length) return;
+    marks.forEach((m) => m.classList.remove('wb-find-current'));
+    const count = new Set(marks.map((m) => m.dataset.findIndex)).size;
+    findDomIdxRef.current = (findDomIdxRef.current + 1) % count;
+    const current = marks.filter((m) => m.dataset.findIndex === String(findDomIdxRef.current));
+    current.forEach((m) => m.classList.add('wb-find-current'));
+    current[0]?.scrollIntoView({ block: 'center' });
   }, [findQ, file, findMode]);
 
   // 划线：选中正文后在选区旁浮出「记笔记」按钮
@@ -773,6 +816,30 @@ export default function Read() {
       txtInPlaceTheme,
     ],
     [lineSep]
+  );
+
+  // HTML 原位编辑：与 TXT 同排版主题，加 HTML 语法高亮
+  const htmlExtensions = useMemo<Extension[]>(
+    () => [
+      EditorState.lineSeparator.of(lineSep),
+      htmlLang(),
+      ...editorBaseExtensions({ lineNumbers: false, foldGutter: false }),
+      txtInPlaceTheme,
+    ],
+    [lineSep]
+  );
+
+  // 阅读态双击正文进入原位编辑（可写文本类格式：md / txt / html）
+  const onContentDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (editingRef.current || !file || file.readonly) return;
+      if (file.type !== 'markdown' && file.type !== 'text' && file.type !== 'html') return;
+      // 注意 [contenteditable="true"]：只读态 CodeMirror 的 contentDOM 带 contenteditable="false"，
+      // 裸写 [contenteditable] 会把阅读态 CM 整个排除，md 双击永远不生效
+      if ((e.target as HTMLElement).closest('a,button,input,select,textarea,[contenteditable="true"]')) return;
+      enterEdit();
+    },
+    [file, enterEdit]
   );
 
   if (error) {
@@ -1062,7 +1129,13 @@ export default function Read() {
           </div>
 
           {/* 正文 */}
-          <div ref={contentRef} data-wb-content-card className="bg-card border border-border rounded-lg p-6 md:p-8 min-h-[40vh]">
+          <div
+            ref={contentRef}
+            data-wb-content-card
+            className="bg-card border border-border rounded-lg p-6 md:p-8 min-h-[40vh]"
+            onDoubleClick={onContentDoubleClick}
+            title={!editing && file && !file.readonly && (file.type === 'markdown' || file.type === 'text' || file.type === 'html') ? '双击进入编辑' : undefined}
+          >
             {file.type === 'markdown' && (
               <ReadOnlyDoc
                 key={relPath}
@@ -1101,13 +1174,43 @@ export default function Read() {
                   }}
                 />
               ) : (
-                <div className="whitespace-pre-wrap break-words" style={txtReaderStyle}>
-                  {file.content || ''}
-                </div>
+                <TxtReadBody
+                  key={relPath}
+                  content={file.content || ''}
+                  links={docLinks}
+                  style={txtReaderStyle}
+                  onOpenTarget={(t) => {
+                    if (t.path.startsWith('concept:')) {
+                      setConceptName(t.path.slice('concept:'.length));
+                      return;
+                    }
+                    const nav = '/read/' + t.path.split('/').map(encodeURIComponent).join('/');
+                    navigate(t.heading ? nav + '#' + encodeURIComponent(t.heading) : nav);
+                  }}
+                  onCandidates={(term, candidates, at) =>
+                    setTxtCandReq({ title: `「${term}」指向 ${candidates.length} 个文档，请选择：`, paths: candidates, ...at })
+                  }
+                />
               ))}
-            {file.type === 'json' && <JsonViewer content={file.content || ''} highlightTerm={highlightTerm} />}
+            {file.type === 'json' && <JsonViewer key={relPath} content={file.content || ''} highlightTerm={highlightTerm || hitText || findQ} />}
+            {file.type === 'html' &&
+              (editing ? (
+                <CodeMirrorEditor
+                  key={relPath}
+                  initialDoc={file.content || ''}
+                  extensions={htmlExtensions}
+                  height="auto"
+                  onDocChanged={onEditDocChanged}
+                  onCreate={(v) => {
+                    viewRef.current = v;
+                    setViewReady((s) => s + 1);
+                  }}
+                />
+              ) : (
+                <HtmlReader key={relPath} content={file.content || ''} docPath={relPath} onContentReady={onWordReady} />
+              ))}
             {file.type === 'word' && (
-              <WordReader path={relPath} name={file.name} html={file.html || ''} text={file.text || ''} warning={file.warning} engine={file.engine} />
+              <WordReader key={relPath} onContentReady={onWordReady} path={relPath} name={file.name} html={file.html || ''} text={file.text || ''} warning={file.warning} engine={file.engine} />
             )}
           </div>
 
@@ -1162,7 +1265,7 @@ export default function Read() {
                           scrollDocToPos(viewRef.current, t.pos, sc, 70);
                         } else if (t.id) {
                           const el = document.getElementById(t.id);
-                          if (el) sc.scrollTop = el.offsetTop - 70;
+                          if (el) sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - 70;
                         }
                       }}
                     >
@@ -1368,6 +1471,17 @@ export default function Read() {
           </div>
         </div>
       )}
+
+      {/* 定位中提示：检索命中/锚点跳转完成前悬浮，消除「先顶部后猛跳」的卡顿感 */}
+      {locating && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 pl-2.5 pr-3.5 py-1.5 rounded-full bg-card border border-border shadow-lg text-xs text-muted-foreground animate-in fade-in slide-in-from-top-2 duration-200">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+          正在定位到命中位置…
+        </div>
+      )}
+
+      {/* TXT 阅读正文的歧义链接候选 */}
+      <PathListPopover req={txtCandReq} onClose={() => setTxtCandReq(null)} />
 
       {/* 概念详情（点正文里的概念词条打开） */}
       {conceptName && (

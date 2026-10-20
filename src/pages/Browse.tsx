@@ -28,7 +28,8 @@ export default function Browse() {
     const out: FileEntry[] = [];
     collect(tree, dir, out);
     let list = out;
-    if (type) list = list.filter((f) => f.ext === type);
+    // .html 筛选同时含 .htm（同一格式两种后缀）
+    if (type) list = list.filter((f) => (type === '.html' ? f.ext === '.html' || f.ext === '.htm' : f.ext === type));
     if (localFilter.trim()) {
       const f = localFilter.trim().toLowerCase();
       list = list.filter((x) => x.name.toLowerCase().includes(f) || x.path.toLowerCase().includes(f));

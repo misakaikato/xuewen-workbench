@@ -105,6 +105,7 @@ export default function Dashboard() {
           { label: 'TXT', value: c?.txt, to: '/browse?type=.txt' },
           { label: 'Word (docx)', value: c?.docx, to: '/browse?type=.docx' },
           { label: 'Word (doc)', value: c?.doc, to: '/browse?type=.doc' },
+          { label: 'HTML', value: c?.html, to: '/browse?type=.html' },
           { label: '目录', value: c?.dirs, to: '/browse' },
         ].map((card) => (
           <Link

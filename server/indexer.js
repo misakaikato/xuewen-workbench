@@ -30,7 +30,7 @@ export class Indexer {
         const f = queue.shift();
         const abs = path.join(this.baseDir, f.path);
         try {
-          if (f.ext === '.md' || f.ext === '.json' || f.ext === '.txt') {
+          if (f.ext === '.md' || f.ext === '.json' || f.ext === '.txt' || f.ext === '.html' || f.ext === '.htm') {
             // 与前端 CodeMirror 的文档表示对齐：剥 BOM、CRLF→LF。
             // 否则含 \r 或 BOM 的文件，内链偏移会整体错位（每行差 1 字符），
             // 表现为「标记落到错误位置/表格里没有标记」。
@@ -159,7 +159,8 @@ export class Indexer {
     const grouped = new Map(); // path -> { file, matches: [{field, snippet, index}] }
 
     for (const f of this.files) {
-      if (types && !types.includes(f.ext)) continue;
+      // .html 筛选同时含 .htm（同一格式两种后缀）
+      if (types && !types.includes(f.ext) && !(types.includes('.html') && f.ext === '.htm')) continue;
       if (dir && !(f.dir === dir || f.dir.startsWith(dir + '/'))) continue;
       if (excludes.some((d) => f.dir === d || f.dir.startsWith(d + '/'))) continue;
 

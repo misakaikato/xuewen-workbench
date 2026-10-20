@@ -4,7 +4,7 @@ import path from 'node:path';
 import chokidar from 'chokidar';
 import { EventEmitter } from 'node:events';
 
-export const SUPPORTED_EXTS = ['.md', '.json', '.txt', '.doc', '.docx'];
+export const SUPPORTED_EXTS = ['.md', '.json', '.txt', '.doc', '.docx', '.html', '.htm'];
 // 元数据旁注文件：<原文件名>.meta.json，不出现在目录树/检索中
 export const SIDECAR_SUFFIX = '.meta.json';
 export const TRASH_DIR = '.trash'; // 数据源根目录下的应用回收站（不扫描）
@@ -258,6 +258,7 @@ export class Scanner extends EventEmitter {
             txt: this.snapshot.files.filter((f) => f.ext === '.txt').length,
             doc: this.snapshot.files.filter((f) => f.ext === '.doc').length,
             docx: this.snapshot.files.filter((f) => f.ext === '.docx').length,
+            html: this.snapshot.files.filter((f) => f.ext === '.html' || f.ext === '.htm').length,
           }
         : null,
       dirErrors: this.snapshot?.dirErrors || [],

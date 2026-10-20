@@ -11,6 +11,8 @@ interface AppState {
   loading: boolean;
   dsId: string | null;
   update: UpdateState | null;
+  /** 手动重扫进行中（所有入口共享：顶栏图标 / ⌘K 命令同一反馈） */
+  scanning: boolean;
   applyUpdate: (s: UpdateState) => void;
   refreshConfig: () => Promise<void>;
   refreshTree: () => Promise<void>;
@@ -20,7 +22,7 @@ interface AppState {
 }
 
 const Ctx = createContext<AppState>({
-  config: null, libraries: [], tree: null, loading: true, dsId: null, update: null,
+  config: null, libraries: [], tree: null, loading: true, dsId: null, update: null, scanning: false,
   applyUpdate: () => {},
   refreshConfig: async () => {}, refreshTree: async () => {}, rescan: async () => {},
   activateLib: async () => {}, removeLib: async () => {},
@@ -65,14 +67,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (gen === genRef.current && ds === dsRef.current && t.dsId === config.dsId) setTree(t.tree);
   }, [config]);
 
+  // scanning 全局化：⌘K 面板是 fire-and-forget（不等 Promise），本地 state 看不到过程，
+  // 必须放 store 里让顶栏图标对所有入口同步转圈
+  const [scanning, setScanning] = useState(false);
   const rescan = useCallback(async () => {
-    await api.rescan();
-    const gen = genRef.current;
-    const ds = dsRef.current;
-    const [cfg, t] = await Promise.all([api.getConfig(), api.tree().catch(() => null)]);
-    if (gen === genRef.current && ds === dsRef.current) {
-      setConfig(cfg);
-      if (t) setTree(t.tree);
+    setScanning(true);
+    try {
+      await api.rescan();
+      const gen = genRef.current;
+      const ds = dsRef.current;
+      const [cfg, t] = await Promise.all([api.getConfig(), api.tree().catch(() => null)]);
+      if (gen === genRef.current && ds === dsRef.current) {
+        setConfig(cfg);
+        if (t) setTree(t.tree);
+      }
+    } finally {
+      setScanning(false);
     }
   }, []);
 
@@ -106,7 +116,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={{
       config, libraries: config?.libraries ?? [], tree, loading, dsId: config?.dsId ?? null,
-      update, applyUpdate: setUpdate,
+      update, scanning, applyUpdate: setUpdate,
       refreshConfig, refreshTree, rescan, activateLib, removeLib,
     }}>
       {children}

@@ -16,9 +16,12 @@
     "electron:build:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "release:mac": "npm run build && electron-builder --mac dmg zip --arm64 --publish always",
     "release:win": "npm run build && electron-builder --win nsis --x64 --publish always",
-    "test:e2e": "npm run build && electron scripts/e2e-editor.mjs"
+    "test:e2e": "npm run build && electron scripts/e2e-editor.mjs",
+    "test:retrieval": "node scripts/test-retrieval.mjs",
+    "test:retrieval:e2e": "npm run build && electron scripts/e2e-retrieval.mjs && electron scripts/e2e-search-location.mjs"
   },
   "dependencies": {
+    "@codemirror/lang-html": "^6.4.12",
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/language-data": "^6.5.2",
@@ -62,6 +65,7 @@
     "cmdk": "^1.1.1",
     "concurrently": "^10.0.6",
     "date-fns": "^4.1.0",
+    "dompurify": "^3.4.17",
     "electron-updater": "^6.8.10",
     "embla-carousel-react": "^8.6.0",
     "express": "^5.3.0",
@@ -91,6 +95,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@types/dompurify": "^3.0.5",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",

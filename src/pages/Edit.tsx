@@ -7,6 +7,7 @@ import { EditorState } from '@codemirror/state';
 import type { Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { json } from '@codemirror/lang-json';
+import { html as htmlLang } from '@codemirror/lang-html';
 import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { useReadingPrefs } from '@/lib/prefs';
@@ -110,7 +111,8 @@ export default function Edit() {
 
   const isJson = file?.type === 'json';
   const isTxt = file?.type === 'text'; // 纯文本：与 JSON 同待遇恒源码，无格式校验
-  const effMode: 'source' | 'preview' | 'split' | 'live' = isJson || isTxt ? 'source' : mode;
+  const isHtml = file?.type === 'html'; // HTML：恒源码（阅读页负责渲染预览）
+  const effMode: 'source' | 'preview' | 'split' | 'live' = isJson || isTxt || isHtml ? 'source' : mode;
   const isLive = effMode === 'live';
   const dirty = saveState === 'dirty' || saveState === 'error';
   dirtyRef.current = dirty;
@@ -493,6 +495,8 @@ export default function Edit() {
       list.push(json(), jsonTheme(prefs.codeFontSize));
     } else if (isTxt) {
       list.push(plainTheme);
+    } else if (isHtml) {
+      list.push(htmlLang(), plainTheme);
     } else {
       // 自动内链标记只在 md 模式挂载（实时预览与源码都有下划线；JSON 不适用）
       list.push(...linksExtensionFor(relPath, {
@@ -513,7 +517,7 @@ export default function Edit() {
     }
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isJson, isLive, lineSep, relPath, prefs.codeFontSize]);
+  }, [isJson, isTxt, isHtml, isLive, lineSep, relPath, prefs.codeFontSize]);
 
   // 路由离开拦截：使用页面内对话框（window.confirm 在部分嵌入浏览器中不可靠）
   const [leaveAction, setLeaveAction] = useState<'save' | null>(null);

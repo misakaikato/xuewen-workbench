@@ -53,7 +53,7 @@ export interface DocLink {
   to: number;
   term: string;
   norm?: string;
-  kind: 'auto' | 'wiki' | 'wiki-missing';
+  kind: 'auto' | 'wiki' | 'wiki-missing' | 'html';
   display: string | null;
   target: { path: string; heading?: string | null } | null;
   candidates?: string[];
@@ -260,7 +260,8 @@ export const api = {
   agentAbort: (id: string) => req<{ ok: boolean }>('/api/agent/abort', json('POST', { sessionId: id })),
   agentFork: (id: string, uptoIndex: number) => req<{ id: string; title: string }>('/api/agent/fork', json('POST', { sessionId: id, uptoIndex })),
   agentExport: (id: string) => '/api/agent/export/' + encodeURIComponent(id),
-  agentModels: () => req<{ models: string[] }>('/api/agent/models'),
+  agentModels: (pending?: { baseUrl?: string; apiKey?: string }) =>
+    req<{ ok: boolean; models: string[]; status: number; url: string; error: string }>('/api/agent/models', json('POST', pending || {})),
   agentSettings: (patch: Partial<AgentSettingsPatch>) => req<AgentStatus>('/api/agent/settings', json('PUT', patch)),
   agentEditMessage: (id: string, idx: number, text: string) => req<{ ok: boolean }>(`/api/agent/session/${encodeURIComponent(id)}/message/${idx}`, json('PUT', { text })),
   agentDeleteMessage: (id: string, idx: number) => req<{ ok: boolean }>(`/api/agent/session/${encodeURIComponent(id)}/message/${idx}`, json('DELETE', {})),

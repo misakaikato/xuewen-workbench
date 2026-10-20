@@ -102,6 +102,8 @@
   border-radius: 0 6px 6px 0;
 }
 .reader a { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 3px; }
+/* HTML 阅读器：指向不存在文档的断链 */
+.reader a.wb-link-missing { color: hsl(var(--destructive)); text-decoration-style: wavy; }
 
 /* 划线笔记标记（橙色点线下划线）。CodeMirror 内由 livePreview 的 theme 提供同名样式，
    此处供 TXT / JSON / Word 的 DOM 渲染器使用——两者属性保持一致。 */
@@ -174,3 +176,14 @@
 .cm-rd-hl { background: hsl(48 95% 70%); color: #3a2e00; border-radius: 2px; padding: 0 1px; }
 .dark .cm-rd-hl { background: hsl(48 80% 35%); color: hsl(48 60% 92%); }
 :root[data-theme="C"] .cm-rd-hl { background: var(--wb-hl); color: #f3e7c9; }
+/* 文内查找：全部命中淡色，当前命中浓色 */
+.cm-rd-find { background: hsl(48 95% 78%); border-radius: 2px; }
+.cm-rd-find-current { background: hsl(35 95% 55%); color: #fff; border-radius: 2px; }
+.dark .cm-rd-find { background: hsl(48 70% 30%); }
+.dark .cm-rd-find-current { background: hsl(35 90% 45%); color: #fff; }
+:root[data-theme="C"] .cm-rd-find { background: color-mix(in srgb, var(--wb-hl) 45%, transparent); }
+:root[data-theme="C"] .cm-rd-find-current { background: var(--wb-hl); color: #f3e7c9; }
+mark.wb-find-hl { background: hsl(48 95% 70%); color: inherit; border-radius: 2px; padding: 0 1px; }
+.dark mark.wb-find-hl { background: hsl(48 80% 35%); }
+mark.wb-find-current { outline: 2px solid currentColor; outline-offset: 1px; }
+:root[data-theme="C"] mark.wb-find-hl { background: var(--wb-hl); color: #f3e7c9; }

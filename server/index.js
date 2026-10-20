@@ -472,6 +472,7 @@ app.get('/api/stats', (req, res) => {
       txt: files.filter((f) => f.ext === '.txt').length,
       doc: files.filter((f) => f.ext === '.doc').length,
       docx: files.filter((f) => f.ext === '.docx').length,
+      html: files.filter((f) => f.ext === '.html' || f.ext === '.htm').length,
       dirs: lib.scanner.snapshot.dirCount,
       dirErrors: lib.scanner.snapshot.dirErrors.length,
       fileErrors: lib.scanner.snapshot.fileErrors.length,
@@ -494,12 +495,12 @@ app.get('/api/file', async (req, res) => {
     const f = findFile(lib, rel);
     if (!f) return res.status(404).json({ error: '文件不在当前扫描结果中（可能已被移动或删除）', missing: true });
     const ext = f.ext;
-    if (ext === '.md' || ext === '.json' || ext === '.txt' || ext === '.jsonl' || ext === '.graphml') {
+    if (ext === '.md' || ext === '.json' || ext === '.txt' || ext === '.html' || ext === '.htm' || ext === '.jsonl' || ext === '.graphml') {
       const { content, bom } = readTextPreserve(abs);
       const isDerived = ext === '.jsonl' || ext === '.graphml';
       return res.json({
         dsId: lib.id, path: rel, name: f.name, ext,
-        type: ext === '.md' ? 'markdown' : ext === '.json' ? 'json' : 'text',
+        type: ext === '.md' ? 'markdown' : ext === '.json' ? 'json' : ext === '.html' || ext === '.htm' ? 'html' : 'text',
         content, bom, mtimeMs: f.mtimeMs, size: f.size,
         readonly: isDerived, // 加工数据系统只读不写
       });
@@ -570,7 +571,7 @@ app.put('/api/file', async (req, res) => {
   }
   const f = findFile(lib, rel);
   const ext = path.posix.extname(String(rel)).toLowerCase();
-  if (!['.md', '.json', '.txt'].includes(ext)) {
+  if (!['.md', '.json', '.txt', '.html', '.htm'].includes(ext)) {
     return res.status(400).json({ error: '该格式不支持直接写回，请使用另存副本' });
   }
   try {
@@ -618,7 +619,7 @@ app.post('/api/notes/append', async (req, res) => {
   const { notesDir } = getUiSettings();
   try {
     const source = String(sourcePath);
-    const stem = path.posix.basename(source).replace(/\.(md|txt|json|docx?)$/i, '') || '未命名';
+    const stem = path.posix.basename(source).replace(/\.(md|txt|json|docx?|html?)$/i, '') || '未命名';
     const rel = path.posix.join(notesDir, stem + '.md');
     const abs = resolveWithin(lib, rel);
     const first = !fs.existsSync(abs);

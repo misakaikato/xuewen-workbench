@@ -12,6 +12,8 @@ import {
 import { loadConcepts } from './derived.js';
 
 const CACHE_VERSION = 1;
+// HTML 链接图只跟踪这些文档扩展名的 href 目标（与 scanner.SUPPORTED_EXTS 对齐）
+const HTML_DOC_EXTS = ['.md', '.json', '.txt', '.doc', '.docx', '.html', '.htm'];
 const LINKS_DIR = () => path.join(dataDir(), 'links');
 const cacheFileOf = (dsId) => path.join(LINKS_DIR(), dsId + '.json');
 
@@ -220,6 +222,54 @@ export class LinkIndex {
 
   // ---------- 单文件提取 ----------
 
+  // HTML 的 <a href="...">：指向库内文档的相对链接进链接图（反链 + 阅读页断链标记）。
+  // 协议绝对链接（http/mailto 等）、纯锚点、指向非文档资源（图片等）的链接不进图。
+  extractHtmlFor(p, text) {
+    const out = [];
+    const dir = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+    const joinRel = (base, rel) => {
+      const parts = base ? base.split('/').filter(Boolean) : [];
+      for (const seg of rel.split('/')) {
+        if (!seg || seg === '.') continue;
+        if (seg === '..') parts.pop();
+        else parts.push(seg);
+      }
+      return parts.join('/');
+    };
+    const A_RE = /<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a\s*>/gi;
+    let m;
+    while ((m = A_RE.exec(text))) {
+      const href = String(m[1] ?? m[2] ?? m[3] ?? '').trim();
+      if (!href || /^(?:[a-z][a-z0-9+.\-]*:|\/\/|#)/i.test(href)) continue;
+      const [filePart, anchorRaw] = href.split('#');
+      if (!filePart) continue;
+      let rel;
+      try { rel = decodeURIComponent(filePart); } catch { rel = filePart; }
+      const target = joinRel(dir, rel);
+      // 只跟踪指向文档格式的链接；资源文件（图片/附件等）不进图也不标断链
+      const tExt = path.posix.extname(target).toLowerCase();
+      if (!HTML_DOC_EXTS.includes(tExt)) continue;
+      if (target === p) continue; // 自指（页内跳转带文件名）不进图
+      let heading = null;
+      if (anchorRaw) {
+        try { heading = decodeURIComponent(anchorRaw); } catch { heading = anchorRaw; }
+      }
+      const hit = this.resolve.byPath.get(normalizeText(target).toLowerCase()) || null;
+      const innerRaw = m[4] || '';
+      const term = innerRaw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || target;
+      // from/to 恰好框住锚文本（</a> 固定 4 个码元），反链片段高亮区间与纯文本净化口径一致
+      const from = m.index + m[0].length - 4 - innerRaw.length;
+      out.push({
+        from, to: from + innerRaw.length,
+        term, norm: normalizeText(term), kind: 'html',
+        target: hit ? { path: hit, heading } : null,
+        display: null,
+      });
+    }
+    out.sort((a, b) => a.from - b.from);
+    return out;
+  }
+
   extractFor(p, text) {
     const out = [];
     for (const l of extractLinks(text, this.autoIndex, { selfPath: p })) {
@@ -336,7 +386,7 @@ export class LinkIndex {
       let changed = vocabChanged;
       let count = 0;
       for (const f of snapshot.files) {
-        if (f.ext !== '.md' && f.ext !== '.json') continue;
+        if (f.ext !== '.md' && f.ext !== '.json' && f.ext !== '.txt' && f.ext !== '.html' && f.ext !== '.htm') continue;
         const fm = fileMeta.get(f.path);
         const prev = old?.files[f.path];
         if (prev && prev.mtimeMs === f.mtimeMs && prev.size === f.size) {
@@ -344,9 +394,10 @@ export class LinkIndex {
         } else {
           const raw = texts.get(f.path);
           const text = raw == null ? '' : raw.startsWith('\uFEFF') ? raw.slice(1) : raw;
+          const isHtml = f.ext === '.html' || f.ext === '.htm';
           nextFiles.set(f.path, {
             mtimeMs: f.mtimeMs, size: f.size,
-            links: this.extractFor(f.path, text),
+            links: isHtml ? this.extractHtmlFor(f.path, text) : this.extractFor(f.path, text),
             title: fm.title, excerpt: fm.excerpt, headings: fm.headings,
           });
           changed = true;

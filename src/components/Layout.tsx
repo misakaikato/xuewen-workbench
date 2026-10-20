@@ -25,14 +25,13 @@ import {
 } from '@/components/ui/alert-dialog';
 
 export function Layout() {
-  const { config, libraries, tree, rescan, dsId, refreshTree, activateLib, removeLib } = useApp();
+  const { config, libraries, tree, rescan, scanning, dsId, refreshTree, activateLib, removeLib } = useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [treeFilter, setTreeFilter] = useState('');
-  const [rescanning, setRescanning] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -259,17 +258,10 @@ export function Layout() {
         <button
           className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground hover:text-primary disabled:opacity-40"
           title="重新扫描知识库"
-          disabled={rescanning || !config?.configured}
-          onClick={async () => {
-            setRescanning(true);
-            try {
-              await rescan();
-            } finally {
-              setRescanning(false);
-            }
-          }}
+          disabled={scanning || !config?.configured}
+          onClick={() => rescan()}
         >
-          <RefreshCw className={`w-4 h-4 ${rescanning || st?.scanning ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-4 h-4 ${scanning || st?.scanning ? 'animate-spin' : ''}`} />
         </button>
         <Link to="/settings" className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground hover:text-primary" title="设置">
           <Settings className="w-4 h-4" />
