@@ -15,7 +15,7 @@ export function DocTabs({
 }) {
   if (!tabs.length) return null;
   return (
-    <div className="flex items-end gap-0.5 overflow-x-auto shrink-0 px-1 pt-1 select-none" role="tablist">
+    <div className="flex items-end gap-0.5 overflow-x-auto shrink-0 px-1 pt-1 select-none bg-background border-b border-border" role="tablist">
       {tabs.map((p) => {
         const isActive = p === active;
         return (
@@ -28,7 +28,7 @@ export function DocTabs({
               'group flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-t-md text-xs cursor-pointer max-w-[180px] shrink-0 border border-b-0 transition-colors ' +
               (isActive
                 ? 'bg-card border-border text-foreground font-medium'
-                : 'bg-muted/40 border-transparent text-muted-foreground hover:bg-muted')
+                : 'bg-muted border-transparent text-muted-foreground hover:bg-accent')
             }
             onClick={() => onActivate(p)}
             onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onClose(p); } }}
