@@ -1,4 +1,6 @@
-# 发布流水线：打 tag 触发 mac + win 并行构建，产物上传为 draft release（人工核对后 Publish）
+# 发布流水线：打 tag 触发 mac + win 并行构建，产物上传为 draft release；
+# 两个平台都构建成功后 finalize 自动发布（draft → published + latest）。
+# draft 的意义是「资源没传完时客户端看不到」——finalize 只在 build 全绿时才跑。
 # 注意：package.json 里 build.publish 的 owner/repo 必须是真实仓库
 #
 # draft 竞态的根治：electron-builder 每个发布目标（mac 的 zip/dmg、win 的 nsis）各持一套
@@ -61,5 +63,12 @@ jobs:
                 gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/$id"
                 echo "deleted stray asset: $id"
               done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 两个平台都构建成功才走到这里：发布 draft 并标为 latest。
+      # 不发布的话客户端永远查不到新版本（electron-updater 只认已发布 release）。
+      - name: 发布 release（draft → published，设为 latest）
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
