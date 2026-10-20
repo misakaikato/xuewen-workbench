@@ -47,8 +47,17 @@ function readPublishConfig() {
   return null;
 }
 
+// update-available 时从 UpdateInfo.files（即 latest-mac.yml 的文件清单）记住 DMG 文件名：
+// 下载 URL 直接拼 releases/download/<tag>/<file>，走资产通道；
+// 不调 api.github.com——未认证请求限流 60 次/小时/IP，用户点下载时极易撞上 403
+let dmgFileName = null;
+
 async function releaseDmgUrl(version) {
   if (!publishCfg) throw new Error('缺少发布配置（app-update.yml）');
+  if (dmgFileName) {
+    return `https://github.com/${publishCfg.owner}/${publishCfg.repo}/releases/download/v${encodeURIComponent(version)}/${encodeURIComponent(dmgFileName)}`;
+  }
+  // 回退：files 缺失（非 GitHub provider / 异常清单）时才查 API
   const tag = encodeURIComponent(`v${version}`);
   const api = `https://api.github.com/repos/${publishCfg.owner}/${publishCfg.repo}/releases/tags/${tag}`;
   const ctrl = new AbortController();
@@ -160,15 +169,20 @@ export async function createUpdaterBridge({ getUiSettings }) {
   autoUpdater.logger = console;
 
   autoUpdater.on('checking-for-update', () => setState({ status: 'checking', error: null }));
-  autoUpdater.on('update-available', (info) => setState({
-    status: 'available',
-    info: {
-      version: info?.version || null,
-      releaseDate: info?.releaseDate || null,
-      notes: typeof info?.releaseNotes === 'string' ? info.releaseNotes : null,
-    },
-    error: null,
-  }));
+  autoUpdater.on('update-available', (info) => {
+    const files = Array.isArray(info?.files) ? info.files : [];
+    const dmgs = files.map((f) => String(f?.url || '')).filter((n) => n.endsWith('.dmg'));
+    dmgFileName = dmgs.find((n) => n.includes(`-${process.arch}`)) || dmgs[0] || null;
+    setState({
+      status: 'available',
+      info: {
+        version: info?.version || null,
+        releaseDate: info?.releaseDate || null,
+        notes: typeof info?.releaseNotes === 'string' ? info.releaseNotes : null,
+      },
+      error: null,
+    });
+  });
   autoUpdater.on('update-not-available', () => setState({ status: 'not-available', info: null, error: null }));
   autoUpdater.on('error', (e) => setState({ status: 'error', error: String(e?.message || e) }));
   autoUpdater.on('download-progress', (p) => setState({
