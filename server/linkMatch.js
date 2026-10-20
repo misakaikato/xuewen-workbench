@@ -51,57 +51,84 @@ export function isTermLike(name) {
   return true;
 }
 
-// ---------- 核心 + 包装：文档名 = 核心名 + 可选包装（日期前缀 / 书名号） ----------
-// 匹配只按核心与完整两种形式（不枚举格式变体）；命中后向左右吸收文本中的包装。
+// ---------- 核心 + 包装（结构判据，不枚举具体格式） ----------
+// 包装 = 文件名里「不承载语义的那部分」。判据只依赖位置与字符性质：
+//   1) 开头：第一个汉字之前的「含数字非汉字段」（日期、编号、序号，任意写法）
+//   2) 结尾：成对括号段（内容 ≤8 字；系列号、版本注解、分类注释，任意内容）
+//   3) 结尾：闭合括号或短横线之后的短尾巴（≤4 字；「（三）后续」「》序言二」「- 拷贝」）
+// 纯空格分隔不算包装边界（「德如植树 根深果繁」这类双段标题保持完整）。
+// 新增任何命名风格不需要改这里——判据看的是结构，不是格式。
 
 const WRAP_OPEN = '《「『【';
 const WRAP_CLOSE = { '《': '》', '「': '」', '『': '』', '【': '】' };
-// 日期前缀（归一化形态：- 已统一；覆盖横线/点/斜线/中文/紧凑写法）
-const DATE_PREFIX_NORM_RE = /^(?:\d{4}(?:[-/.]\d{1,2}[-/.]\d{1,2}|年\d{1,2}月\d{1,2}日?)|\d{8})[-\s]*/;
-// 编号前缀（文件排序/卡片编号）：1. 1、 01_ C01_ R10_ S01_ 314-11-37
-const ID_PREFIX_RES = [
-  /^\d+-\d+-\d+\s+/,       // 314-11-37 第十一季…（非日期语义的怪编号；须在最前，否则被 \d+[-_] 先吃一段）
-  /^\d+[.、]\s*/,            // 1.劝学 / 1、劝学
-  /^[A-Za-z]+\d+[-_]\s*/,    // C01_心的定义 / R10_同气相求（归一化后 _ 已转为 -）
-  /^\d+[-_]\s*/,             // 01_总览 / 04_内容索引（同上）
-];
-// 后缀包装（系列序号/版本/注释）：可叠加，循环剥离直到稳定
-const SUFFIX_RES = [
-  /[(（][一二三四五六七八九十]+[)）]\s*$/,          // （一）（二）
-  /[(（](?:上|下|完结篇?|前言|序言|总卡|后续)[)）]\s*$/, // （上）（完结篇）（总卡）
-  / - 拷贝\s*$/,                              //  - 拷贝
-  /后续\s*$/,                                 // （三）后续 → 循环两轮剥净
-  /序言[一二三四五六七八九十]?\s*$/,           // 序言二
-  /[(（][^()（）]{1,12}[)）]\s*$/,             // 任意括号尾注（心形之道）
-];
+const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff]/;
 
-/** 提取词条核心：剥离前缀（日期/编号）、后缀（系列/注释）、外层书名号，循环到稳定 */
+const hasDigit = (s) => /\d/.test(s);
+// 前缀包装的形态：由「数字串 +（可选年月日号）+ 分隔符」重复构成，或短字母数字编号（C01_）。
+// 不看具体格式（日期/序号/章节号都行），只要求：以数字为骨架、以分隔符收尾。
+const HEAD_NUM_RE = /^(?:\d+[年月日号]?[\s._\-/:]+)+/;
+const HEAD_ID_RE = /^[A-Za-z]{1,3}\d+[\s._\-/:]+/;
+// 结尾成对括号段（内容任意，≤12 字）
+const TAIL_PAREN_RE = /[(（][^()（）]{0,12}[)）]$/;
+// 结尾短尾巴：闭合括号（含书名号/引号）或短横线之后接 1-4 个「非空白非括号」字符
+const TAIL_SHORT_RE = /(?:[)）》」』】]|[-—–]\s*)[^\s()（）《》「」『』【】]{1,4}$/;
+
+function stripOnce(t) {
+  // 外层书名号成对剥离
+  if (t.length > 2 && WRAP_OPEN.includes(t[0]) && t[t.length - 1] === WRAP_CLOSE[t[0]]) {
+    return t.slice(1, -1).trim();
+  }
+  // 判据 1：开头是「数字骨架 + 分隔符」的前缀（日期/编号/章节号，任意写法）。
+  // 约束：限定长度，且剥完后语义主体不能以数字开头——「30-45岁持身小建议」的 30-45 是内容，不剥。
+  for (const re of [HEAD_NUM_RE, HEAD_ID_RE]) {
+    const m = re.exec(t);
+    if (!m || m[0].length > 14) continue;
+    const rest = t.slice(m[0].length).trim();
+    if (!rest) continue;
+    // 剩余以数字开头时：仅当前缀本身含 ≥2 个数字段（2024-05-20-、314-11-37）才认作日期/编号；
+    // 单段前缀（30-）遇数字开头说明那不是包装而是内容（30-45岁…），保留。
+    const segs = (m[0].match(/\d+/g) || []).length;
+    if (segs >= 2 || !/^\d/.test(rest)) return rest;
+  }
+  // 判据 2：结尾成对括号段
+  const m2 = TAIL_PAREN_RE.exec(t);
+  if (m2 && m2.index > 0) return t.slice(0, m2.index).trim();
+  // 判据 3：结尾短尾巴（要求前面还剩≥2字，避免把整个词条剥空）
+  const m3 = TAIL_SHORT_RE.exec(t);
+  if (m3 && m3.index >= 2) return t.slice(0, m3.index).trim();
+  return t;
+}
+
+/** 提取词条核心：按结构判据循环剥离包装，直到稳定 */
 export function termCore(normTerm) {
   let t = String(normTerm ?? '').trim();
-  for (let round = 0; round < 6 && t; round++) {
-    const before = t;
-    // 外层书名号成对剥离（可叠层）
-    while (t.length > 2 && WRAP_OPEN.includes(t[0]) && t[t.length - 1] === WRAP_CLOSE[t[0]]) {
-      t = t.slice(1, -1).trim();
-    }
-    t = t.replace(DATE_PREFIX_NORM_RE, '');
-    for (const re of ID_PREFIX_RES) t = t.replace(re, '');
-    for (const re of SUFFIX_RES) t = t.replace(re, '');
-    t = t.replace(/^[-\s]+|[-\s]+$/g, '');
-    if (t === before) break;
+  for (let round = 0; round < 8 && t; round++) {
+    const next = stripOnce(t);
+    if (next === t) break;
+    t = next;
+    t = t.replace(/^[\-\s]+|[\-\s]+$/g, '');
   }
   return t;
 }
 
-// 吸收：命中区间 [i, j) 向左右扩展包装。返回 [from, to]
-const ABSORB_DATE_TAIL_RE = /(?:\d{4}(?:[-/.]\d{1,2}[-/.]\d{1,2}|年\d{1,2}月\d{1,2}日?)|\d{8})[-\s]*$/;
+// ---------- 命中后的范围吸收（同样的结构判据，只是方向相反） ----------
+
 function absorbWrap(norm, i, j) {
   let from = i, to = j;
-  // 向左：日期前缀（窗口 14 字符足够覆盖各种日期写法）
-  const win = norm.slice(Math.max(0, from - 14), from);
-  const dm = ABSORB_DATE_TAIL_RE.exec(win);
-  if (dm) from -= dm[0].length;
-  // 向左：开书名号（可叠在日期之前）
+  // 向右：先吸收成对括号段（循环，可连续多层）
+  for (let k = 0; k < 4; k++) {
+    const m = new RegExp('^[(（][^()（）]{0,8}[)）]').exec(norm.slice(to));
+    if (!m) break;
+    to += m[0].length;
+  }
+  // 向右：闭合括号后的短尾巴 / 短横线后的短尾巴
+  const m3 = /^(?:[-—–]|[)）])?\s*[^\s()（）]{1,4}$/.exec(norm.slice(to, to + 8));
+  if (m3 && m3[0].length && /^(?:[-—–]|[)）])/.test(m3[0].trim())) to += m3[0].length;
+  // 向左：尾部匹配「数字骨架 + 分隔符」的前缀（日期/编号），遇到语义字即停
+  const win = norm.slice(Math.max(0, from - 16), from);
+  const dm = /(?:\d+[年月日号]?[\s._\-/:]*)+$/.exec(win);
+  if (dm && dm[0].length && dm[0].length <= 16 && hasDigit(dm[0])) from -= dm[0].length;
+  // 向左：开书名号
   while (from > 0 && WRAP_OPEN.includes(norm[from - 1])) from--;
   // 向右：闭书名号
   const closes = Object.values(WRAP_CLOSE).join('');
@@ -109,18 +136,13 @@ function absorbWrap(norm, i, j) {
   return [from, to];
 }
 
-// 扩展名与路径段吸收：命中区间 [i,j) → [from,to)。
-// 扩展名只在 target 以它结尾时吸收（.txt 提及不会误贴到 .md 文档）；
-// 路径段逐段向左吸收，每段都要求扩展后的文本是 target 路径的后缀（1/2 这类普通斜杠不会误吸收）。
 const DOC_EXT_RE = /^\.(md|txt|json|docx?|doc|csv|html?)/i;
-const PATH_SEG_TAIL_RE = /([^\s/，。；：、？！()\[\]《》「』【】"'<>;:，]+\/)$/; // 归一化把全角标点转半角，排除类要同时含两种
+const PATH_SEG_TAIL_RE = /([^\s/，。；：、？！()\[\]《》「』【】"'<>;:，]+\/)$/;
 function absorbPathExt(norm, i, j, targetPath) {
   let from = i, to = j;
   const tpn = targetPath ? normalizeText(targetPath) : null;
-  // 向右：扩展名
   const em = DOC_EXT_RE.exec(norm.slice(to, to + 6));
   if (em && (!tpn || tpn.endsWith(em[0].toLowerCase()))) to += em[0].length;
-  // 向左：逐段路径（带 target 时每段都要仍是 target 后缀；无 target 时全部吸收留给消歧匹配）
   for (;;) {
     const win = norm.slice(Math.max(0, from - 60), from);
     const sm = PATH_SEG_TAIL_RE.exec(win);
@@ -128,54 +150,14 @@ function absorbPathExt(norm, i, j, targetPath) {
     const candFrom = from - sm[1].length;
     if (tpn && !tpn.endsWith(norm.slice(candFrom, to))) break;
     from = candFrom;
-    if (!tpn) continue; // 消歧场景尽量多吃（上限 60 字符窗口）
-    // 已到 target 开头则停止
+    if (!tpn) continue;
     if (tpn === norm.slice(from, to)) break;
   }
   return [from, to];
 }
 
-// 系列后缀向右吸收（target 的文件名以该后缀结尾才吸收，「（一）班的同学」不误吸）
-const SERIES_HEAD_RES = [
-  /^[(（][一二三四五六七八九十]+[)）]/,
-  /^[(（](?:上|下|完结篇?|前言|序言|总卡|后续)[)）]/,
-  /^序言[一二三四五六七八九十]?/,
-  /^后续/,
-  /^ - 拷贝/,
-];
-// 编号前缀向左吸收（target 的文件名以该编号开头才吸收）
-const ID_TAIL_RES = [
-  /(\d+[.、])$/,
-  /([A-Za-z]+\d+[-_])$/,
-  /(\d+[-_])$/,
-  /(\d+-\d+-\d+\s+)$/,
-];
-function absorbSeriesAndId(norm, i, j, targetPath) {
-  let from = i, to = j;
-  if (!targetPath) return [from, to];
-  const stem = targetPath.split('/').pop().replace(/\.[^.]+$/, '');
-  const stemNorm = normalizeText(stem);
-  // 向右：系列后缀
-  for (const re of SERIES_HEAD_RES) {
-    const m = re.exec(norm.slice(to, to + 16));
-    if (m && stemNorm.endsWith(normalizeText(m[0].trim()))) { to += m[0].length; break; }
-  }
-  // 向左：编号前缀（含后续分隔符）
-  const win = norm.slice(Math.max(0, from - 12), from);
-  for (const re of ID_TAIL_RES) {
-    const m = re.exec(win);
-    if (m && stemNorm.startsWith(normalizeText(m[1].replace(/[-_]$/, '-')))) {
-      from -= m[1].length;
-      break;
-    }
-  }
-  return [from, to];
-}
-
-// 全包装吸收：路径/扩展名 → 系列后缀/编号前缀 → 日期前缀 → 书名号
 function absorbAll(norm, i, j, targetPath) {
   let [from, to] = absorbPathExt(norm, i, j, targetPath);
-  [from, to] = absorbSeriesAndId(norm, from, to, targetPath);
   [from, to] = absorbWrap(norm, from, to);
   return [from, to];
 }
