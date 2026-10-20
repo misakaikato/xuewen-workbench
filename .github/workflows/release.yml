@@ -18,6 +18,11 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     steps:
+      # gh release create --generate-notes 需要 git 仓库与 tag 历史，否则报
+      # "not a git repository"；fetch-depth: 0 才拿得到完整历史用于生成说明
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: 预建 draft release（幂等：已存在则跳过）
         run: gh release view "$GITHUB_REF_NAME" || gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --generate-notes
         env:
