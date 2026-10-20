@@ -7,6 +7,7 @@ import { T2S_MAP } from './t2s.js';
 
 export function normalizeChar(ch) {
   const c = ch.charCodeAt(0);
+  if (ch === '_' || ch === '—' || ch === '–') return '-'; // 文件名常见分隔符归一（等长，偏移不失效）
   if (c >= 0xff01 && c <= 0xff5e) return String.fromCharCode(c - 0xfee0); // 全角 ASCII
   const m = T2S_MAP[ch];
   if (m) return m;
@@ -50,6 +51,42 @@ export function isTermLike(name) {
   return true;
 }
 
+// ---------- 核心 + 包装：文档名 = 核心名 + 可选包装（日期前缀 / 书名号） ----------
+// 匹配只按核心与完整两种形式（不枚举格式变体）；命中后向左右吸收文本中的包装。
+
+const WRAP_OPEN = '《「『【';
+const WRAP_CLOSE = { '《': '》', '「': '」', '『': '』', '【': '】' };
+// 日期前缀（归一化形态：- 已统一；覆盖横线/点/斜线/中文/紧凑写法）
+const DATE_PREFIX_NORM_RE = /^(?:\d{4}(?:[-/.]\d{1,2}[-/.]\d{1,2}|年\d{1,2}月\d{1,2}日?)|\d{8})[-\s]*/;
+
+/** 提取词条核心：剥离外层成对书名号与日期前缀。返回值可能为空串（纯包装） */
+export function termCore(normTerm) {
+  let t = String(normTerm ?? '').trim();
+  // 外层书名号成对剥离（可叠层：《《X》》极少见但顺手处理）
+  while (t.length > 2 && WRAP_OPEN.includes(t[0]) && t[t.length - 1] === WRAP_CLOSE[t[0]]) {
+    t = t.slice(1, -1).trim();
+  }
+  t = t.replace(DATE_PREFIX_NORM_RE, '');
+  t = t.replace(/^[-\s]+|[-\s]+$/g, '');
+  return t;
+}
+
+// 吸收：命中区间 [i, j) 向左右扩展包装。返回 [from, to]
+const ABSORB_DATE_TAIL_RE = /(?:\d{4}(?:[-/.]\d{1,2}[-/.]\d{1,2}|年\d{1,2}月\d{1,2}日?)|\d{8})[-\s]*$/;
+function absorbWrap(norm, i, j) {
+  let from = i, to = j;
+  // 向左：日期前缀（窗口 14 字符足够覆盖各种日期写法）
+  const win = norm.slice(Math.max(0, from - 14), from);
+  const dm = ABSORB_DATE_TAIL_RE.exec(win);
+  if (dm) from -= dm[0].length;
+  // 向左：开书名号（可叠在日期之前）
+  while (from > 0 && WRAP_OPEN.includes(norm[from - 1])) from--;
+  // 向右：闭书名号
+  const closes = Object.values(WRAP_CLOSE).join('');
+  while (to < norm.length && closes.includes(norm[to])) to++;
+  return [from, to];
+}
+
 // ---------- 词条索引 ----------
 
 // entries: [{term, path, heading?, kind:'title'|'alias'|'heading'}]
@@ -68,10 +105,20 @@ export function buildAutoIndex(entries, blocklist = []) {
     // force：人工/AI 确认过的条目（概念表），跳过 isTermLike 的启发式过滤，允许「道」「性」这类单字
     if (!e.force && !isTermLike(term)) continue;
     const norm = normalizeText(term);
-    if (!grouped.has(norm)) grouped.set(norm, new Map());
-    const byPath = grouped.get(norm);
-    if (!byPath.has(e.path)) byPath.set(e.path, []);
-    byPath.get(e.path).push({ heading: e.heading || null, kind: e.kind || 'title' });
+    // 词条形态：完整形式 + 核心形式（剥离日期前缀/书名号包装）。
+    // 完整形式用于带包装消歧（2022-01-01-同名 vs 2022-02-02-同名）；核心形式用于无包装提及。
+    // 核心撞车即歧义不链（与完整形式同规则）；force 词条只用原样（确认条目名字应当精确）。
+    const forms = [norm];
+    if (!e.force) {
+      const core = termCore(norm);
+      if (core && core !== norm && isTermLike(core)) forms.push(core);
+    }
+    for (const form of forms) {
+      if (!grouped.has(form)) grouped.set(form, new Map());
+      const byPath = grouped.get(form);
+      if (!byPath.has(e.path)) byPath.set(e.path, []);
+      byPath.get(e.path).push({ heading: e.heading || null, kind: e.kind || 'title' });
+    }
   }
   const kindRank = { title: 0, alias: 1, heading: 2 };
   const byChar = new Map();
@@ -368,13 +415,16 @@ export function extractLinks(text, autoIndex, opts = {}) {
           const t = item.targets.find((t2) => t2.path !== selfPath); // 不链自身
           if (t && !seen.has(item.norm)) {
             seen.add(item.norm);
+            // 吸收包装：命中的若是核心形式，向左右吸收日期前缀与书名号，链接范围覆盖完整提及
+            const [ef, et] = absorbWrap(norm, i, j);
             out.push({
-              from: i,
-              to: j,
-              term: text.slice(i, j),
+              from: ef,
+              to: et,
+              term: text.slice(ef, et),
               norm: item.norm,
               target: t,
             });
+            consumeTo = Math.max(consumeTo, et);
           }
         }
         break; // 桶内已按长度降序，首个可行命中即最长（含被消费的占位长词）

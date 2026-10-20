@@ -1,0 +1,254 @@
+#!/usr/bin/env node
+// 内链匹配样本集：文档名形态 × 正文提及形态的排列组合
+// 用法: node scripts/test-linkmatch.mjs
+// 直接调 server/linkMatch.js 的纯函数，无需起服务
+import { buildAutoIndex, extractLinks, normalizeText } from '../server/linkMatch.js';
+
+// ---------- 样本 ----------
+// docs: [{path, title?}]（title 模拟 meta.title；不给则取文件名 stem）
+// text: 被扫描的正文
+// expectLinks: 期望命中的 [{term, target}]（term 是链接覆盖的原文片段）
+// expectNoLink: 这些片段不得被链
+const CASES = [
+  // ── A. 文档带日期前缀 ──
+  {
+    name: 'A1 全文一致（带日期）',
+    docs: [{ path: '2022-12-10-维天有汉，星传诸夏.md' }],
+    text: '详见 2022-12-10-维天有汉，星传诸夏 一文。',
+    expectLinks: [{ term: '2022-12-10-维天有汉，星传诸夏', target: '2022-12-10-维天有汉，星传诸夏.md' }],
+  },
+  {
+    name: 'A2 文本不带日期（用户案例2）',
+    docs: [{ path: '2022-12-10-维天有汉，星传诸夏.md' }],
+    text: '维天有汉，星传诸夏 这篇讲历法。',
+    expectLinks: [{ term: '维天有汉，星传诸夏', target: '2022-12-10-维天有汉，星传诸夏.md' }],
+  },
+  {
+    name: 'A3 书名号包裹（不带日期）',
+    docs: [{ path: '2022-12-10-维天有汉，星传诸夏.md' }],
+    text: '读《维天有汉，星传诸夏》有感。',
+    expectLinks: [{ term: '《维天有汉，星传诸夏》', target: '2022-12-10-维天有汉，星传诸夏.md' }],
+  },
+  {
+    name: 'A4 书名号+日期全包裹',
+    docs: [{ path: '2022-12-10-维天有汉，星传诸夏.md' }],
+    text: '见《2022-12-10-维天有汉，星传诸夏》。',
+    expectLinks: [{ term: '《2022-12-10-维天有汉，星传诸夏》', target: '2022-12-10-维天有汉，星传诸夏.md' }],
+  },
+  {
+    name: 'A5 日期点分格式',
+    docs: [{ path: '2022-12-10-维天有汉，星传诸夏.md' }],
+    text: '2022.12.10-维天有汉，星传诸夏 亦可。',
+    expectLinks: [{ term: '2022.12.10-维天有汉，星传诸夏', target: '2022-12-10-维天有汉，星传诸夏.md' }],
+  },
+  {
+    name: 'A6 中文日期格式',
+    docs: [{ path: '2022-12-10-维天有汉，星传诸夏.md' }],
+    text: '2022年12月10日-维天有汉，星传诸夏 亦可。',
+    expectLinks: [{ term: '2022年12月10日-维天有汉，星传诸夏', target: '2022-12-10-维天有汉，星传诸夏.md' }],
+  },
+
+  // ── B. 文档不带日期，文本带日期（用户案例1：链接范围要含日期）──
+  {
+    name: 'B1 词条无日期，文本有日期前缀',
+    docs: [{ path: '维天有汉，星传诸夏.md' }],
+    text: '2022-12-10-维天有汉，星传诸夏 这篇。',
+    expectLinks: [{ term: '2022-12-10-维天有汉，星传诸夏', target: '维天有汉，星传诸夏.md' }],
+  },
+  {
+    name: 'B2 同上但书名号在外',
+    docs: [{ path: '维天有汉，星传诸夏.md' }],
+    text: '《2022-12-10-维天有汉，星传诸夏》这篇。',
+    expectLinks: [{ term: '《2022-12-10-维天有汉，星传诸夏》', target: '维天有汉，星传诸夏.md' }],
+  },
+  {
+    name: 'B3 title 无日期但文件名带日期（meta.title 被清理过）',
+    docs: [{ path: '2022-12-10-维天有汉，星传诸夏.md', title: '维天有汉，星传诸夏' }],
+    text: '2022-12-10-维天有汉，星传诸夏 这篇。',
+    expectLinks: [{ term: '2022-12-10-维天有汉，星传诸夏', target: '2022-12-10-维天有汉，星传诸夏.md' }],
+  },
+
+  // ── C. 文档名带书名号 ──
+  {
+    name: 'C1 文档带书名号，文本不带',
+    docs: [{ path: '《读书笔记》.md' }],
+    text: '读书笔记 里写过。',
+    expectLinks: [{ term: '读书笔记', target: '《读书笔记》.md' }],
+  },
+  {
+    name: 'C2 文档带书名号，文本也带',
+    docs: [{ path: '《读书笔记》.md' }],
+    text: '《读书笔记》里写过。',
+    expectLinks: [{ term: '《读书笔记》', target: '《读书笔记》.md' }],
+  },
+
+  // ── D. 分隔符/下划线变体 ──
+  {
+    name: 'D1 文档用下划线，文本用横线',
+    docs: [{ path: '2022_12_10_试剑石.md' }],
+    text: '2022-12-10-试剑石 这个案例。',
+    expectLinks: [{ term: '2022-12-10-试剑石', target: '2022_12_10_试剑石.md' }],
+  },
+  {
+    name: 'D2 文档无分隔（紧凑日期），文本带横线',
+    docs: [{ path: '20221210-试剑石.md' }],
+    text: '2022-12-10-试剑石 这个案例。',
+    expectLinks: [{ term: '2022-12-10-试剑石', target: '20221210-试剑石.md' }],
+  },
+
+  // ── E. 歧义控制 ──
+  {
+    name: 'E1 裸名歧义不链',
+    docs: [{ path: '2022-01-01-同名.md' }, { path: '2022-02-02-同名.md' }],
+    text: '同名 这篇。',
+    expectLinks: [],
+  },
+  {
+    name: 'E2 带日期消歧（左）',
+    docs: [{ path: '2022-01-01-同名.md' }, { path: '2022-02-02-同名.md' }],
+    text: '2022-01-01-同名 这篇。',
+    expectLinks: [{ term: '2022-01-01-同名', target: '2022-01-01-同名.md' }],
+  },
+  {
+    name: 'E3 带日期消歧（右）',
+    docs: [{ path: '2022-01-01-同名.md' }, { path: '2022-02-02-同名.md' }],
+    text: '2022-02-02-同名 这篇。',
+    expectLinks: [{ term: '2022-02-02-同名', target: '2022-02-02-同名.md' }],
+  },
+
+  // ── F. 不得误链 ──
+  {
+    name: 'F1 纯日期不成词条',
+    docs: [{ path: '2023-05-01.md' }],
+    text: '2023-05-01 那天。',
+    expectLinks: [],
+  },
+  {
+    name: 'F2 单字核心不链，但完整带日期形式可链',
+    docs: [{ path: '2022-01-01-道.md' }],
+    text: '2022-01-01-道 与裸写的 道。',
+    expectLinks: [{ term: '2022-01-01-道', target: '2022-01-01-道.md' }],
+  },
+  {
+    name: 'F3 同一节内同词只链一次',
+    docs: [{ path: '维天有汉，星传诸夏.md' }],
+    text: '维天有汉，星传诸夏 与 维天有汉，星传诸夏。',
+    expectLinks: [{ term: '维天有汉，星传诸夏', target: '维天有汉，星传诸夏.md' }],
+  },
+  {
+    name: 'F4 代码块内不链',
+    docs: [{ path: '维天有汉，星传诸夏.md' }],
+    text: '`维天有汉，星传诸夏` 是代码。',
+    expectLinks: [],
+  },
+  {
+    name: 'F5 已有 markdown 链接内不链',
+    docs: [{ path: '维天有汉，星传诸夏.md' }],
+    text: '[见文](维天有汉，星传诸夏.md) 这里。',
+    expectLinks: [],
+  },
+  // ── G. 更刁钻的形态 ──
+  // ── G. 更刁钻的形态 ──
+  {
+    name: 'G1 繁体文本 + 简体词条',
+    docs: [{ path: '维天有汉.md' }],
+    text: '維天有漢 这篇。',
+    expectLinks: [{ term: '維天有漢', target: '维天有汉.md' }],
+  },
+  {
+    name: 'G2 全角数字日期前缀',
+    docs: [{ path: '维天有汉.md' }],
+    text: '２０２２-１２-１０-维天有汉 这篇。',
+    expectLinks: [{ term: '２０２２-１２-１０-维天有汉', target: '维天有汉.md' }],
+  },
+  {
+    name: 'G3 多层书名号文本',
+    docs: [{ path: '读书笔记.md' }],
+    text: '《《读书笔记》》这篇。',
+    expectLinks: [{ term: '《《读书笔记》》', target: '读书笔记.md' }],
+  },
+  {
+    name: 'G4 词条内部标点：文本也有才链',
+    docs: [{ path: '维天有汉，星传诸夏.md' }],
+    text: '维天有汉，星传诸夏 这篇。',
+    expectLinks: [{ term: '维天有汉，星传诸夏', target: '维天有汉，星传诸夏.md' }],
+  },
+  {
+    name: 'G5 词条内部标点：文本没有则不链（现状边界）',
+    docs: [{ path: '维天有汉，星传诸夏.md' }],
+    text: '维天有汉星传诸夏 这篇。',
+    expectLinks: [],
+  },
+  {
+    name: 'G6 日期在标题中间：核心提取只去前缀，中间日期保留',
+    docs: [{ path: '讲座-2022-01-01-补记.md' }],
+    text: '讲座-2022-01-01-补记 这篇。',
+    expectLinks: [{ term: '讲座-2022-01-01-补记', target: '讲座-2022-01-01-补记.md' }],
+  },
+  {
+    name: 'G7 短核心词误链检查：两字核心会链（与无包装词条同风险）',
+    docs: [{ path: '2022-01-01-总结.md' }],
+    text: '这一年的总结 写完了。',
+    expectLinks: [{ term: '总结', target: '2022-01-01-总结.md' }],
+  },
+  {
+    name: 'G8 吸收不会吃掉日期前的普通文字',
+    docs: [{ path: '维天有汉.md' }],
+    text: '截止2022-12-10-维天有汉 这篇。',
+    expectLinks: [{ term: '2022-12-10-维天有汉', target: '维天有汉.md' }],
+  },
+  {
+    name: 'G9 别名词条也走核心+吸收',
+    docs: [{ path: '论语.md', aliases: ['《论语译注》'] }],
+    text: '论语译注 这本书。',
+    expectLinks: [{ term: '论语译注', target: '论语.md' }],
+  },
+  {
+    name: 'G10 不链自身（含核心形式）',
+    docs: [{ path: '2022-12-10-维天有汉.md' }],
+    text: '维天有汉 这篇。',
+    selfPath: '2022-12-10-维天有汉.md',
+    expectLinks: [],
+  },
+];
+
+// ---------- 执行 ----------
+function stem(p) {
+  const n = p.split('/').pop();
+  const dot = n.lastIndexOf('.');
+  return dot > 0 ? n.slice(0, dot) : n;
+}
+
+let pass = 0, fail = 0;
+const failures = [];
+
+for (const c of CASES) {
+  const entries = [];
+  for (const d of c.docs) {
+    const title = d.title ?? stem(d.path);
+    entries.push({ term: title, path: d.path, kind: 'title' });
+    for (const a of d.aliases ?? []) entries.push({ term: a, path: d.path, kind: 'alias' });
+  }
+  const idx = buildAutoIndex(entries, []);
+  const links = extractLinks(c.text, idx, { selfPath: c.selfPath ?? null });
+  const got = links.map((l) => ({ term: l.term, target: l.target?.path }));
+
+  const missing = (c.expectLinks ?? []).filter(
+    (e) => !got.some((g) => g.term === e.term && g.target === e.target)
+  );
+  const extra = got.filter((g) => !(c.expectLinks ?? []).some((e) => e.term === g.term && e.target === g.target));
+
+  if (!missing.length && !extra.length) {
+    pass++;
+    console.log(`✓ ${c.name}`);
+  } else {
+    fail++;
+    failures.push({ name: c.name, missing, extra, got });
+    console.log(`✗ ${c.name}`);
+    if (missing.length) console.log(`    缺: ${missing.map((m) => `「${m.term}」→${m.target}`).join(' ')}`);
+    if (extra.length) console.log(`    多: ${extra.map((m) => `「${m.term}」→${m.target}`).join(' ')}`);
+  }
+}
+
+console.log(`\n结果：${pass} 通过，${fail} 失败`);
+process.exit(fail ? 1 : 0);
