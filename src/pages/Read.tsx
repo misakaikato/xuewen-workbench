@@ -24,6 +24,8 @@ import { BacklinksPanel } from '@/components/BacklinksPanel';
 import { ReadAgentPanel } from '@/components/ReadAgentPanel';
 import { ConceptCard } from '@/components/ConceptCard';
 import { TagChips } from '@/components/TagChips';
+import { DocTabs } from '@/components/DocTabs';
+import { loadTabs, saveTabs, ensureTab, removeTab } from '@/lib/tabs';
 import { extIcon } from '@/lib/extIcon';
 import { Button } from '@/components/ui/button';
 import { PageLoading, PageError } from '@/components/ui-states';
@@ -107,6 +109,30 @@ export default function Read() {
     return out;
   }, [docNotes]);
   const [aiOpen, setAiOpen] = useState(false);
+  // 文档标签页：URL 是激活标签的单一真相，tabs 只持久化「开过哪些」
+  const [tabs, setTabs] = useState<string[]>(() => loadTabs(dsId));
+  useEffect(() => { setTabs(loadTabs(dsId)); }, [dsId]);
+  useEffect(() => {
+    if (!dsId || !relPath) return;
+    setTabs((prev) => {
+      if (prev[prev.length - 1] === relPath) return prev;
+      const next = ensureTab(prev, relPath);
+      saveTabs(dsId, next);
+      return next;
+    });
+  }, [dsId, relPath]);
+  const closeTab = useCallback((p: string) => {
+    setTabs((prev) => {
+      const next = removeTab(prev, p);
+      saveTabs(dsId, next);
+      if (p === relPath) {
+        const i = prev.indexOf(p);
+        const target = next[Math.min(i, next.length - 1)];
+        navigate(target ? '/read/' + target.split('/').map(encodeURIComponent).join('/') : '/');
+      }
+      return next;
+    });
+  }, [dsId, relPath, navigate]);
   const [conceptName, setConceptName] = useState<string | null>(null);
   const [aiWidth, setAiWidth] = useState(() => {
     const n = Number(localStorage.getItem('wb.read.aiWidth'));
@@ -765,6 +791,12 @@ export default function Read() {
               原位编辑态=格式工具栏+保存控件；查找条与偏好面板也收在同一 sticky 区，
               避免多个 sticky 互相重叠 */}
           <div className="sticky top-0 z-20 mb-3 space-y-2">
+          <DocTabs
+            tabs={tabs}
+            active={relPath}
+            onActivate={(p2) => navigate('/read/' + p2.split('/').map(encodeURIComponent).join('/'))}
+            onClose={closeTab}
+          />
           {editing ? (
             <div
               className="bg-card border border-border rounded-lg shadow-sm p-1 flex items-center gap-2"
