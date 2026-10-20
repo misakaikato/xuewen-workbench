@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { dataDir, getState, setState, writeJsonAtomic } from './store.js';
 import { SIDECAR_SUFFIX } from './scanner.js';
 import {
-  normalizeText, isTermLike, buildAutoIndex, extractLinks, extractWikilinks,
+  normalizeText, isTermLike, buildAutoIndex, extractLinks, extractWikilinks, MATCH_ENGINE_VERSION,
 } from './linkMatch.js';
 import { loadConcepts } from './derived.js';
 
@@ -181,6 +181,9 @@ export class LinkIndex {
 
   vocabSignature(entries, blocklist) {
     const h = crypto.createHash('sha256');
+    // 引擎版本进签名：匹配逻辑升级后，即使词条未变也要全量重算链接
+    h.update('engine:' + MATCH_ENGINE_VERSION);
+    h.update('\n');
     h.update(JSON.stringify([...blocklist].sort()));
     h.update('\n');
     const sorted = [...entries].map((e) => [e.term, e.path, e.heading || '', e.kind]).sort();

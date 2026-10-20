@@ -3,6 +3,10 @@
 // 返回的 BOM 剥离后文本一致）。链接只在渲染层存在，绝不写回文档。
 import { T2S_MAP } from './t2s.js';
 
+// 匹配引擎版本：凡是改变 extractLinks / termCore 输出结果的改动都要 +1。
+// 它参与 links 缓存的词汇签名——不 bump 的话老库会继续复用旧引擎算出的链接。
+export const MATCH_ENGINE_VERSION = 3;
+
 // ---------- 归一化：逐字符 1:1 映射（繁→简 / 全角 ASCII→半角 / 拉丁小写） ----------
 
 export function normalizeChar(ch) {
