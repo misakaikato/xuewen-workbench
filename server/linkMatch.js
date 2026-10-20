@@ -87,6 +87,39 @@ function absorbWrap(norm, i, j) {
   return [from, to];
 }
 
+// 扩展名与路径段吸收：命中区间 [i,j) → [from,to)。
+// 扩展名只在 target 以它结尾时吸收（.txt 提及不会误贴到 .md 文档）；
+// 路径段逐段向左吸收，每段都要求扩展后的文本是 target 路径的后缀（1/2 这类普通斜杠不会误吸收）。
+const DOC_EXT_RE = /^\.(md|txt|json|docx?|doc|csv|html?)/i;
+const PATH_SEG_TAIL_RE = /([^\s/，。；：、？！()\[\]《》「』【】"'<>;:，]+\/)$/; // 归一化把全角标点转半角，排除类要同时含两种
+function absorbPathExt(norm, i, j, targetPath) {
+  let from = i, to = j;
+  const tpn = targetPath ? normalizeText(targetPath) : null;
+  // 向右：扩展名
+  const em = DOC_EXT_RE.exec(norm.slice(to, to + 6));
+  if (em && (!tpn || tpn.endsWith(em[0].toLowerCase()))) to += em[0].length;
+  // 向左：逐段路径（带 target 时每段都要仍是 target 后缀；无 target 时全部吸收留给消歧匹配）
+  for (;;) {
+    const win = norm.slice(Math.max(0, from - 60), from);
+    const sm = PATH_SEG_TAIL_RE.exec(win);
+    if (!sm) break;
+    const candFrom = from - sm[1].length;
+    if (tpn && !tpn.endsWith(norm.slice(candFrom, to))) break;
+    from = candFrom;
+    if (!tpn) continue; // 消歧场景尽量多吃（上限 60 字符窗口）
+    // 已到 target 开头则停止
+    if (tpn === norm.slice(from, to)) break;
+  }
+  return [from, to];
+}
+
+// 全包装吸收：路径/扩展名 → 日期前缀 → 书名号
+function absorbAll(norm, i, j, targetPath) {
+  let [from, to] = absorbPathExt(norm, i, j, targetPath);
+  [from, to] = absorbWrap(norm, from, to);
+  return [from, to];
+}
+
 // ---------- 词条索引 ----------
 
 // entries: [{term, path, heading?, kind:'title'|'alias'|'heading'}]
@@ -133,7 +166,9 @@ export function buildAutoIndex(entries, blocklist = []) {
     if (block.has(norm.toLowerCase()) || byPath.size >= 2) {
       // 屏蔽/歧义（含两篇以上文档同名的通用标题）：不链，只作占位长词整体消费
       if (byPath.size >= 2) ambiguous.add(norm);
-      addToChar({ norm, len: norm.length, isLatin: !hasCJK(norm), term: null, targets: [], blocked: true });
+      // 保留候选 targets：命中后若文本带路径段/扩展名（笔记/同名文件.md），可消歧到唯一文档
+      const cands = [...byPath.keys()].map((path) => ({ path, heading: null }));
+      addToChar({ norm, len: norm.length, isLatin: !hasCJK(norm), term: null, targets: cands, blocked: true });
       continue;
     }
     const [[path, cands]] = [...byPath];
@@ -411,18 +446,47 @@ export function extractLinks(text, autoIndex, opts = {}) {
         // 与跳过区重叠：换更短词条再试（可能止于跳过区之前）
         if (skipI < skips.length && j > skips[skipI][0]) continue;
         consumeTo = j;
-        if (!item.blocked) { // 屏蔽/歧义/通用长词：整体消费，不链也不再试内部短词
+        if (!item.blocked) { // 屏蔽/通用长词：整体消费，不链也不再试内部短词
           const t = item.targets.find((t2) => t2.path !== selfPath); // 不链自身
           if (t && !seen.has(item.norm)) {
             seen.add(item.norm);
-            // 吸收包装：命中的若是核心形式，向左右吸收日期前缀与书名号，链接范围覆盖完整提及
-            const [ef, et] = absorbWrap(norm, i, j);
+            // 吸收包装：核心形式命中后向左右吸收路径段/扩展名/日期前缀/书名号
+            const [ef, et] = absorbAll(norm, i, j, t.path);
             out.push({
               from: ef,
               to: et,
               term: text.slice(ef, et),
               norm: item.norm,
               target: t,
+            });
+            consumeTo = Math.max(consumeTo, et);
+          }
+        } else if (item.targets.length >= 2) {
+          // 歧义词条：文本自带路径段/扩展名（笔记/同名文件.md）时消歧到唯一文档；
+          // 消歧失败则产出候选链接（前端点击弹候选选择，与 [[..]] 歧义同交互）
+          const [ef, et] = absorbAll(norm, i, j, null);
+          const cands = item.targets.filter((c) => c.path !== selfPath);
+          let hits = [];
+          if (ef < i || et > j) {
+            const mention = norm.slice(ef, et);
+            hits = cands.filter((c) => {
+              const pn = normalizeText(c.path);
+              return pn === mention || pn.endsWith('/' + mention);
+            });
+          }
+          if (hits.length === 1 && !seen.has(item.norm)) {
+            seen.add(item.norm);
+            out.push({
+              from: ef, to: et, term: text.slice(ef, et), norm: item.norm, target: hits[0],
+            });
+            consumeTo = Math.max(consumeTo, et);
+          } else if (cands.length >= 2) {
+            // 消歧失败：产出候选链接。候选是「待用户点选」状态，不占用 seen——
+            // 同节再次出现时仍给消歧入口（否则首次出现在列表里，表格/后文就永远没有入口了）
+            const show = hits.length >= 2 ? hits : cands;
+            out.push({
+              from: ef, to: et, term: text.slice(ef, et), norm: item.norm,
+              target: null, candidates: show.map((c) => c.path),
             });
             consumeTo = Math.max(consumeTo, et);
           }

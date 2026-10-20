@@ -213,7 +213,7 @@ export class LinkIndex {
   extractFor(p, text) {
     const out = [];
     for (const l of extractLinks(text, this.autoIndex, { selfPath: p })) {
-      out.push({ from: l.from, to: l.to, term: l.term, norm: l.norm, kind: 'auto', target: l.target, display: null });
+      out.push({ from: l.from, to: l.to, term: l.term, norm: l.norm, kind: 'auto', target: l.target, candidates: l.candidates || null, display: null });
     }
     for (const w of extractWikilinks(text)) {
       const norm = normalizeText(w.name);

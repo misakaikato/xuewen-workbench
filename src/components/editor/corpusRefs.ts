@@ -137,6 +137,8 @@ const crField = StateField.define<CrState>({
       rebuildDeco = true;
     }
     if (tr.selection) rebuildDeco = true;
+    // 自动内链数据晚到（异步 API）时重扫：重叠让位逻辑需要 links 就位才有效
+    if (tr.state.field(alField, false) !== tr.startState.field(alField, false)) rescan = true;
     if (rescan && matcher) hits = scanHits(tr.state, matcher);
     if (!rescan && !rebuildDeco) return value;
     return { matcher, hits, deco: matcher ? buildDeco(hits) : Decoration.none };

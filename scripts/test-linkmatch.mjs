@@ -98,10 +98,11 @@ const CASES = [
 
   // ── E. 歧义控制 ──
   {
-    name: 'E1 裸名歧义不链',
+    name: 'E1 裸名歧义：不直链但产出候选',
     docs: [{ path: '2022-01-01-同名.md' }, { path: '2022-02-02-同名.md' }],
     text: '同名 这篇。',
     expectLinks: [],
+    expectCandidates: [{ term: '同名', count: 2 }],
   },
   {
     name: 'E2 带日期消歧（左）',
@@ -210,6 +211,57 @@ const CASES = [
     selfPath: '2022-12-10-维天有汉.md',
     expectLinks: [],
   },
+  // ── H. 扩展名与路径形态 ──
+  {
+    name: 'H1 纯文本路径：吸收 .md 后缀与路径段（用户案例3）',
+    docs: [{ path: '笔记/第2章 进阶.md' }],
+    text: '来源：笔记/第2章 进阶.md',
+    expectLinks: [{ term: '笔记/第2章 进阶.md', target: '笔记/第2章 进阶.md' }],
+  },
+  {
+    name: 'H2 带扩展名提及：覆盖完整文件名',
+    docs: [{ path: '同名文件.md' }],
+    text: '见 同名文件.md 这篇。',
+    expectLinks: [{ term: '同名文件.md', target: '同名文件.md' }],
+  },
+  {
+    name: 'H3 路径消歧：两篇同名，文本带路径段',
+    docs: [{ path: '笔记/同名文件.md' }, { path: '资料库/同名文件.md' }],
+    text: '见 笔记/同名文件.md 这篇。',
+    expectLinks: [{ term: '笔记/同名文件.md', target: '笔记/同名文件.md' }],
+  },
+  {
+    name: 'H4 路径消歧：另一篇',
+    docs: [{ path: '笔记/同名文件.md' }, { path: '资料库/同名文件.md' }],
+    text: '见 资料库/同名文件.md 这篇。',
+    expectLinks: [{ term: '资料库/同名文件.md', target: '资料库/同名文件.md' }],
+  },
+  {
+    name: 'H5 扩展名不匹配不吸收：target 是 .md，文本写 .txt',
+    docs: [{ path: '第2章 进阶.md' }],
+    text: '见 第2章 进阶.txt 这篇。',
+    expectLinks: [{ term: '第2章 进阶', target: '第2章 进阶.md' }],
+  },
+  {
+    name: 'H6 裸名歧义：不直链但产出候选',
+    docs: [{ path: '笔记/同名文件.md' }, { path: '资料库/同名文件.md' }],
+    text: '见 同名文件 这篇。',
+    expectLinks: [],
+    expectCandidates: [{ term: '同名文件', count: 2 }],
+  },
+  {
+    name: 'H7 完整文件名歧义：不直链但产出候选',
+    docs: [{ path: '笔记/同名文件.md' }, { path: '资料库/同名文件.md' }],
+    text: '见 同名文件.md 这篇。',
+    expectLinks: [],
+    expectCandidates: [{ term: '同名文件.md', count: 2 }],
+  },
+  {
+    name: 'H8 路径段不被普通斜杠误吸收',
+    docs: [{ path: '第2章 进阶.md' }],
+    text: '比例 1/2 与 第2章 进阶 无关。',
+    expectLinks: [{ term: '第2章 进阶', target: '第2章 进阶.md' }],
+  },
 ];
 
 // ---------- 执行 ----------
@@ -231,12 +283,17 @@ for (const c of CASES) {
   }
   const idx = buildAutoIndex(entries, []);
   const links = extractLinks(c.text, idx, { selfPath: c.selfPath ?? null });
-  const got = links.map((l) => ({ term: l.term, target: l.target?.path }));
+  const got = links.filter((l) => l.target).map((l) => ({ term: l.term, target: l.target?.path }));
+  const gotCands = links.filter((l) => !l.target && l.candidates).map((l) => ({ term: l.term, count: l.candidates.length }));
 
   const missing = (c.expectLinks ?? []).filter(
     (e) => !got.some((g) => g.term === e.term && g.target === e.target)
   );
   const extra = got.filter((g) => !(c.expectLinks ?? []).some((e) => e.term === g.term && e.target === g.target));
+  const missCands = (c.expectCandidates ?? []).filter((e) => !gotCands.some((g) => g.term === e.term && g.count === e.count));
+  const extraCands = gotCands.filter((g) => !(c.expectCandidates ?? []).some((e) => e.term === g.term && e.count === g.count));
+  missing.push(...missCands.map((m) => ({ term: m.term + '(候选)', target: m.count + '个' })));
+  extra.push(...extraCands.map((m) => ({ term: m.term + '(候选)', target: m.count + '个' })));
 
   if (!missing.length && !extra.length) {
     pass++;

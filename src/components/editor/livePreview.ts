@@ -31,12 +31,15 @@ export interface LivePreviewOptions {
   noteMarks?: { quote: string; href: string }[];
   /** 点击内链词条（表格单元格内）：target 为 {path, heading} */
   openDocLink?: (target: { path: string; heading?: string | null }) => void;
+  /** 点击歧义词条（表格单元格内）：弹候选选择 */
+  onCandidates?: (term: string, candidates: string[], at: { x: number; y: number }) => void;
 }
 
 // 文档路径以 facet 提供，构建装饰时读取
 const lpDocPath = Facet.define<string, string>({ combine: (v) => (v.length ? v[v.length - 1] : '') });
 const lpReadOnly = Facet.define<boolean, boolean>({ combine: (v) => v.some(Boolean) });
 const lpNoteMarks = Facet.define<{ quote: string; href: string }[], { quote: string; href: string }[]>({ combine: (v) => v[v.length - 1] ?? [] });
+const lpOnCandidates = Facet.define<((term: string, candidates: string[], at: { x: number; y: number }) => void) | null, ((term: string, candidates: string[], at: { x: number; y: number }) => void) | null>({ combine: (v) => v[v.length - 1] ?? null });
 const lpOpenDocLink = Facet.define<((t: { path: string; heading?: string | null }) => void) | null, ((t: { path: string; heading?: string | null }) => void) | null>({ combine: (v) => v[v.length - 1] ?? null });
 
 // 语法树延迟补全后，提醒表格 StateField 重算的空效果
@@ -212,9 +215,11 @@ function renderInlineInto(parent: HTMLElement, text: string) {
 }
 
 // 单元格内联渲染 + 内链标记：links 为 cell 内相对偏移；点击走 openDocLink
-function buildLinkedCell(text: string, links: { from: number; to: number; target: { path: string; heading?: string | null } }[],
-  openDocLink: ((t: { path: string; heading?: string | null }) => void) | null): HTMLElement {
-  if (!links.length || !openDocLink) return buildCell(text);
+function buildLinkedCell(text: string,
+  links: { from: number; to: number; target: { path: string; heading?: string | null } | null; term?: string; candidates?: string[] | null }[],
+  openDocLink: ((t: { path: string; heading?: string | null }) => void) | null,
+  onCandidates?: ((term: string, candidates: string[], at: { x: number; y: number }) => void) | null): HTMLElement {
+  if (!links.length || (!openDocLink && !onCandidates)) return buildCell(text);
   const span = document.createElement('span');
   const sorted = [...links].sort((a, b) => a.from - b.from);
   let last = 0;
@@ -226,13 +231,14 @@ function buildLinkedCell(text: string, links: { from: number; to: number; target
       span.appendChild(seg);
     }
     const a = document.createElement('span');
-    a.className = 'wb-autolink';
+    a.className = l.target ? 'wb-autolink' : 'wb-autolink wb-al-candidates';
     a.style.cursor = 'pointer';
     a.textContent = text.slice(l.from, l.to);
     a.addEventListener('mousedown', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openDocLink(l.target);
+      if (l.target) openDocLink?.(l.target);
+      else if (l.candidates?.length) onCandidates?.(l.term || text.slice(l.from, l.to), l.candidates, { x: e.clientX, y: e.clientY });
     });
     span.appendChild(a);
     last = l.to;
@@ -415,13 +421,15 @@ class TableWidget extends WidgetType {
   private to: number;
   private model: TableModel;
   private readOnly: boolean;
-  private links: { from: number; to: number; target: { path: string; heading?: string | null } }[];
+  private links: { from: number; to: number; target: { path: string; heading?: string | null } | null; term?: string; candidates?: string[] | null }[];
   private openDocLink: ((target: { path: string; heading?: string | null }) => void) | null;
+  private onCandidates: ((term: string, candidates: string[], at: { x: number; y: number }) => void) | null;
   private view: EditorView | null = null; // toDOM 时记录，destroy 注销用
 
   constructor(from: number, to: number, model: TableModel, readOnly: boolean,
-    links: { from: number; to: number; target: { path: string; heading?: string | null } }[] = [],
-    openDocLink: ((target: { path: string; heading?: string | null }) => void) | null = null) {
+    links: { from: number; to: number; target: { path: string; heading?: string | null } | null; term?: string; candidates?: string[] | null }[] = [],
+    openDocLink: ((target: { path: string; heading?: string | null }) => void) | null = null,
+    onCandidates: ((term: string, candidates: string[], at: { x: number; y: number }) => void) | null = null) {
     super();
     this.from = from;
     this.to = to;
@@ -429,6 +437,7 @@ class TableWidget extends WidgetType {
     this.readOnly = readOnly;
     this.links = links;
     this.openDocLink = openDocLink;
+    this.onCandidates = onCandidates;
   }
 
   eq(other: TableWidget): boolean {
@@ -472,7 +481,7 @@ class TableWidget extends WidgetType {
   }
 
   // 该单元格内的内链（换算为显示文本的相对偏移；含转义时放弃）
-  private cellLinks(view: EditorView, r: number, c: number): { from: number; to: number; target: { path: string; heading?: string | null } }[] {
+  private cellLinks(view: EditorView, r: number, c: number): { from: number; to: number; target: { path: string; heading?: string | null } | null; term?: string; candidates?: string[] | null }[] {
     if (!this.links.length) return [];
     const range = this.cellSrcRange(view, r, c);
     if (!range) return [];
@@ -481,7 +490,7 @@ class TableWidget extends WidgetType {
     if (raw !== disp) return []; // 含转义：偏移不可直接换算
     return this.links
       .filter((l) => l.from >= range.from && l.to <= range.to)
-      .map((l) => ({ from: l.from - range.from, to: l.to - range.from, target: l.target }));
+      .map((l) => ({ from: l.from - range.from, to: l.to - range.from, target: l.target, term: l.term, candidates: l.candidates }));
   }
 
   // 在当前视口 DOM 里定位本表某单元格（部件可能已随文档重建，经 data 属性查）
@@ -712,7 +721,7 @@ class TableWidget extends WidgetType {
       if (a) th.style.textAlign = a;
       const disp = document.createElement('span');
       disp.className = 'wb-tc-display';
-      disp.appendChild(buildLinkedCell(unescapeCell(this.model.header[c] ?? ''), this.cellLinks(view, -1, c), this.openDocLink));
+      disp.appendChild(buildLinkedCell(unescapeCell(this.model.header[c] ?? ''), this.cellLinks(view, -1, c), this.openDocLink, this.onCandidates));
       th.appendChild(disp);
       if (!ro) {
         const ops = document.createElement('span');
@@ -775,7 +784,7 @@ class TableWidget extends WidgetType {
         if (a) td.style.textAlign = a;
         const disp = document.createElement('span');
         disp.className = 'wb-tc-display';
-        disp.appendChild(buildLinkedCell(unescapeCell(row[c] ?? ''), this.cellLinks(view, r, c), this.openDocLink));
+        disp.appendChild(buildLinkedCell(unescapeCell(row[c] ?? ''), this.cellLinks(view, r, c), this.openDocLink, this.onCandidates));
         td.appendChild(disp);
         if (!ro) {
           td.addEventListener('mousedown', (e) => {
@@ -1096,7 +1105,8 @@ function buildTableDecorations(state: EditorState): DecorationSet {
   const ro = state.facet(lpReadOnly);
   const openDocLink = state.facet(lpOpenDocLink);
   // 内链（来自 autoLinks 的 alField；未加载到时为空数组）
-  const docLinks = (state.field(alField, false)?.links ?? []).filter((l) => !l.ignored && l.target?.path);
+  const onCandidates = state.facet(lpOnCandidates);
+  const docLinks = (state.field(alField, false)?.links ?? []).filter((l) => !l.ignored && (l.target?.path || l.candidates?.length));
   const endpoints = selectionEndpoints(state);
   const parts: Range<Decoration>[] = [];
   const scan = (node: SyntaxNode) => {
@@ -1108,10 +1118,10 @@ function buildTableDecorations(state: EditorState): DecorationSet {
           const toL = state.doc.lineAt(c.to);
           const model = parseTable(state.sliceDoc(fromL.from, toL.to));
           if (model) {
-            const inTable = docLinks.filter((l) => l.from >= fromL.from && l.to <= toL.to && l.target)
-              .map((l) => ({ from: l.from, to: l.to, target: l.target as { path: string; heading?: string | null } }));
+            const inTable = docLinks.filter((l) => l.from >= fromL.from && l.to <= toL.to)
+              .map((l) => ({ from: l.from, to: l.to, target: l.target ? l.target as { path: string; heading?: string | null } : null, term: l.term, candidates: l.candidates || null }));
             parts.push(
-              Decoration.replace({ widget: new TableWidget(fromL.from, toL.to, model, ro, inTable, openDocLink), block: true }).range(fromL.from, toL.to)
+              Decoration.replace({ widget: new TableWidget(fromL.from, toL.to, model, ro, inTable, openDocLink, onCandidates), block: true }).range(fromL.from, toL.to)
             );
           }
         }
@@ -1355,6 +1365,7 @@ export function livePreview(opts: LivePreviewOptions) {
     lpReadOnly.of(!!opts.readOnly),
     lpNoteMarks.of(opts.noteMarks ?? []),
     lpOpenDocLink.of(opts.openDocLink ?? null),
+    lpOnCandidates.of(opts.onCandidates ?? null),
     lpTableField,
     makeLpPlugin(opts.openLink, opts.openNote ?? (() => {})),
     makeLpTheme(opts.geometry === 'card'),
