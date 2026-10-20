@@ -115,7 +115,7 @@ export default function Read() {
   useEffect(() => {
     if (!dsId || !relPath) return;
     setTabs((prev) => {
-      if (prev[prev.length - 1] === relPath) return prev;
+      if (prev.includes(relPath)) return prev;
       const next = ensureTab(prev, relPath);
       saveTabs(dsId, next);
       return next;
@@ -127,6 +127,19 @@ export default function Read() {
       saveTabs(dsId, next);
       if (p === relPath) {
         const i = prev.indexOf(p);
+        const target = next[Math.min(i, next.length - 1)];
+        navigate(target ? '/read/' + target.split('/').map(encodeURIComponent).join('/') : '/');
+      }
+      return next;
+    });
+  }, [dsId, relPath, navigate]);
+  // 批量关闭（右键菜单：左侧/右侧/其他/全部）。当前标签被关时跳到原位置相邻标签
+  const closeManyTabs = useCallback((paths: string[]) => {
+    setTabs((prev) => {
+      const next = prev.filter((p) => !paths.includes(p));
+      saveTabs(dsId, next);
+      if (paths.includes(relPath)) {
+        const i = prev.indexOf(relPath);
         const target = next[Math.min(i, next.length - 1)];
         navigate(target ? '/read/' + target.split('/').map(encodeURIComponent).join('/') : '/');
       }
@@ -790,12 +803,13 @@ export default function Read() {
           {/* 顶部工具栏区（sticky，不随正文滚走）：阅读态=面包屑+操作行，
               原位编辑态=格式工具栏+保存控件；查找条与偏好面板也收在同一 sticky 区，
               避免多个 sticky 互相重叠 */}
-          <div className="sticky top-0 z-20 mb-3 space-y-2">
+          <div className="sticky top-0 z-20 pb-3 space-y-2 bg-background">
           <DocTabs
             tabs={tabs}
             active={relPath}
             onActivate={(p2) => navigate('/read/' + p2.split('/').map(encodeURIComponent).join('/'))}
             onClose={closeTab}
+            onCloseMany={closeManyTabs}
           />
           {editing ? (
             <div

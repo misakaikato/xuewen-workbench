@@ -20,10 +20,10 @@ export function saveTabs(dsId: string | null | undefined, tabs: string[]): void 
   } catch { /* 存储满时静默 */ }
 }
 
-/** 确保 path 在标签里（已存在则提到末尾=最近），返回新数组 */
+/** 确保 path 在标签里。已存在则**位置不变**（点击只切换激活态，不重排）；不存在才追加到末尾 */
 export function ensureTab(tabs: string[], path: string): string[] {
-  const rest = tabs.filter((p) => p !== path);
-  return [...rest, path].slice(-MAX_TABS);
+  if (tabs.includes(path)) return tabs;
+  return [...tabs, path].slice(-MAX_TABS);
 }
 
 export function removeTab(tabs: string[], path: string): string[] {
