@@ -7,6 +7,7 @@
 import { syntaxTree } from '@codemirror/language';
 import { EditorState, Facet, StateEffect, StateField } from '@codemirror/state';
 import type { Range } from '@codemirror/state';
+import { alField } from './autoLinks';
 import { Decoration, EditorView, ViewPlugin, WidgetType } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
@@ -28,12 +29,15 @@ export interface LivePreviewOptions {
   geometry?: 'page' | 'card';
   /** 划线笔记标记：正文中匹配到 quote 时加下划线，点击跳到笔记锚点 */
   noteMarks?: { quote: string; href: string }[];
+  /** 点击内链词条（表格单元格内）：target 为 {path, heading} */
+  openDocLink?: (target: { path: string; heading?: string | null }) => void;
 }
 
 // 文档路径以 facet 提供，构建装饰时读取
 const lpDocPath = Facet.define<string, string>({ combine: (v) => (v.length ? v[v.length - 1] : '') });
 const lpReadOnly = Facet.define<boolean, boolean>({ combine: (v) => v.some(Boolean) });
 const lpNoteMarks = Facet.define<{ quote: string; href: string }[], { quote: string; href: string }[]>({ combine: (v) => v[v.length - 1] ?? [] });
+const lpOpenDocLink = Facet.define<((t: { path: string; heading?: string | null }) => void) | null, ((t: { path: string; heading?: string | null }) => void) | null>({ combine: (v) => v[v.length - 1] ?? null });
 
 // 语法树延迟补全后，提醒表格 StateField 重算的空效果
 const lpTreeRefresh = StateEffect.define<null>();
@@ -207,6 +211,40 @@ function renderInlineInto(parent: HTMLElement, text: string) {
   if (pos < text.length) parent.appendChild(document.createTextNode(text.slice(pos)));
 }
 
+// 单元格内联渲染 + 内链标记：links 为 cell 内相对偏移；点击走 openDocLink
+function buildLinkedCell(text: string, links: { from: number; to: number; target: { path: string; heading?: string | null } }[],
+  openDocLink: ((t: { path: string; heading?: string | null }) => void) | null): HTMLElement {
+  if (!links.length || !openDocLink) return buildCell(text);
+  const span = document.createElement('span');
+  const sorted = [...links].sort((a, b) => a.from - b.from);
+  let last = 0;
+  for (const l of sorted) {
+    if (l.from < last || l.to > text.length) continue;
+    if (l.from > last) {
+      const seg = document.createElement('span');
+      renderInlineInto(seg, text.slice(last, l.from));
+      span.appendChild(seg);
+    }
+    const a = document.createElement('span');
+    a.className = 'wb-autolink';
+    a.style.cursor = 'pointer';
+    a.textContent = text.slice(l.from, l.to);
+    a.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openDocLink(l.target);
+    });
+    span.appendChild(a);
+    last = l.to;
+  }
+  if (last < text.length) {
+    const seg = document.createElement('span');
+    renderInlineInto(seg, text.slice(last));
+    span.appendChild(seg);
+  }
+  return span;
+}
+
 function buildCell(text: string): HTMLElement {
   const cached = cellCache.get(text);
   if (cached) return cached.cloneNode(true) as HTMLElement;
@@ -377,20 +415,27 @@ class TableWidget extends WidgetType {
   private to: number;
   private model: TableModel;
   private readOnly: boolean;
+  private links: { from: number; to: number; target: { path: string; heading?: string | null } }[];
+  private openDocLink: ((target: { path: string; heading?: string | null }) => void) | null;
   private view: EditorView | null = null; // toDOM 时记录，destroy 注销用
 
-  constructor(from: number, to: number, model: TableModel, readOnly: boolean) {
+  constructor(from: number, to: number, model: TableModel, readOnly: boolean,
+    links: { from: number; to: number; target: { path: string; heading?: string | null } }[] = [],
+    openDocLink: ((target: { path: string; heading?: string | null }) => void) | null = null) {
     super();
     this.from = from;
     this.to = to;
     this.model = model;
     this.readOnly = readOnly;
+    this.links = links;
+    this.openDocLink = openDocLink;
   }
 
   eq(other: TableWidget): boolean {
     // 首尾位置参与比较：文档在到处变动后部件不复用，写回不用陈旧坐标
     return other.from === this.from && other.to === this.to && other.readOnly === this.readOnly &&
-      JSON.stringify(other.model) === JSON.stringify(this.model);
+      JSON.stringify(other.model) === JSON.stringify(this.model) &&
+      JSON.stringify(other.links) === JSON.stringify(this.links);
   }
 
   // 写回：整表替换源文一次事务；重算后部件以新模型重建
@@ -400,6 +445,43 @@ class TableWidget extends WidgetType {
 
   private cellText(r: number, c: number): string {
     return r < 0 ? (this.model.header[c] ?? '') : (this.model.rows[r]?.[c] ?? '');
+  }
+
+  // 单元格在源文档中的偏移区间（r=-1 为表头）。源文逐行扫描定位 trim 后内容；
+  // 含转义符的单元格（\\|）显示文本与源文长度不一致，返回 null 跳过链接渲染。
+  private cellSrcRange(view: EditorView, r: number, c: number): { from: number; to: number } | null {
+    try {
+      const firstLine = view.state.doc.lineAt(this.from);
+      const line = view.state.doc.line(firstLine.number + (r < 0 ? 0 : r + 2));
+      const cells = splitRow(line.text);
+      if (c >= cells.length) return null;
+      const cell = cells[c];
+      if (!cell) return null;
+      let pos = 0;
+      for (let i = 0; i < c; i++) {
+        const idx = line.text.indexOf(cells[i], pos);
+        if (idx < 0) return null;
+        pos = idx + cells[i].length;
+      }
+      const idx = line.text.indexOf(cell, pos);
+      if (idx < 0) return null;
+      return { from: line.from + idx, to: line.from + idx + cell.length };
+    } catch {
+      return null;
+    }
+  }
+
+  // 该单元格内的内链（换算为显示文本的相对偏移；含转义时放弃）
+  private cellLinks(view: EditorView, r: number, c: number): { from: number; to: number; target: { path: string; heading?: string | null } }[] {
+    if (!this.links.length) return [];
+    const range = this.cellSrcRange(view, r, c);
+    if (!range) return [];
+    const raw = view.state.sliceDoc(range.from, range.to);
+    const disp = unescapeCell(raw);
+    if (raw !== disp) return []; // 含转义：偏移不可直接换算
+    return this.links
+      .filter((l) => l.from >= range.from && l.to <= range.to)
+      .map((l) => ({ from: l.from - range.from, to: l.to - range.from, target: l.target }));
   }
 
   // 在当前视口 DOM 里定位本表某单元格（部件可能已随文档重建，经 data 属性查）
@@ -630,7 +712,7 @@ class TableWidget extends WidgetType {
       if (a) th.style.textAlign = a;
       const disp = document.createElement('span');
       disp.className = 'wb-tc-display';
-      disp.appendChild(buildCell(unescapeCell(this.model.header[c] ?? '')));
+      disp.appendChild(buildLinkedCell(unescapeCell(this.model.header[c] ?? ''), this.cellLinks(view, -1, c), this.openDocLink));
       th.appendChild(disp);
       if (!ro) {
         const ops = document.createElement('span');
@@ -693,7 +775,7 @@ class TableWidget extends WidgetType {
         if (a) td.style.textAlign = a;
         const disp = document.createElement('span');
         disp.className = 'wb-tc-display';
-        disp.appendChild(buildCell(unescapeCell(row[c] ?? '')));
+        disp.appendChild(buildLinkedCell(unescapeCell(row[c] ?? ''), this.cellLinks(view, r, c), this.openDocLink));
         td.appendChild(disp);
         if (!ro) {
           td.addEventListener('mousedown', (e) => {
@@ -1012,6 +1094,9 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
 // 表格块级替换（StateField，全文档扫描，量级为块数而非字符数）
 function buildTableDecorations(state: EditorState): DecorationSet {
   const ro = state.facet(lpReadOnly);
+  const openDocLink = state.facet(lpOpenDocLink);
+  // 内链（来自 autoLinks 的 alField；未加载到时为空数组）
+  const docLinks = (state.field(alField, false)?.links ?? []).filter((l) => !l.ignored && l.target?.path);
   const endpoints = selectionEndpoints(state);
   const parts: Range<Decoration>[] = [];
   const scan = (node: SyntaxNode) => {
@@ -1023,8 +1108,10 @@ function buildTableDecorations(state: EditorState): DecorationSet {
           const toL = state.doc.lineAt(c.to);
           const model = parseTable(state.sliceDoc(fromL.from, toL.to));
           if (model) {
+            const inTable = docLinks.filter((l) => l.from >= fromL.from && l.to <= toL.to && l.target)
+              .map((l) => ({ from: l.from, to: l.to, target: l.target as { path: string; heading?: string | null } }));
             parts.push(
-              Decoration.replace({ widget: new TableWidget(fromL.from, toL.to, model, ro), block: true }).range(fromL.from, toL.to)
+              Decoration.replace({ widget: new TableWidget(fromL.from, toL.to, model, ro, inTable, openDocLink), block: true }).range(fromL.from, toL.to)
             );
           }
         }
@@ -1043,7 +1130,8 @@ const lpTableField = StateField.define<DecorationSet>({
   },
   update(value, tr) {
     if (tr.docChanged || tr.selection || tr.effects.some((e) => e.is(lpTreeRefresh)) ||
-        syntaxTree(tr.state) !== syntaxTree(tr.startState)) {
+        syntaxTree(tr.state) !== syntaxTree(tr.startState) ||
+        tr.state.field(alField, false) !== tr.startState.field(alField, false)) {
       return buildTableDecorations(tr.state);
     }
     return value;
@@ -1266,6 +1354,7 @@ export function livePreview(opts: LivePreviewOptions) {
     lpDocPath.of(opts.docPath),
     lpReadOnly.of(!!opts.readOnly),
     lpNoteMarks.of(opts.noteMarks ?? []),
+    lpOpenDocLink.of(opts.openDocLink ?? null),
     lpTableField,
     makeLpPlugin(opts.openLink, opts.openNote ?? (() => {})),
     makeLpTheme(opts.geometry === 'card'),

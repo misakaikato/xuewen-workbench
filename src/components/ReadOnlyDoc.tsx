@@ -147,7 +147,7 @@ export function ReadOnlyDoc({
       EditorState.lineSeparator.of(lineSep),
       EditorView.lineWrapping,
       drawSelection(),
-      ...livePreview({ docPath, openLink, openNote: onOpenNote, readOnly: !editing, geometry: 'card', noteMarks }),
+      ...livePreview({ docPath, openLink, openNote: onOpenNote, openDocLink: openLinkTarget, readOnly: !editing, geometry: 'card', noteMarks }),
       ...corpusRefsExtension({
         names: [],
         collections: [],

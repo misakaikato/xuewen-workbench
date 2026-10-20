@@ -500,7 +500,7 @@ export default function Edit() {
       }));
       if (isLive) {
         list.push(
-          ...livePreview({ docPath: relPath, openLink }),
+          ...livePreview({ docPath: relPath, openLink, openDocLink: (t) => openLinkTargetRef.current(t) }),
           ...corpusRefsExtension({
             names: [],
             collections: [],
