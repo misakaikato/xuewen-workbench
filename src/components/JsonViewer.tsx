@@ -50,6 +50,7 @@ export function JsonViewer({ content, highlightTerm }: { content: string; highli
   // 带搜索命中词进入时默认原始源码视图：折叠结构里可能藏有命中，源码视图让高亮与定位可达
   const [raw, setRaw] = useState(!!highlightTerm);
   const [filter, setFilter] = useState('');
+  const showRaw = raw || !!highlightTerm;
   const [copied, setCopied] = useState(false);
 
   const parsed = useMemo(() => {
@@ -69,9 +70,9 @@ export function JsonViewer({ content, highlightTerm }: { content: string; highli
           className="text-xs"
           onClick={() => setRaw(!raw)}
         >
-          {raw ? '结构视图' : '原始源码'}
+          {showRaw ? '结构视图' : '原始源码'}
         </Button>
-        {!raw && !parsed.error && (
+        {!showRaw && !parsed.error && (
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -98,7 +99,7 @@ export function JsonViewer({ content, highlightTerm }: { content: string; highli
           <span>JSON 解析失败：{parsed.error}。以下为原始内容。</span>
         </div>
       ) : null}
-      {raw || parsed.error ? (
+      {showRaw || parsed.error ? (
         <div className="reader">
           <pre className="whitespace-pre-wrap break-all">{content}</pre>
         </div>

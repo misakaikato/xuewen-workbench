@@ -1250,20 +1250,32 @@ ${m.text}
     return lines.join('\n');
   }
 
-  /** 模型列表（从端点拉取） */
-  async listModels() {
-    const c = this.llm();
-    if (!c.baseUrl) return { models: [] };
+  /** 模型列表（从端点拉取）。pending 用于「输入框里填了但还没保存」的 baseUrl/apiKey：
+      设置面板在保存之前就能拿这对值试拉，避免「先填 key 却因为还没保存而永远 401」。 */
+  async listModels(pending = {}) {
+    const saved = this.llm();
+    const baseUrl = String(pending.baseUrl ?? saved.baseUrl ?? '').trim();
+    const apiKey = String(pending.apiKey || saved.apiKey || '');
+    if (!baseUrl) return { ok: false, models: [], status: 0, url: '', error: '未填写 baseUrl' };
+    const url = baseUrl.replace(/\/+$/, '') + '/models';
     try {
-      const r = await fetch(c.baseUrl.replace(/\/$/, '') + '/models', {
-        headers: c.apiKey ? { Authorization: 'Bearer ' + c.apiKey } : {},
-        signal: AbortSignal.timeout(5000),
+      const r = await fetch(url, {
+        headers: apiKey ? { Authorization: 'Bearer ' + apiKey } : {},
+        signal: AbortSignal.timeout(6000),
       });
-      if (!r.ok) return { models: [] };
+      if (!r.ok) {
+        let detail = '';
+        try {
+          const j = await r.json();
+          detail = String(j?.error?.message || j?.error || j?.detail || '');
+        } catch { /* 非 JSON 错误体 */ }
+        return { ok: false, models: [], status: r.status, url, error: modelListError(r.status, url, detail) };
+      }
       const j = await r.json();
-      return { models: (j.data || []).map((m) => m.id).slice(0, 30) };
-    } catch {
-      return { models: [] };
+      const models = (j.data || []).map((m) => m.id).filter(Boolean).slice(0, 50);
+      return { ok: true, models, status: r.status, url, error: models.length ? '' : '端点返回了 0 个模型' };
+    } catch (e) {
+      return { ok: false, models: [], status: 0, url, error: '连接失败：' + String(e?.message || e) };
     }
   }
 
@@ -1406,7 +1418,7 @@ ${m.text}
     return this.status();
   }
 
-  /** 探测端点模型的真实上下文窗口：LM Studio(/api/v0/models) → llama.cpp(/props) → Ollama(/api/show)。
+  /** 探测端点模型的真实上下文窗口：vLLM(/v1/models 的 max_model_len) → LM Studio(/api/v0/models) → llama.cpp(/props) → Ollama(/api/show)。
       写正 models.json 的 contextWindow 后，pi 会在接近上限时自动压缩历史，避免 400 超窗报错。 */
   async _detectContextWindow() {
     const c = this.llm();
@@ -1414,7 +1426,16 @@ ${m.text}
     const origin = String(c.baseUrl).replace(/\/v1\/?$/, '');
     const headers = c.apiKey ? { Authorization: `Bearer ${c.apiKey}` } : {};
     let ctx = 0;
+    // vLLM / OpenAI 兼容：GET {baseUrl}/models 里的 max_model_len（vLLM 必报）
     try {
+      const r = await fetch(String(c.baseUrl).replace(/\/+$/, '') + '/models', { headers, signal: AbortSignal.timeout(4000) });
+      if (r.ok) {
+        const j = await r.json();
+        const m = (j.data || []).find((x) => x.id === c.model);
+        ctx = Number(m?.max_model_len) || Number(m?.max_context_length) || 0;
+      }
+    } catch { /* 端点不支持 */ }
+    if (!ctx) try {
       const r = await fetch(origin + '/api/v0/models', { headers, signal: AbortSignal.timeout(4000) });
       if (r.ok) {
         const j = await r.json();
@@ -1485,6 +1506,15 @@ ${m.text}
       return [];
     }
   }
+}
+
+/** 把端点返回的状态码翻成能直接照着改的提示 */
+function modelListError(status, url, detail) {
+  const tail = detail ? `（${detail}）` : '';
+  if (status === 401 || status === 403) return `HTTP ${status}：密钥验证失败，apiKey 缺失或不正确${tail}`;
+  if (status === 404) return `HTTP 404：${url} 不存在。baseUrl 必须填到 /v1 为止（如 https://host/v1），不要漏掉或重复 /v1`;
+  if (status >= 500) return `HTTP ${status}：端点内部错误${tail}`;
+  return `HTTP ${status}${tail}`;
 }
 
 function snapText(lib) {

@@ -1,20 +1,26 @@
 // Word 阅读器：默认工作台内预览（服务端解析为 HTML）。
 // 提供「原版式」（缩放/适应宽度）与「重排阅读」（应用阅读偏好）两种模式。
 // Word 为只读：提供下载原文件与「另存为 Markdown 副本」入口，不伪装可编辑。
-import { useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { api, rawFileUrl } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { Download, FilePlus2, AlertCircle, ZoomIn, ZoomOut } from 'lucide-react';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 
-export function WordReader({
+// 保持转换后的正文 DOM 稳定，避免全局状态更新重置目录 id 和查找 mark。
+const WordBody = memo(function WordBody({ html }: { html: string }) {
+  return <div dangerouslySetInnerHTML={{ __html: html }} />;
+});
+
+export const WordReader = memo(function WordReader({
   path,
   name,
   html,
   text,
   warning,
   engine,
+  onContentReady,
 }: {
   path: string;
   name: string;
@@ -22,9 +28,11 @@ export function WordReader({
   text: string;
   warning?: string | null;
   engine?: string;
+  onContentReady?: () => void;
 }) {
   const [mode, setMode] = useState<'original' | 'reflow'>('reflow');
   const [zoom, setZoom] = useState(100);
+  useEffect(() => { onContentReady?.(); }, [html, mode, zoom, onContentReady]);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const { dsId } = useApp();
@@ -107,16 +115,15 @@ export function WordReader({
         Word 文档在工作台中为只读预览。如需修改，请下载后用 Word/WPS 编辑并覆盖原文件，或另存为 Markdown 副本在工作台中编辑。
       </div>
       {mode === 'reflow' ? (
-        <div className="reader" dangerouslySetInnerHTML={{ __html: html }} />
+        <div className="reader"><WordBody html={html} /></div>
       ) : (
         <div className="overflow-x-auto">
           <div
             className="word-original bg-white text-black rounded-lg shadow-sm border border-border p-8 max-w-3xl"
             style={{ zoom: zoom / 100 }}
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+          ><WordBody html={html} /></div>
         </div>
       )}
     </div>
   );
-}
+});

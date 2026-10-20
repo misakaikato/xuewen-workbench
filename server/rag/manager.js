@@ -85,12 +85,11 @@ class RagIndex {
     this.state = 'building';
     this.error = null;
     try {
-      if (rebuild) {
-        store.db.exec('DELETE FROM files; DELETE FROM chunks; DELETE FROM vecs;');
+      if (rebuild || (store.metaGet('index_cfg') && store.metaGet('index_cfg') !== indexConfigFingerprint(this.cfg))) {
+        store.db.exec('DELETE FROM files; DELETE FROM chunks_fts; DELETE FROM chunks; DELETE FROM vecs;');
         store._bump();
       }
-      const texts = new Map(); // path -> 原文（切块用）；从扫描侧拿不到正文时由调用方提供 getText
-      const plan = store.planIncremental(snap.files.map((f) => ({ path: f.path, contentHash: f.mtimeMs + ':' + f.size })));
+      const plan = store.planIncremental(snap.files.map((f) => ({ ...f, contentHash: f.mtimeMs + ':' + f.size })));
       if (plan.toDel.length) store.deleteFiles(plan.toDel);
       const todo = plan.toAdd;
       this.total = todo.length;
@@ -111,7 +110,8 @@ class RagIndex {
           continue;
         }
         const chunks = chunkFile(f.ext || '.md', text, this.cfg.chunk);
-        const eOpts = { headingContext: this.cfg.chunk.headingContext, fileName: f.name };
+        if (chunks.length) chunks[0] = { ...chunks[0], text: f.name + '\n\n' + chunks[0].text }; // 文件名进入正文索引与定位
+        const eOpts = { headingContext: this.cfg.chunk.headingContext, fileName: this.cfg.chunk.fileNameContext ? f.name : '' };
         store.replaceChunks(f.path, f.contentHash, chunks, kindOf(f.ext), (c) => ftsIndexText(t2s(embedTextOf(c, eOpts))));
         // 立即嵌入该文件全部块（文件级完成粒度）
         this.phase = '嵌入';
@@ -297,11 +297,12 @@ export class RagManager {
     // 词面为零而语义相关的查询（用户最常感知到的“有相近内容却 0 结果”）走这里。
     const weakCos = cos
       .filter((r) => !fusedIds.has(r.id))
-      .slice(0, Math.max(0, limit - fused.length))
       .map((r) => ({ id: r.id, score: Math.round((cfg.search.semanticWeight ?? 1) / (rrfK + cfg.search.topN + 1) * 1e4) / 1e4 }));
     // 补位池：每文件 BM25 最优 3 块（SQL 窗口函数保证文件多样性），轮转排序——
     // 第一轮所有命中文件各出一块，第二轮再各出一块……大文件不霸榜，覆盖完备
-    const byFile = store.searchFtsByFile(tokens, 3).filter((r) => !fusedIds.has(r.id));
+    const weakCosIds = new Set(weakCos.map((r) => r.id));
+    const lexicalByFile = store.searchFtsByFile(tokens, 3);
+    const byFile = lexicalByFile.filter((r) => !fusedIds.has(r.id) && !weakCosIds.has(r.id));
     const rounds = new Map(); // rnk -> [ids]
     for (const r of byFile) {
       if (!rounds.has(r.rnk)) rounds.set(r.rnk, []);
@@ -313,9 +314,9 @@ export class RagManager {
     }
     // total 如实反映融合命中 + 可用补位（受 FTS 候选池限制）
     const total = fused.length + filler.length + weakCos.length;
-    const top = [...fused, ...filler, ...weakCos].slice(0, limit);
+    const top = [...fused, ...weakCos, ...filler].slice(0, limit);
     const chunks = store.getChunksByIds(top.map((x) => x.id));
-    const bm25Ids = new Map(fts.map((r) => [r.id, r.score]));
+    const bm25Ids = new Set([...fts, ...lexicalByFile].map((r) => r.id));
     const cosIds = new Map(cos.map((r) => [r.id, r.score]));
     const hits = top
       .map((x) => {

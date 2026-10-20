@@ -1,0 +1,341 @@
+{
+  "at": "2026-10-20T07:20:50.924Z",
+  "model": {
+    "state": "ready",
+    "backend": "mlx",
+    "ep": null,
+    "id": "bge-m3",
+    "dim": 1024,
+    "sha": "e8028acb2e77e0010d35ef75832d823edb5851c95682deef2bde86a45bd4441d",
+    "progress": null,
+    "error": null
+  },
+  "config": {
+    "chunk": {
+      "maxChars": 600,
+      "jsonValueLimit": 1500,
+      "headingContext": true,
+      "fileNameContext": true,
+      "hardSplitOversize": false
+    },
+    "embed": {
+      "maxLength": 1024
+    },
+    "search": {
+      "topN": 30,
+      "rrfK": 60,
+      "rrfMin": 0.0105,
+      "cosFloor": 0.25,
+      "cosSigma": 2,
+      "semanticWeight": 1.2
+    }
+  },
+  "passed": 10,
+  "total": 12,
+  "results": [
+    {
+      "id": "lexical-rare",
+      "q": "雪拥蓝关",
+      "expect": [
+        "01-基础/关键词.md"
+      ],
+      "kind": "lexical",
+      "pass": true,
+      "rank": 1,
+      "paths": [
+        "01-基础/关键词.md"
+      ],
+      "hits": [
+        {
+          "path": "01-基础/关键词.md",
+          "bm25": true,
+          "cos": 0.5573,
+          "score": 0.0361
+        }
+      ],
+      "took": 24
+    },
+    {
+      "id": "lexical-txt",
+      "q": "鲸落",
+      "expect": [
+        "03-类型/纯文本.txt"
+      ],
+      "kind": "lexical",
+      "pass": true,
+      "rank": 1,
+      "paths": [
+        "03-类型/纯文本.txt"
+      ],
+      "hits": [
+        {
+          "path": "03-类型/纯文本.txt",
+          "bm25": true,
+          "cos": 0.6488,
+          "score": 0.0361
+        }
+      ],
+      "took": 22
+    },
+    {
+      "id": "lexical-json",
+      "q": "靛蓝萃取",
+      "expect": [
+        "03-类型/数据表.json"
+      ],
+      "kind": "lexical",
+      "pass": true,
+      "rank": 1,
+      "paths": [
+        "03-类型/数据表.json"
+      ],
+      "hits": [
+        {
+          "path": "03-类型/数据表.json",
+          "bm25": true,
+          "cos": 0.6292,
+          "score": 0.0361
+        }
+      ],
+      "took": 22
+    },
+    {
+      "id": "filename-only",
+      "q": "偃师",
+      "expect": [
+        "01-基础/仅文件名-偃师常淮.md"
+      ],
+      "kind": "filename",
+      "pass": true,
+      "rank": 1,
+      "paths": [
+        "01-基础/仅文件名-偃师常淮.md"
+      ],
+      "hits": [
+        {
+          "path": "01-基础/仅文件名-偃师常淮.md",
+          "bm25": true,
+          "cos": 0.4585,
+          "score": 0.0361
+        }
+      ],
+      "took": 22
+    },
+    {
+      "id": "hybrid",
+      "q": "梯度下降",
+      "expect": [
+        "04-语义/双命中.md"
+      ],
+      "kind": "hybrid",
+      "first": "04-语义/双命中.md",
+      "pass": true,
+      "rank": 1,
+      "paths": [
+        "04-语义/双命中.md",
+        "04-语义/仅词面.md",
+        "04-语义/仅语义.md"
+      ],
+      "hits": [
+        {
+          "path": "04-语义/双命中.md",
+          "bm25": true,
+          "cos": 0.6709,
+          "score": 0.0361
+        },
+        {
+          "path": "04-语义/仅词面.md",
+          "bm25": true,
+          "cos": 0.5414,
+          "score": 0.0355
+        },
+        {
+          "path": "04-语义/仅语义.md",
+          "bm25": false,
+          "cos": 0.5245,
+          "score": 0.019
+        }
+      ],
+      "took": 22
+    },
+    {
+      "id": "traditional",
+      "q": "体育锻炼",
+      "expect": [
+        "02-中文/繁简.md"
+      ],
+      "kind": "normalization",
+      "pass": true,
+      "rank": 1,
+      "paths": [
+        "02-中文/繁简.md"
+      ],
+      "hits": [
+        {
+          "path": "02-中文/繁简.md",
+          "bm25": true,
+          "cos": 0.5785,
+          "score": 0.0361
+        }
+      ],
+      "took": 22
+    },
+    {
+      "id": "long-doc",
+      "q": "麒麟踏云",
+      "expect": [
+        "05-结构/长文档.md"
+      ],
+      "kind": "lexical",
+      "pass": true,
+      "rank": 1,
+      "paths": [
+        "05-结构/长文档.md"
+      ],
+      "hits": [
+        {
+          "path": "05-结构/长文档.md",
+          "bm25": true,
+          "cos": 0.5596,
+          "score": 0.0361
+        }
+      ],
+      "took": 22
+    },
+    {
+      "id": "semantic-ocean",
+      "q": "巨型海洋哺乳动物死后怎样滋养海底生物",
+      "expect": [
+        "03-类型/纯文本.txt"
+      ],
+      "kind": "semantic",
+      "pass": true,
+      "rank": 1,
+      "paths": [
+        "03-类型/纯文本.txt"
+      ],
+      "hits": [
+        {
+          "path": "03-类型/纯文本.txt",
+          "bm25": false,
+          "cos": 0.5226,
+          "score": 0.0197
+        }
+      ],
+      "took": 21
+    },
+    {
+      "id": "semantic-moat",
+      "q": "护城河",
+      "expect": [
+        "04-语义/竞争优势.md"
+      ],
+      "kind": "semantic",
+      "pass": false,
+      "rank": 0,
+      "paths": [],
+      "hits": [],
+      "took": 22
+    },
+    {
+      "id": "semantic-training",
+      "q": "怎样让深度网络训练的误差逐步降低",
+      "expect": [
+        "04-语义/双命中.md",
+        "04-语义/仅语义.md"
+      ],
+      "kind": "semantic",
+      "pass": true,
+      "rank": 1,
+      "paths": [
+        "04-语义/仅语义.md",
+        "04-语义/双命中.md",
+        "04-语义/竞争优势.md"
+      ],
+      "hits": [
+        {
+          "path": "04-语义/仅语义.md",
+          "bm25": true,
+          "cos": 0.6725,
+          "score": 0.0361
+        },
+        {
+          "path": "04-语义/双命中.md",
+          "bm25": true,
+          "cos": 0.6229,
+          "score": 0.0355
+        },
+        {
+          "path": "04-语义/竞争优势.md",
+          "bm25": true,
+          "cos": null,
+          "score": 0.0159
+        }
+      ],
+      "took": 21
+    },
+    {
+      "id": "semantic-health",
+      "q": "运动对身体有什么好处",
+      "expect": [
+        "02-中文/繁简.md"
+      ],
+      "kind": "semantic",
+      "pass": true,
+      "rank": 1,
+      "paths": [
+        "02-中文/繁简.md",
+        "01-基础/关键词.md",
+        "04-语义/仅词面.md"
+      ],
+      "hits": [
+        {
+          "path": "02-中文/繁简.md",
+          "bm25": false,
+          "cos": 0.5749,
+          "score": 0.0197
+        },
+        {
+          "path": "01-基础/关键词.md",
+          "bm25": true,
+          "cos": null,
+          "score": 0.0164
+        },
+        {
+          "path": "04-语义/仅词面.md",
+          "bm25": true,
+          "cos": null,
+          "score": 0.0161
+        }
+      ],
+      "took": 22
+    },
+    {
+      "id": "negative",
+      "q": "火星殖民地的核聚变反应堆维修手册",
+      "expect": [],
+      "kind": "negative",
+      "pass": false,
+      "rank": 0,
+      "paths": [
+        "03-类型/数据表.json",
+        "04-语义/双命中.md"
+      ],
+      "hits": [
+        {
+          "path": "03-类型/数据表.json",
+          "bm25": false,
+          "cos": 0.4479,
+          "score": 0.0197
+        },
+        {
+          "path": "04-语义/双命中.md",
+          "bm25": true,
+          "cos": null,
+          "score": 0.0164
+        }
+      ],
+      "took": 21
+    }
+  ]
+}

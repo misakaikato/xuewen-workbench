@@ -307,6 +307,12 @@ export function mountAgent(hub, resolveLib) {
     res.json(await hub.listModels());
   });
 
+  // 用「面板里刚填入、尚未保存」的 baseUrl/apiKey 试拉模型列表（key 走 body，不进 URL）
+  r.post('/models', async (req, res) => {
+    const { baseUrl, apiKey } = req.body || {};
+    res.json(await hub.listModels({ baseUrl, apiKey }));
+  });
+
   r.post('/abort', (req, res) => {
     res.json(hub.abort(String(req.body?.sessionId || '')));
   });

@@ -71,7 +71,7 @@ export function findAllRanges(source: string, needle: string, smart: boolean): {
   }).join('');
   const out: { from: number; to: number }[] = [];
   if (!target) return out;
-  for (let at = haystack.indexOf(target); at >= 0; at = haystack.indexOf(target, at + 1)) {
+  for (let at = haystack.indexOf(target); at >= 0; at = haystack.indexOf(target, at + target.length)) {
     out.push({ from: offsets[at], to: offsets[at + target.length - 1] + 1 });
   }
   return out;

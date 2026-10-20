@@ -1,0 +1,14 @@
+[
+  {"id":"lexical-rare","q":"雪拥蓝关","expect":["01-基础/关键词.md"],"kind":"lexical"},
+  {"id":"lexical-txt","q":"鲸落","expect":["03-类型/纯文本.txt"],"kind":"lexical"},
+  {"id":"lexical-json","q":"靛蓝萃取","expect":["03-类型/数据表.json"],"kind":"lexical"},
+  {"id":"filename-only","q":"偃师","expect":["01-基础/仅文件名-偃师常淮.md"],"kind":"filename"},
+  {"id":"hybrid","q":"梯度下降","expect":["04-语义/双命中.md"],"kind":"hybrid","first":"04-语义/双命中.md"},
+  {"id":"traditional","q":"体育锻炼","expect":["02-中文/繁简.md"],"kind":"normalization"},
+  {"id":"long-doc","q":"麒麟踏云","expect":["05-结构/长文档.md"],"kind":"lexical"},
+  {"id":"semantic-ocean","q":"巨型海洋哺乳动物死后怎样滋养海底生物","expect":["03-类型/纯文本.txt"],"kind":"semantic"},
+  {"id":"semantic-moat","q":"护城河","expect":["04-语义/竞争优势.md"],"kind":"semantic"},
+  {"id":"semantic-training","q":"怎样让深度网络训练的误差逐步降低","expect":["04-语义/双命中.md","04-语义/仅语义.md"],"kind":"semantic"},
+  {"id":"semantic-health","q":"运动对身体有什么好处","expect":["02-中文/繁简.md"],"kind":"semantic"},
+  {"id":"negative","q":"火星殖民地的核聚变反应堆维修手册","expect":[],"kind":"negative"}
+]

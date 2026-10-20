@@ -256,7 +256,7 @@ section('C. 语义有效性（题集见 retrieval-cases.json，判据 top5 命�
     if (VERBOSE || !hit) console.log(`  ${hit ? '✓' : '✗'} 「${c.q}」→ ${top5.slice(0, 3).join(' / ')}`);
   }
   const TH = arg('semantic-threshold', '0.75');
-  check(`C 语义通过率 ≥ ${(Number(TH) * 100).toFixed(0)}%（${passed}/${ran}）`, ran === 0 || passed / ran >= Number(TH));
+  check(`C 语义通过率 ≥ ${(Number(TH) * 100).toFixed(0)}%（${passed}/${ran}）`, ran > 0 && passed / ran >= Number(TH), ran === 0 ? '未执行任何语义题，不能视为通过' : '');
 }
 
 // ============ D. 跨模式一致性 ============

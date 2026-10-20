@@ -88,7 +88,7 @@ async function main() {
     console.log('结果已加载');
     const clicked = await exec(`(() => {
       const cards = [...document.querySelectorAll('main ul li')];
-      cards[1].querySelector('button').click();
+      cards[1].click();
       return true;
     })()`);
     assert.ok(clicked);

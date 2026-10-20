@@ -36,25 +36,25 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
   const [agentsMdPath, setAgentsMdPath] = useState('');
   const [agentsSaved, setAgentsSaved] = useState('');
 
-  // 模型拉取：优先走服务端（无 CORS 问题），手动刷新
+  // 模型拉取：优先走服务端（无 CORS 问题），手动刷新。
+  // baseUrl 与 apiKey 都按「当前输入框的值」发过去，这样填完 key 不用先保存就能拉列表。
   const loadModels = useCallback(async (url?: string) => {
     setModelsLoading(true);
     setModels([]);
     try {
-      // 如果用户改了 baseUrl 但还没保存，先保存再拉
-      if (url && url !== status.endpoint.baseUrl) {
-        await api.agentSettings({ baseUrl: url });
-      }
-      const r = await api.agentModels();
+      const probeBase = (url ?? baseUrl).trim();
+      const r = await api.agentModels({ baseUrl: probeBase, apiKey });
       setModels(r.models || []);
-      if (!(r.models || []).length) setMsg('端点未返回模型列表（检查 baseUrl 是否正确）');
-      else setMsg('');
+      if (!r.ok) setMsg('拉取失败：' + r.error);
+      else if (!(r.models || []).length) setMsg('端点未返回模型列表：' + (r.error || '空列表'));
+      else if (model && !r.models.includes(model)) setMsg(`已拉到 ${r.models.length} 个模型；当前模型 ${model} 不在其中，请从下拉框重新选择`);
+      else setMsg(`已拉到 ${r.models.length} 个模型`);
     } catch (e) {
       setMsg('拉取失败：' + (e as Error).message);
     } finally {
       setModelsLoading(false);
     }
-  }, [status.endpoint.baseUrl]);
+  }, [baseUrl, apiKey, model]);
 
   useEffect(() => { loadModels(baseUrl); }, []); // 首次打开即拉
   useEffect(() => {
@@ -77,7 +77,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
   const testConn = async () => {
     setMsg('测试中…');
     try {
-      const r = await api.ragLlmTest();
+      const r = await api.agentModels({ baseUrl: baseUrl.trim(), apiKey });
       setMsg(r.ok ? `连通 OK${r.models?.length ? `（${r.models.length} 个模型）` : ''}` : '失败：' + r.error);
     } catch (e) { setMsg('失败：' + (e as Error).message); }
   };
@@ -131,7 +131,11 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
               {models.length > 0 && <p className="text-xs text-muted-foreground pl-[72px] flex items-center gap-1"><Check className="w-3 h-3 text-success" />从端点拉到 {models.length} 个模型</p>}
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground w-16 shrink-0 text-xs">apiKey</span>
-                <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="本地服务通常留空" type="password" className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-input bg-background" />
+                <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') loadModels(baseUrl); }}
+                  placeholder={status.endpoint.baseUrl ? '已保存则留空；改了要保存或按刷新试拉' : '本地服务通常留空'} type="password" className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-input bg-background" />
+                <button className="p-1.5 rounded-lg border border-border hover:bg-accent text-muted-foreground shrink-0" title="用当前填写的 key 试拉模型列表" onClick={() => loadModels(baseUrl)} disabled={modelsLoading}>
+                  <Plug className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
 
@@ -303,7 +307,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
               {saving ? '保存中…' : '保存'}
             </Button>
             <Button variant="outline" className="rounded-lg" onClick={testConn}>测试连通</Button>
-            {msg && <span className="text-xs text-muted-foreground flex-1 truncate">{msg}</span>}
+            {msg && <span className="text-xs text-muted-foreground flex-1 truncate" title={msg}>{msg}</span>}
           </div>
         )}
       </div>

@@ -34,6 +34,7 @@ const CLAMPS = {
   'search.rrfMin': [0, 0.05],
   'search.cosFloor': [0, 1],
   'search.cosSigma': [0.5, 6],
+  'search.semanticWeight': [0, 5],
 };
 
 const clamp = (v, [lo, hi], dflt) => {
@@ -74,5 +75,5 @@ export function saveRagConfig(dsId, patch) {
 
 /** 影响索引内容的配置指纹（chunk + embed.maxLength）——变化即需重建 */
 export function indexConfigFingerprint(cfg) {
-  return JSON.stringify({ c: cfg.chunk, m: cfg.embed.maxLength });
+  return JSON.stringify({ version: 2, c: cfg.chunk, m: cfg.embed.maxLength });
 }

@@ -3,6 +3,8 @@
 // docx/纯文本按段落分组；json 数组按条目、对象按顶层键（字段名保留）。
 // 每块输出 { headingPath, text }；嵌入文本（headingPath + 正文）由调用方拼接。
 
+import { DEFAULT_RAG_CONFIG } from './config.js';
+
 const MAX_CHARS = 600; // 单块目标上限（CJK 字符数）；超长节按段落聚合二次分组
 
 // ---- md ----
@@ -124,36 +126,36 @@ export function chunkPlainText(text, cfg = DEFAULT_RAG_CONFIG.chunk) {
 
 // ---- json：数组按条目，对象按顶层键；字段名保留在块文本里 ----
 
-const jsonItemText = (key, val, limit) => {
-  const t = typeof val === 'string' ? val : JSON.stringify(val);
-  const body = t && t.length > limit ? t.slice(0, limit) + '…' : t;
-  return key ? `${key}: ${body}` : body;
-};
-
+// 保留原始 JSON 字符串片段，避免合成的「键名: 值」无法定位阅读源码。
 export function chunkJson(text, cfg = DEFAULT_RAG_CONFIG.chunk) {
   let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    return chunkPlainText(text); // 坏 JSON 按纯文本兜底
+  try { data = JSON.parse(text); } catch { return chunkPlainText(text, cfg); }
+  if (!data || typeof data !== 'object') {
+    return [{ headingPath: '', text: text.trim().slice(0, cfg.jsonValueLimit) }];
   }
+  const keys = Array.isArray(data) ? null : Object.keys(data);
   const out = [];
-  if (Array.isArray(data)) {
-    data.forEach((item, i) => {
-      const key = item && typeof item === 'object' && !Array.isArray(item)
-        ? Object.entries(item).slice(0, 3).map(([k]) => k).join(', ')
-        : null;
-      out.push({ headingPath: `条目 ${i + 1}`, text: jsonItemText(key, item, cfg.jsonValueLimit) });
-    });
-  } else if (data && typeof data === 'object') {
-    for (const [k, v] of Object.entries(data)) {
-      const t = jsonItemText(k, v, cfg.jsonValueLimit);
-      if (t.trim()) out.push({ headingPath: k, text: t });
+  let depth = 0, quoted = false, escaped = false, start = -1;
+  const emit = (end) => {
+    const body = text.slice(start, end).trim();
+    if (body) out.push({ headingPath: keys ? keys[out.length] : '条目 ' + (out.length + 1), text: body.slice(0, cfg.jsonValueLimit) });
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') quoted = false;
+      continue;
     }
-  } else {
-    out.push({ headingPath: '', text: String(data).slice(0, cfg.jsonValueLimit) });
+    if (ch === '"') { quoted = true; continue; }
+    if (ch === '{' || ch === '[') {
+      if (depth++ === 0) start = i + 1;
+    } else if (ch === '}' || ch === ']') {
+      if (--depth === 0) emit(i);
+    } else if (ch === ',' && depth === 1) { emit(i); start = i + 1; }
   }
-  return out.length ? out : [{ headingPath: '', text: text.slice(0, cfg.jsonValueLimit) }];
+  return out.length ? out : [{ headingPath: '', text: text.trim() }];
 }
 
 // ---- 统一入口 ----
