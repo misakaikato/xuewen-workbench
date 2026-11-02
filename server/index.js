@@ -23,13 +23,45 @@ import { Indexer } from './indexer.js';
 import { parseWord, wordCapability } from './word.js';
 import { LinkIndex } from './links.js';
 import { loadDerived, loadTopics, DERIVED_DIR } from './derived.js';
+import { decodeText, encodingLabel } from './textDecode.js';
 
 const PORT = process.env.WORKBENCH_PORT || 7410;
-const HOST = process.env.WORKBENCH_HOST || undefined; // 未设置时保持原行为（监听所有地址）
+const HOST = process.env.WORKBENCH_HOST || '127.0.0.1'; // 默认只监听本机，局域网访问需显式设 WORKBENCH_HOST=0.0.0.0
 const STATIC_DIR = process.env.WORKBENCH_STATIC_DIR || null; // 设置后托管已构建的前端（Electron 用）
 const PROC_START = Date.now();
 const app = express();
 app.use(express.json({ limit: '20mb' }));
+
+// Host / Origin 校验：本机接口只接受白名单主机名，防 DNS rebinding 与跨站请求。
+// 无 Origin 的请求（本机 curl / 进程）放行；带 Origin 的必须指向白名单主机。
+function hostnameOf(header) {
+  try { return new URL(header).hostname; } catch { /* 非完整 URL（Host 头） */ }
+  try { return new URL('http://' + header).hostname; } catch { return ''; }
+}
+const HOST_ALLOW = new Set(['127.0.0.1', 'localhost', '[::1]']);
+if (HOST && !HOST_ALLOW.has(HOST)) HOST_ALLOW.add(HOST);
+const hostWarnAt = new Map(); // 来源 -> 上次 WARN 时间戳（1 分钟内只记一次）
+function warnOnce(kind, req) {
+  const key = kind + ':' + (req.headers.host || '') + ':' + (req.headers.origin ?? '');
+  const now = Date.now();
+  if (now - (hostWarnAt.get(key) || 0) < 60000) return;
+  hostWarnAt.set(key, now);
+  console.warn('[http] ' + kind + ' ' + req.method + ' ' + req.path + ' host=' + (req.headers.host || '') + ' origin=' + (req.headers.origin ?? ''));
+}
+app.use((req, res, next) => {
+  if (!HOST_ALLOW.has(hostnameOf(req.headers.host || ''))) {
+    warnOnce('forbidden-host', req);
+    return res.status(403).json({ error: 'forbidden-host' });
+  }
+  if (req.headers.origin !== undefined) {
+    const origin = req.headers.origin;
+    if (origin === 'null' || !HOST_ALLOW.has(hostnameOf(origin))) {
+      warnOnce('forbidden-origin', req);
+      return res.status(403).json({ error: 'forbidden-origin' });
+    }
+  }
+  next();
+});
 
 // 慢请求 / 5xx 日志：响应状态 ≥ 500 或耗时 ≥ 3000ms 记一条；SSE 与模型下载只按状态记（不计耗时）
 const SLOW_SKIP = ['/api/agent/chat', '/api/rag/model/download'];
@@ -187,14 +219,22 @@ function resolveWithin(lib, rel) {
     throw Object.assign(new Error('路径越界'), { status: 403 });
   }
   try {
-    const real = fs.realpathSync(abs);
     const realBase = fs.realpathSync(baseNorm);
+    // 目标存在则校验目标 realpath；不存在则向上找最近存在的祖先目录校验，
+    // 防止「库内符号链接目录 + 新建文件」把文件写进库外。
+    let probe = abs;
+    while (!fs.existsSync(probe)) {
+      const parent = path.dirname(probe);
+      if (parent === probe) break;
+      probe = parent;
+    }
+    const real = fs.realpathSync(probe);
     if (real !== realBase && !real.startsWith(realBase + path.sep)) {
       throw Object.assign(new Error('符号链接指向数据源之外'), { status: 403 });
     }
   } catch (e) {
     if (e.status) throw e;
-    // 文件可能不存在（如另存场景），仅校验静态路径
+    // 库根可能暂不可达（扫描失败场景），此时仅做静态前缀校验
   }
   return abs;
 }
@@ -205,10 +245,7 @@ function findFile(lib, rel) {
 }
 
 function readTextPreserve(abs) {
-  const buf = fs.readFileSync(abs);
-  const bom = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
-  const content = (bom ? buf.subarray(3) : buf).toString('utf8');
-  return { content, bom };
+  return decodeText(fs.readFileSync(abs));
 }
 
 async function writeTextAtomic(abs, content, bom) {
@@ -257,7 +294,9 @@ app.get('/api/config', (req, res) => {
 // 新增/打开资料库；同目录已打开则仅激活（老语义的“切换”兼容：末次指定者为当前）
 // 添加或激活资料库（路由与 agent 设置工具共用）
 async function addOrActivateLibrary(baseDir) {
-  const p = path.normalize(String(baseDir || '').trim().replace(/^["']|["']$/g, ''));
+  const raw = String(baseDir || '').trim().replace(/^["']|["']$/g, '');
+  if (!raw) return { ok: false, error: '缺少资料库目录' };
+  const p = path.normalize(raw);
   try {
     const st = fs.statSync(p);
     if (!st.isDirectory()) throw new Error('不是目录');
@@ -521,13 +560,16 @@ app.get('/api/file', async (req, res) => {
     if (!f) return res.status(404).json({ error: '文件不在当前扫描结果中（可能已被移动或删除）', missing: true });
     const ext = f.ext;
     if (ext === '.md' || ext === '.json' || ext === '.txt' || ext === '.html' || ext === '.htm' || ext === '.jsonl' || ext === '.graphml') {
-      const { content, bom } = readTextPreserve(abs);
+      const { content, bom, encoding } = readTextPreserve(abs);
       const isDerived = ext === '.jsonl' || ext === '.graphml';
+      const nonUtf8 = encoding !== 'utf-8';
       return res.json({
         dsId: lib.id, path: rel, name: f.name, ext,
         type: ext === '.md' ? 'markdown' : ext === '.json' ? 'json' : ext === '.html' || ext === '.htm' ? 'html' : 'text',
         content, bom, mtimeMs: f.mtimeMs, size: f.size,
-        readonly: isDerived, // 加工数据系统只读不写
+        readonly: isDerived || nonUtf8,
+        encoding,
+        readonlyReason: nonUtf8 ? `此文件为 ${encodingLabel(encoding)} 编码，为避免损坏原文只读显示` : undefined,
       });
     }
     const parsed = await parseWord(lib.id, abs, rel, f.mtimeMs);
@@ -555,11 +597,17 @@ app.get('/api/file/raw', (req, res) => {
 // 在系统文件管理器中定位显示（Finder / 资源管理器 / xdg-open）；路径必须在当前资料库内且存在
 // 用系统默认应用打开知识库外部路径（文档内越库根链接，前端已弹确认框）。
 // 仅接受绝对路径；打开动作本身由宿主桥接（Electron shell.openPath）或平台 opener 执行。
+// 可执行类扩展名：直接用系统默认应用打开可能运行代码，一律拒绝（大小写不敏感）
+const EXECUTABLE_EXTS = new Set(['.exe', '.com', '.bat', '.cmd', '.msi', '.msp', '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.scr', '.pif', '.lnk', '.hta', '.cpl', '.reg', '.jar', '.app', '.command', '.sh', '.pkg', '.dmg', '.scpt', '.workflow']);
+
 app.post('/api/open-external', async (req, res) => {
   const p = String(req.body?.path || '');
   if (!p || p.includes('\0')) return res.status(400).json({ error: '非法路径' });
   if (!path.isAbsolute(p) && !/^[a-zA-Z]:[\/]/.test(p)) {
     return res.status(400).json({ error: '仅接受绝对路径' });
+  }
+  if (EXECUTABLE_EXTS.has(path.extname(p).toLowerCase()) || /\.app\/?$/i.test(p)) {
+    return res.status(403).json({ error: '出于安全原因不直接打开可执行文件' });
   }
   try {
     await fs.promises.access(p);
@@ -610,10 +658,16 @@ app.put('/api/file', async (req, res) => {
     const exists = fs.existsSync(abs);
     if (exists) {
       const cur = fs.statSync(abs);
-      if (baseMtimeMs != null && Math.abs(cur.mtimeMs - baseMtimeMs) > 1) {
-        const { content: current } = readTextPreserve(abs);
+      const existing = readTextPreserve(abs);
+      if (existing.encoding !== 'utf-8') {
         return res.status(409).json({
-          error: '文件已被外部修改', conflict: true, current, currentMtimeMs: cur.mtimeMs,
+          error: 'non-utf8',
+          message: `此文件为 ${encodingLabel(existing.encoding)} 编码，为避免损坏原文不直接写回`,
+        });
+      }
+      if (baseMtimeMs != null && Math.abs(cur.mtimeMs - baseMtimeMs) > 1) {
+        return res.status(409).json({
+          error: '文件已被外部修改', conflict: true, current: existing.content, currentMtimeMs: cur.mtimeMs,
         });
       }
       // 备份原文件
@@ -621,7 +675,7 @@ app.put('/api/file', async (req, res) => {
       const bdir = path.join(backupDir(lib.id), path.dirname(rel));
       fs.mkdirSync(bdir, { recursive: true });
       fs.copyFileSync(abs, path.join(bdir, path.basename(rel) + '.' + stamp + '.bak'));
-      const { bom } = readTextPreserve(abs);
+      const { bom } = existing;
       const text = String(content ?? '');
       await writeTextAtomic(abs, text, bom);
       // 与实际写入字节（含 BOM）一致地更新旁注 content_hash
@@ -654,6 +708,12 @@ app.post('/api/notes/append', async (req, res) => {
     const rel = path.posix.join(notesDir, stem + '.md');
     const abs = resolveWithin(lib, rel);
     const first = !fs.existsSync(abs);
+    if (!first) {
+      const existing = readTextPreserve(abs);
+      if (existing.encoding !== 'utf-8') {
+        return res.status(409).json({ error: 'non-utf8', message: `笔记文件为 ${encodingLabel(existing.encoding)} 编码，为避免损坏原文不追加` });
+      }
+    }
     const now = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
@@ -1797,7 +1857,7 @@ async function buildSummary() {
 const INDEX_FILE = STATIC_DIR ? path.join(STATIC_DIR, 'index.html') : null;
 let indexCache = { mtimeMs: -1, html: '' };
 
-function themedIndexHtml() {
+function themedIndexHtml(nonce) {
   const st = fs.statSync(INDEX_FILE);
   if (indexCache.mtimeMs !== st.mtimeMs) {
     indexCache = { mtimeMs: st.mtimeMs, html: fs.readFileSync(INDEX_FILE, 'utf8') };
@@ -1818,7 +1878,9 @@ function themedIndexHtml() {
   // 服务端注入值优先于 localStorage；/*wb-theme*/ 是内联防闪烁脚本里的占位标记
   const boot = `window.__WB_THEME__=${JSON.stringify(theme)};`;
   if (html.includes('/*wb-theme*/')) html = html.replace('/*wb-theme*/', boot + '/*wb-theme*/');
-  else html = html.replace('<script', `<script>${boot}</script><script`);
+  else html = html.replace('<script', `<script nonce="${nonce}">${boot}</script><script`);
+  // 所有内联 <script> 统一加 nonce（外链脚本不受 nonce 约束，加上也合法）
+  html = html.replace(/<script\b([^>]*)>/g, (_m, attrs) => (/\snonce\s*=/.test(attrs) ? `<script${attrs}>` : `<script${attrs} nonce="${nonce}">`));
   return html;
 }
 
@@ -1826,9 +1888,25 @@ if (STATIC_DIR && fs.existsSync(INDEX_FILE)) {
   app.use(express.static(STATIC_DIR, { index: false })); // 资源照常下发，但 index.html 走注入
   // 看似静态资源的路径（末段带静态扩展名）不做 SPA 回退：缺失时直接 404，避免把 HTML 当脚本/样式加载
   const STATIC_EXT = /\.(?:js|mjs|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf)$/i;
+  const cspHeader = (nonce) => [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}'`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https: http:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "media-src 'self' data: blob:",
+    "object-src 'none'",
+    // 应用自身注入了 <base href=\"/\"> 修 SPA 深链资源解析；'self' 仍能拦外部 base URI
+    "base-uri 'self'",
+    "frame-src 'none'",
+    "form-action 'none'",
+  ].join('; ');
   const serveIndex = (req, res) => {
+    const nonce = crypto.randomBytes(16).toString('base64');
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(themedIndexHtml());
+    res.setHeader('Content-Security-Policy', cspHeader(nonce));
+    res.send(themedIndexHtml(nonce));
   };
   app.get('/', serveIndex);
   app.use((req, res, next) => {

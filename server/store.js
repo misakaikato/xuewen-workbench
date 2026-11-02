@@ -33,6 +33,54 @@ const UI_THEMES = ['A', 'B', 'C'];
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
+// 旧版本（v0.1.1–v0.1.3）数据迁移：那些版本把数据放 Electron userData/data，
+// v0.1.4 起改到 ~/.xuewen-workbench。主进程 import 本文件前设置 WORKBENCH_LEGACY_DATA_DIR；
+// 后端进程（WORKBENCH_HOSTED=1）跳过，避免两进程同时搬。新数据目录已有资料库则不迁移。
+export function migrateLegacyUserData(legacyDir, targetDir) {
+  if (!legacyDir) return { migrated: false };
+  const legacy = path.resolve(legacyDir);
+  const target = path.resolve(targetDir || DATA_DIR);
+  if (legacy === target || !fs.existsSync(legacy)) return { migrated: false };
+  const legacyConfig = path.join(legacy, 'config.json');
+  if (!fs.existsSync(legacyConfig)) return { migrated: false };
+  const newHasLibs = (() => {
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(target, 'config.json'), 'utf8'));
+      const libs = Array.isArray(raw?.libraries) ? raw.libraries : raw?.baseDir ? [raw] : [];
+      return libs.length > 0;
+    } catch {
+      return false;
+    }
+  })();
+  if (newHasLibs) {
+    console.warn(`[store] 旧版数据目录 ${legacy} 与新数据目录 ${target} 都含资料库，不迁移，请手动处理`);
+    return { migrated: false, reason: 'both-have-libs' };
+  }
+  try {
+    for (const name of fs.readdirSync(legacy)) {
+      const from = path.join(legacy, name);
+      const to = path.join(target, name);
+      if (name === 'config.json') {
+        if (fs.existsSync(to)) fs.rmSync(to, { force: true }); // 目标无资料库，旧配置直接覆盖
+        fs.renameSync(from, to);
+      } else if (!fs.existsSync(to)) {
+        fs.renameSync(from, to);
+      }
+      // 其余已存在条目跳过
+    }
+    fs.writeFileSync(path.join(legacy, 'MIGRATED.txt'), `数据已迁移到 ${target}\n`, 'utf8');
+    console.log(`[store] 旧版数据迁移: ${legacy} → ${target}`);
+    return { migrated: true };
+  } catch (e) {
+    console.warn('[store] 旧版数据迁移失败:', e.message);
+    return { migrated: false, reason: e.message };
+  }
+}
+
+if (process.env.WORKBENCH_HOSTED !== '1') {
+  migrateLegacyUserData(process.env.WORKBENCH_LEGACY_DATA_DIR || null, DATA_DIR);
+}
+
 // 一次性迁移：sources/<dsId>/ → knowledge/<dsId>/（记忆层设计要求库数据统一在 knowledge/ 下）
 try {
   const oldSources = path.join(DATA_DIR, 'sources');

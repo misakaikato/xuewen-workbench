@@ -1,8 +1,9 @@
 // Word 阅读器：默认工作台内预览（服务端解析为 HTML）。
 // 提供「原版式」（缩放/适应宽度）与「重排阅读」（应用阅读偏好）两种模式。
 // Word 为只读：提供下载原文件与「另存为 Markdown 副本」入口，不伪装可编辑。
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { api, rawFileUrl } from '@/lib/api';
+import { sanitizeWordHtml } from '@/lib/wordSanitize';
 import { useApp } from '@/store/app';
 import { Download, FilePlus2, AlertCircle, ZoomIn, ZoomOut } from 'lucide-react';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -30,6 +31,7 @@ export const WordReader = memo(function WordReader({
   engine?: string;
   onContentReady?: () => void;
 }) {
+  const safeHtml = useMemo(() => sanitizeWordHtml(html), [html]);
   const [mode, setMode] = useState<'original' | 'reflow'>('reflow');
   const [zoom, setZoom] = useState(100);
   useEffect(() => { onContentReady?.(); }, [html, mode, zoom, onContentReady]);
@@ -115,13 +117,13 @@ export const WordReader = memo(function WordReader({
         Word 文档在工作台中为只读预览。如需修改，请下载后用 Word/WPS 编辑并覆盖原文件，或另存为 Markdown 副本在工作台中编辑。
       </div>
       {mode === 'reflow' ? (
-        <div className="reader"><WordBody html={html} /></div>
+        <div className="reader"><WordBody html={safeHtml} /></div>
       ) : (
         <div className="overflow-x-auto">
           <div
             className="word-original bg-white text-black rounded-lg shadow-sm border border-border p-8 max-w-3xl"
             style={{ zoom: zoom / 100 }}
-          ><WordBody html={html} /></div>
+          ><WordBody html={safeHtml} /></div>
         </div>
       )}
     </div>

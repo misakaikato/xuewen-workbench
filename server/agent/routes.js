@@ -2,7 +2,11 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import AdmZip from 'adm-zip';
+
+// skill 名称白名单：只允许字母数字下划线/中文/连字符，1-64 字符
+const SKILL_NAME_RE = /^[\w\u4e00-\u9fff-]{1,64}$/;
 
 export function mountAgent(hub, resolveLib) {
   const r = Router();
@@ -222,6 +226,7 @@ export function mountAgent(hub, resolveLib) {
 
     // 方式一：zip 压缩包（含完整文件夹结构）
     if (zipBase64) {
+      let tmpDest = null;
       try {
         const buf = Buffer.from(zipBase64, 'base64');
         const zip = new AdmZip(buf);
@@ -232,40 +237,61 @@ export function mountAgent(hub, resolveLib) {
         // 根目录 = SKILL.md 所在的顶层目录
         const rootDir = skillMd.entryName.includes('/') ? skillMd.entryName.split('/')[0] : (fileName || 'skill').replace(/\.zip$/i, '');
         const safe = rootDir.replace(/[^\w\u4e00-\u9fff-]/g, '_');
+        if (!SKILL_NAME_RE.test(safe)) return res.status(400).json({ error: 'skill 名称不合法' });
         const dest = path.join(hub.agentDir, 'skills', safe);
-        fs.rmSync(dest, { recursive: true, force: true });
-        fs.mkdirSync(dest, { recursive: true });
+        // 先解压到临时目录，所有条目通过越界校验后再改名为正式目录
+        tmpDest = dest + '.tmp-' + crypto.randomBytes(6).toString('hex');
+        fs.mkdirSync(tmpDest, { recursive: true });
         for (const entry of entries) {
+          const en = entry.entryName;
+          const rel = en.startsWith(rootDir + '/') ? en.slice(rootDir.length + 1) : en;
+          const segs = rel.split(/[\\/]+/).filter(Boolean);
+          if (path.isAbsolute(rel) || path.win32.isAbsolute(rel) || segs.includes('..')) {
+            throw Object.assign(new Error('zip 含越界路径'), { status: 400 });
+          }
+          const fp = path.resolve(tmpDest, rel);
+          if (fp !== tmpDest && !fp.startsWith(tmpDest + path.sep)) {
+            throw Object.assign(new Error('zip 含越界路径'), { status: 400 });
+          }
           if (entry.isDirectory) {
-            fs.mkdirSync(path.join(dest, entry.entryName), { recursive: true });
+            fs.mkdirSync(fp, { recursive: true });
           } else {
-            const rel = entry.entryName.startsWith(rootDir + '/') ? entry.entryName.slice(rootDir.length + 1) : entry.entryName;
-            const fp = path.join(dest, rel);
             fs.mkdirSync(path.dirname(fp), { recursive: true });
             fs.writeFileSync(fp, entry.getData());
           }
         }
+        fs.rmSync(dest, { recursive: true, force: true });
+        fs.renameSync(tmpDest, dest);
+        tmpDest = null;
         return res.json({ ok: true, path: `skills/${safe}/` });
       } catch (e) {
-        return res.status(500).json({ error: 'zip 解压失败：' + String(e.message || e) });
+        if (tmpDest) { try { fs.rmSync(tmpDest, { recursive: true, force: true }); } catch { /* ignore */ } }
+        return res.status(e.status || 500).json({ error: e.status ? e.message : 'zip 解压失败：' + String(e.message || e) });
       }
     }
 
     // 方式二：纯文本（name + content）
     if (!name || !content) return res.status(400).json({ error: '缺少 name/content 或 zipBase64' });
-    const safe = name.replace(/[^\w\u4e00-\u9fff-]/g, '_');
-    const dir = path.join(hub.agentDir, 'skills', safe);
+    if (!SKILL_NAME_RE.test(String(name))) return res.status(400).json({ error: 'skill 名称不合法' });
+    const dir = path.join(hub.agentDir, 'skills', name);
     try {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'SKILL.md'), content);
-      res.json({ ok: true, path: `skills/${safe}/SKILL.md` });
+      res.json({ ok: true, path: `skills/${name}/SKILL.md` });
     } catch (e) {
       res.status(500).json({ error: String(e.message || e) });
     }
   });
 
   r.delete('/skill/:name', (req, res) => {
-    const dir = path.join(hub.agentDir, 'skills', req.params.name);
+    const name = String(req.params.name || '');
+    if (!SKILL_NAME_RE.test(name)) return res.status(400).json({ error: 'skill 名称不合法' });
+    const skillsDir = path.resolve(path.join(hub.agentDir, 'skills'));
+    const dir = path.resolve(skillsDir, name);
+    if (dir !== skillsDir && !dir.startsWith(skillsDir + path.sep)) return res.status(400).json({ error: '路径越界' });
+    let st;
+    try { st = fs.statSync(dir); } catch { return res.status(404).json({ error: 'skill 不存在' }); }
+    if (!st.isDirectory()) return res.status(400).json({ error: '目标不是目录' });
     try {
       fs.rmSync(dir, { recursive: true, force: true });
       res.json({ ok: true });

@@ -79,6 +79,8 @@ export interface FilePayload {
   mtimeMs: number;
   size: number;
   readonly: boolean;
+  encoding?: string;
+  readonlyReason?: string;
 }
 
 export interface Collection {

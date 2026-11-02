@@ -9,13 +9,14 @@ import { Type } from '@sinclair/typebox';
 import { agentFailure } from './failure.js';
 import { MemoryStore, buildMemorySection, memoryDir, FACTS_LIMIT, PINNED_LIMIT } from './memory.js';
 import { loadTopics } from '../derived.js';
+import { decodeText } from '../textDecode.js';
 import { applySettings, readSettings, SETTABLE, buildPatch, normalizeCategory } from './settings.js';
 import { generateImage, uniapiKey } from './imagegen.js';
 
 const CONV_META = 'conversations.json';
 // 运行模式：auto=全自动 / confirm=破坏性工具需确认 / readonly=仅检索阅读
 const READONLY_TOOLS = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status'];
-const DESTRUCTIVE_TOOLS = ['bash', 'save_note', 'word_to_markdown', 'rag_manage', 'open_doc', 'rename_entry', 'move_entry', 'settings_set', 'generate_image'];
+const DESTRUCTIVE_TOOLS = ['bash', 'save_note', 'word_to_markdown', 'rag_manage', 'rename_entry', 'move_entry', 'settings_set', 'generate_image', 'remember', 'forget'];
 const TOOL_NAMES = ['read', 'bash', 'search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status', 'rag_manage', 'word_to_markdown', 'save_note', 'open_doc', 'remember', 'forget', 'recall', 'consolidate', 'rename_entry', 'move_entry', 'settings_get', 'settings_set', 'generate_image'];
 
 function nowIso() {
@@ -41,7 +42,7 @@ export class AgentHub {
     this.addOrActivateLibrary = addOrActivateLibrary; // (baseDir) => {ok,...}
     this.removeLibrary = removeLibrary; // (dsId) => {ok,...}
     this.live = new Map(); // convId
-    this.mode = 'auto'; // auto | confirm | readonly
+    this.mode = ['auto', 'confirm', 'readonly'].includes(getRagConfig()?.mode) ? getRagConfig().mode : 'confirm'; // auto | confirm | readonly（持久化，缺省 confirm）
     this._confirmCb = new Map(); // confirmId → (ok) => void → { session, sse:Set, busy, seq }
     this._modelRuntime = null;
     this._ctxWindow = 0; // 端点模型的真实上下文窗口（0=未知，回退 128000）
@@ -390,11 +391,21 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     const hub = this;
     return (pi) => {
       const lib = () => hub.getLib();
-      // 内置 bash 也走 confirm 确认链（它是 pi 内置工具，不经过我们自定义工具的 execute 包装）
+      // 工具执行防线（所有工具的权限判断集中在这里）：
+      // readonly 只放行只读工具；read 限制只能读资料库与 skills；confirm 下破坏性工具需确认。
       pi.on('tool_call', async (event) => {
-        if (event.toolName !== 'bash') return undefined;
-        const ok = await hub._confirm(convId, 'bash', event.input);
-        return ok ? undefined : { block: true, reason: '用户拒绝了该命令的执行' };
+        const toolName = event.toolName;
+        if (hub.mode === 'readonly' && !READONLY_TOOLS.includes(toolName)) {
+          return { block: true, reason: '只读模式' };
+        }
+        if (toolName === 'read' && !hub._readPathAllowed(event.input)) {
+          return { block: true, reason: '只能读取资料库与 skills 内的文件' };
+        }
+        if (hub.mode === 'confirm' && DESTRUCTIVE_TOOLS.includes(toolName)) {
+          const ok = await hub._confirm(convId, toolName, event.input);
+          return ok ? undefined : { block: true, reason: '用户拒绝了该操作' };
+        }
+        return undefined;
       });
       pi.registerTool({
         name: 'search_corpus',
@@ -450,15 +461,16 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
           const l = lib();
           if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
           try {
-            const abs = path.resolve(l.baseDir, params.path);
-            if (!abs.startsWith(path.resolve(l.baseDir))) throw new Error('路径越界');
+            const base = path.resolve(l.baseDir);
+            const abs = path.resolve(base, params.path);
+            if (abs !== base && !abs.startsWith(base + path.sep)) throw new Error('路径越界');
             const ext = path.extname(params.path).toLowerCase();
             let text = '';
             if (ext === '.doc' || ext === '.docx') {
               const f = l.indexer.texts.get(params.path);
               text = f || '';
             } else {
-              text = fs.readFileSync(abs, 'utf8');
+              text = decodeText(fs.readFileSync(abs)).content;
             }
             const capped = text.length > 20000 ? text.slice(0, 20000) + '\n…（已截断）' : text;
             return { content: [{ type: 'text', text: capped || '（空文件）' }] };
@@ -513,9 +525,6 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
             hub.ragManager.pause(l.id);
             return { content: [{ type: 'text', text: '已请求暂停' }] };
           }
-          if (params.action === 'rebuild' && !(await hub._confirm(convId, 'rag_manage', params))) {
-            return { content: [{ type: 'text', text: '用户取消了重建操作' }] };
-          }
           hub.ragManager.build(l.id, { rebuild: params.action === 'rebuild' }).catch(() => {});
           return { content: [{ type: 'text', text: params.action === 'rebuild' ? '已开始全量重建（后台）' : '已开始增量构建（后台）' }] };
         },
@@ -544,9 +553,6 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
         description: '将一个 Word 文档（.docx）另存为同目录下的 Markdown 副本（不改原件）。',
         parameters: Type.Object({ path: Type.String({ description: 'Word 文件相对路径' }) }),
         execute: async (_id, params) => {
-          if (!(await hub._confirm(convId, 'word_to_markdown', params))) {
-            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
-          }
           const l = lib();
           if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
           try {
@@ -571,9 +577,6 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
           content: Type.String({ description: 'Markdown 内容' }),
         }),
         execute: async (_id, params) => {
-          if (!(await hub._confirm(convId, 'save_note', params))) {
-            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
-          }
           const l = lib();
           if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
           try {
@@ -627,9 +630,6 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
           newName: Type.String({ description: '新名称；文件可省略扩展名（自动沿用原扩展名）' }),
         }),
         execute: async (_id, params) => {
-          if (!(await hub._confirm(convId, 'rename_entry', params))) {
-            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
-          }
           const l = lib();
           if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
           try {
@@ -650,9 +650,6 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
           targetDir: Type.String({ description: '目标目录相对路径；传空字符串表示资料库根目录' }),
         }),
         execute: async (_id, params) => {
-          if (!(await hub._confirm(convId, 'move_entry', params))) {
-            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
-          }
           const l = lib();
           if (!l) return { content: [{ type: 'text', text: '当前没有打开的资料库' }] };
           try {
@@ -678,9 +675,6 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
           size: Type.Optional(Type.Union([Type.Literal('1024x1024'), Type.Literal('1024x1536'), Type.Literal('1536x1024'), Type.Literal('auto')], { description: '尺寸：方形/竖版/横版/自动，默认方形' })),
         }),
         execute: async (_id, params) => {
-          if (!(await hub._confirm(convId, 'generate_image', params))) {
-            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
-          }
           if (!uniapiKey()) {
             return { content: [{ type: 'text', text: '图像生成未配置：缺少 UniAPI 密钥（~/.config/uniapi/config.json 或 UNIAPI_API_KEY）' }] };
           }
@@ -780,9 +774,6 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
           dsId: Type.Optional(Type.String({ description: 'library 类别：要移除的库 id' })),
         }),
         execute: async (_id, params) => {
-          if (!(await hub._confirm(convId, 'settings_set', params))) {
-            return { content: [{ type: 'text', text: '用户取消了此操作' }] };
-          }
           try {
             const { category, ...rest } = params;
             const cat = normalizeCategory(category);
@@ -908,6 +899,9 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir: this.agentDir,
+      // 不信任库根目录：cwd 下的 .pi/（extensions/skills/prompts/settings/mcp）一律不加载，
+      // 资源只来自 agents/default/（设置页写入的位置）。
+      settingsManager: SettingsManager.create(cwd, this.agentDir, { projectTrusted: false }),
       systemPromptOverride: () => [
         // Agent 定义（AGENTS.md，用户可编辑）
         ...(() => {
@@ -976,7 +970,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
         '- 绝不向用户展示工具调用的参数、格式或使用方法。',
       ].join('\n'),
       appendSystemPromptOverride: () => [],
-      extensionFactories: [this._workbenchToolsFactory(convId), createMcpExtension()],
+      extensionFactories: [this._workbenchToolsFactory(convId), createMcpExtension({ loadConfig: () => loadAgentMcpConfig(this.agentDir) })],
     });
     await loader.reload();
     const settings = SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2 } });
@@ -996,7 +990,8 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       // 工具白名单（全局，内置+自定义都受控）：pi 默认的 edit/write 不启用——
       // 那是全机任意写；语料内写入一律走 save_note/rename_entry 等专用工具。
       // read 保留（skills/引用文件），bash 保留（shell 执行，confirm 模式需确认）。
-      tools: TOOL_NAMES,
+      // 只读模式只给检索阅读类工具（执行层还有 tool_call 钩子再拦一道）。
+      tools: this.mode === 'readonly' ? READONLY_TOOLS : TOOL_NAMES,
       model,
       modelRuntime: runtime,
       resourceLoader: loader,
@@ -1397,8 +1392,8 @@ ${m.text}
   updateSettings(patch) {
     const c = this.llm();
     const next = { ...c };
-    for (const k of ['baseUrl', 'model', 'apiKey', 'thinkingLevel', 'enabled']) {
-      if (k in patch) next[k] = patch[k];
+    for (const k of ['baseUrl', 'model', 'apiKey', 'thinkingLevel', 'enabled', 'mode']) {
+      if (k in patch && (k !== 'mode' || ['auto', 'confirm', 'readonly'].includes(patch[k]))) next[k] = patch[k];
     }
     if (!['off', 'low', 'medium', 'high'].includes(next.thinkingLevel)) next.thinkingLevel = 'off';
     this.ragManager.setLlm(next); // 落盘 + 触发 onLlmChanged → 同步 models.json
@@ -1474,6 +1469,23 @@ ${m.text}
     }
   }
 
+  /** read 工具路径白名单：只能读当前资料库或 agents/default/skills/（realpath + 分隔符前缀） */
+  _readPathAllowed(input) {
+    const lib = this.getLib();
+    const skillsDir = path.join(this.agentDir, 'skills');
+    const raw = String(input?.path ?? '');
+    if (!raw) return false;
+    const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(lib?.baseDir || this.dataDir, raw);
+    let real;
+    try { real = fs.realpathSync(abs); } catch { return false; }
+    const within = (root) => {
+      let r;
+      try { r = fs.realpathSync(root); } catch { return false; }
+      return real === r || real.startsWith(r + path.sep);
+    };
+    return (lib?.baseDir && within(lib.baseDir)) || within(skillsDir);
+  }
+
   _applyModeToSessions() {
     const tools = this.mode === 'readonly' ? READONLY_TOOLS : TOOL_NAMES;
     for (const [, entry] of this.live) {
@@ -1520,4 +1532,33 @@ function modelListError(status, url, detail) {
 function snapText(lib) {
   const files = lib.scanner.snapshot?.files || [];
   return `${files.length} 个文件`;
+}
+
+// 只从 agents/default/mcp.json 读 MCP 配置（设置页写入的位置）；
+// 不读全局 ~/.pi/agent/mcp.json，也不读项目 .pi/mcp.json（projectTrusted=false 已拦）。
+function loadAgentMcpConfig(agentDir) {
+  const file = path.join(agentDir, 'mcp.json');
+  const servers = [];
+  const errors = [];
+  try {
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        errors.push(`${file}: expected an object`);
+      } else if (parsed.mcpServers !== undefined && (typeof parsed.mcpServers !== 'object' || parsed.mcpServers === null || Array.isArray(parsed.mcpServers))) {
+        errors.push(`${file}: expected an "mcpServers" object`);
+      } else {
+        for (const [name, config] of Object.entries(parsed.mcpServers || {})) {
+          if (config && typeof config === 'object' && !Array.isArray(config)) {
+            servers.push({ name, config, source: file, scope: 'global' });
+          } else {
+            errors.push(`${file}: server "${name}" must be an object`);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    errors.push(`${file}: ${e.message}`);
+  }
+  return { servers, errors };
 }

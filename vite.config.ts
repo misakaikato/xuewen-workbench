@@ -11,7 +11,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: `http://${process.env.WORKBENCH_HOST || 'localhost'}:${process.env.WORKBENCH_PORT || 7410}`,
+        target: `http://${process.env.WORKBENCH_HOST || '127.0.0.1'}:${process.env.WORKBENCH_PORT || 7410}`,
         changeOrigin: true,
       },
     },

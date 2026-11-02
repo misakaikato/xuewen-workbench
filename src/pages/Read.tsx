@@ -1018,7 +1018,7 @@ export default function Read() {
               {backlinks.length > 0 && <span className="text-xs stat-num ml-0.5">{backlinks.length}</span>}
             </button>
             {file.readonly ? (
-              <span className="text-xs text-muted-foreground border border-dashed border-border rounded px-2 py-1">只读预览</span>
+              <span className="text-xs text-muted-foreground border border-dashed border-border rounded px-2 py-1" title={file.readonlyReason || '只读预览'}>{file.readonlyReason || '只读预览'}</span>
             ) : (
               <Button
                 variant="outline"

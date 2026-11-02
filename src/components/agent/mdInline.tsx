@@ -12,15 +12,25 @@ export function inline(text: string, keyPrefix: string): React.ReactNode[] {
     // 图片 ![alt](url) —— 必须先于链接匹配
     let m = /^!\[([^\]]*)\]\(([^)\s]+)\)/.exec(rest);
     if (m) {
-      push(
-        <img
-          key={mk()}
-          src={m[2]}
-          alt={m[1]}
-          className="my-2 max-w-full rounded-lg border border-border"
-          loading="lazy"
-        />
-      );
+      const src = m[2];
+      // 只自动加载生图结果与本机 data 图；其余 URL 只渲染为文字链接，不自动请求
+      if (src.startsWith('/api/agent/generated/') || src.startsWith('data:image/')) {
+        push(
+          <img
+            key={mk()}
+            src={src}
+            alt={m[1]}
+            className="my-2 max-w-full rounded-lg border border-border"
+            loading="lazy"
+          />
+        );
+      } else {
+        push(
+          <a key={mk()} href={src} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2">
+            {m[1] || '图片链接'}
+          </a>
+        );
+      }
       rest = rest.slice(m[0].length);
       continue;
     }

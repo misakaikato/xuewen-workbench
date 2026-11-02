@@ -179,16 +179,16 @@ export class RagManager {
     this.embed = new EmbedService(dataDir);
     this.indices = new Map(); // dsId -> RagIndex
     this.llm = {
-      enabled: false, baseUrl: 'http://localhost:11434/v1', model: '', apiKey: '', thinkingLevel: 'off',
-      // 持久化：生成端点配置是全局设置（跨资料库），重启后必须恢复
+      enabled: false, baseUrl: 'http://localhost:11434/v1', model: '', apiKey: '', thinkingLevel: 'off', mode: 'confirm',
+      // 持久化：生成端点配置与助手运行模式是全局设置（跨资料库），重启后必须恢复
       ...readJson(path.join(dataDir, 'llm-settings.json'), {}),
     };
     this.onLlmChanged = null; // 由 agent 模块挂接：端点变化时同步 models.json
   }
 
-  /** 更新并持久化生成端点配置（含 agent 侧 thinkingLevel） */
+  /** 更新并持久化生成端点配置（含 agent 侧 thinkingLevel 与运行模式） */
   setLlm(patch) {
-    for (const k of ['enabled', 'baseUrl', 'model', 'apiKey', 'thinkingLevel']) {
+    for (const k of ['enabled', 'baseUrl', 'model', 'apiKey', 'thinkingLevel', 'mode']) {
       if (patch && k in patch) this.llm[k] = patch[k];
     }
     writeJsonAtomic(path.join(this.dataDir, 'llm-settings.json'), this.llm);

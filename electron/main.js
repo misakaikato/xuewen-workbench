@@ -29,6 +29,7 @@ let readIncidentsFn = null;
 let logsDirFn = null;
 let lastBootPayload = null; // 最新启动页状态（启动页加载完成后补发）
 let showingStartup = false;
+let uiOrigin = null; // 应用 UI 源（生产=后端端口，开发=Vite 端口），用于 will-navigate 白名单
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -82,6 +83,8 @@ async function start() {
   // 主进程日志与看门狗：先于任何其他操作初始化，便于取证
   const loggerNs = await import(pathToFileURL(path.join(ROOT, 'server', 'logger.js')).href);
   const { startLagWatch } = await import(pathToFileURL(path.join(ROOT, 'server', 'lagWatch.js')).href);
+  // 旧版本（v0.1.1–v0.1.3）数据在 userData/data；交给 store.js 在确定数据目录后迁移
+  process.env.WORKBENCH_LEGACY_DATA_DIR = path.join(app.getPath('userData'), 'data');
   const storeNs = await import(pathToFileURL(path.join(ROOT, 'server', 'store.js')).href);
   const diagNs = await import(pathToFileURL(path.join(ROOT, 'server', 'diagnostics.js')).href);
   const { dataDir, getUiSettings } = storeNs;
@@ -190,6 +193,7 @@ async function onBackendReady(port) {
     await waitFor(url, 60000);
   }
   console.log('[electron] api=' + api + ' ui=' + url + ' data=' + (process.env.WORKBENCH_DATA_DIR || 'server/data'));
+  uiOrigin = new URL(url).origin;
   if (win && !win.isDestroyed()) win.loadURL(url);
 }
 
@@ -298,6 +302,14 @@ function attachWindowEvents() {
   win.webContents.setWindowOpenHandler(({ url: u }) => {
     if (/^https?:/.test(u)) shell.openExternal(u);
     return { action: 'deny' };
+  });
+  // 只允许在启动页与应用 UI 源内导航；其余跳转拦截，http(s) 交给系统浏览器
+  win.webContents.on('will-navigate', (e, url) => {
+    const startup = pathToFileURL(path.join(APP_DIR, 'startup.html')).href;
+    const allowed = url.startsWith(startup) || (uiOrigin && (url === uiOrigin || url.startsWith(uiOrigin + '/')));
+    if (allowed) return;
+    e.preventDefault();
+    if (/^https?:/.test(url)) shell.openExternal(url);
   });
 }
 

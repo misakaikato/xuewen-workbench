@@ -4,6 +4,7 @@ import path from 'node:path';
 import { extractWordText } from './word.js';
 import { SUPPORTED_EXTS } from './scanner.js';
 import { withActivity } from './lagWatch.js';
+import { decodeText } from './textDecode.js';
 
 export class Indexer {
   constructor() {
@@ -35,11 +36,11 @@ export class Indexer {
           const abs = path.join(this.baseDir, f.path);
           try {
             if (f.ext === '.md' || f.ext === '.json' || f.ext === '.txt' || f.ext === '.html' || f.ext === '.htm') {
-              // 与前端 CodeMirror 的文档表示对齐：剥 BOM、CRLF→LF。
+              // 与前端 CodeMirror 的文档表示对齐：剥 BOM、CRLF→LF；非 UTF-8 经 decodeText 正确解码。
               // 否则含 \r 或 BOM 的文件，内链偏移会整体错位（每行差 1 字符），
               // 表现为「标记落到错误位置/表格里没有标记」。
-              const raw = fs.readFileSync(abs, 'utf8');
-              this.texts.set(f.path, raw.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n'));
+              const { content } = decodeText(fs.readFileSync(abs));
+              this.texts.set(f.path, content.replace(/\r\n?/g, '\n'));
             } else {
               const t = await extractWordText(this.dsId, abs, f.path, f.mtimeMs);
               if (t !== null) this.texts.set(f.path, t);
