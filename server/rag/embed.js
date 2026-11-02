@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { T2S_MAP } from '../t2s.js';
 import { withActivity } from '../lagWatch.js';
+import { pickFetch, probeHosts, downloadFile } from './download.js';
 
 export const MODEL_ID = 'bge-m3';
 export const DIM = 1024;
@@ -17,7 +18,9 @@ const REPOS = {
   mlx: { repo: 'mlx-community/bge-m3-mlx-fp16', dir: 'mlx-fp16', files: ['config.json', 'model.safetensors', 'tokenizer.json', 'tokenizer_config.json', 'special_tokens_map.json'] },
   onnx: { repo: 'Xenova/bge-m3', dir: 'onnx-fp16', files: ['config.json', 'tokenizer.json', 'tokenizer_config.json', 'special_tokens_map.json', 'onnx/model_fp16.onnx'] },
 };
-const HOSTS = ['https://huggingface.co', 'https://hf-mirror.com'];
+// 源列表；WORKBENCH_RAG_MODEL_HOSTS（逗号分隔）可覆盖，供测试/离线环境替换
+const HOSTS = (process.env.WORKBENCH_RAG_MODEL_HOSTS || 'https://huggingface.co,https://hf-mirror.com')
+  .split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
 
 // MLX sidecar 最小依赖集（实证对齐 resources-mlx/requirements.txt；vendor 前向后不再依赖 mlx-embeddings）
 const MLX_REQUIREMENTS = [
@@ -43,39 +46,18 @@ function sha256File(p) {
   });
 }
 
-function downloadTo(url, dest, onBytes) {
-  return new Promise((resolve, reject) => {
-    fetch(url, { redirect: 'follow' })
-      .then((r) => {
-        if (!r.ok || !r.body) return reject(new Error(`HTTP ${r.status} ${url}`));
-        const total = Number(r.headers.get('content-length')) || 0;
-        let got = 0;
-        const out = fs.createWriteStream(dest);
-        const reader = r.body.getReader();
-        const pump = () => reader.read().then(({ done, value }) => {
-          if (done) return out.end(() => resolve({ bytes: got, total }));
-          out.write(value);
-          got += value.length;
-          if (onBytes) onBytes(got, total);
-          return pump();
-        });
-        pump().catch(reject);
-      })
-      .catch(reject);
-  });
-}
-
 export class EmbedService {
   constructor(dataDir) {
     this.dataDir = dataDir;
     this.modelsDir = path.join(dataDir, 'models', MODEL_ID);
     this.venvDir = path.join(dataDir, 'py', 'rag-venv');
     this.state = 'missing'; // missing | downloading | ready | error
-    this.progress = { file: '', bytes: 0, total: 0, done: 0, files: 0 };
+    this.progress = { file: '', bytes: 0, total: 0, done: 0, files: 0, host: '', attempt: 0, speedBps: 0 };
     this.error = null;
     this.backend = null; // 实际使用的后端（ready 后有值）
     this._runtime = null; // { kind, embed(texts) }
     this._loading = null;
+    this._downloadTask = null;
     if (process.env.WORKBENCH_RAG_EMBED === 'mock') {
       this.state = 'ready';
       this.backend = 'mock';
@@ -141,58 +123,67 @@ export class EmbedService {
     };
   }
 
-  /** 下载模型（当前平台只下所需后端的文件）；幂等：已就绪直接返回 */
-  async download() {
-    if (this.state === 'downloading') return { ok: true };
-    if (this.state === 'ready') return { ok: true };
+  /** 下载模型（当前平台只下所需后端）；幂等：已就绪直接返回，下载中返回 already */
+  download() {
+    if (this.state === 'downloading') return { ok: true, already: true };
+    if (this.state === 'ready') return { ok: true, ready: true };
     const kind = process.platform === 'darwin' ? 'mlx' : 'onnx';
     const spec = REPOS[kind];
     const dir = this.modelDir(kind);
     fs.mkdirSync(dir, { recursive: true });
     this.state = 'downloading';
     this.error = null;
-    this.progress = { file: '', bytes: 0, total: 0, done: 0, files: spec.files.length };
-    try {
-      if (kind === 'mlx') await this.ensureVenv();
-      const manifest = { model: MODEL_ID, kind, files: [] };
-      for (const f of spec.files) {
-        await withActivity('下载模型 ' + f, async () => {
-          const dest = path.join(dir, f);
-          fs.mkdirSync(path.dirname(dest), { recursive: true });
-          this.progress.file = f;
-          this.progress.bytes = 0;
-          this.progress.total = 0;
-          let ok = false;
-          let lastErr = null;
-          for (const host of HOSTS) {
-            try {
-              const r = await downloadTo(`${host}/${spec.repo}/resolve/main/${f}`, dest + '.part', (b, t) => {
-                this.progress.bytes = b;
-                if (t) this.progress.total = t;
-              });
-              fs.renameSync(dest + '.part', dest);
-              ok = true;
-              break;
-            } catch (e) {
-              lastErr = e;
-            }
-          }
-          if (!ok) throw lastErr || new Error('下载失败: ' + f);
-          manifest.files.push({ path: f, sha256: await sha256File(dest), bytes: fs.statSync(dest).size });
-          this.progress.done++;
-        });
-      }
-      fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
-      this._shaCache = manifest.files.find((x) => x.path.includes('safetensors') || x.path.endsWith('.onnx'))?.sha256 || null;
-      this.state = 'ready';
-      this.backend = kind;
-      this._runtime = null; // 重新加载
-      return { ok: true };
-    } catch (e) {
+    this.progress = { file: '', bytes: 0, total: 0, done: 0, files: spec.files.length, host: '', attempt: 0, speedBps: 0 };
+    this._downloadTask = this._runDownload(kind, spec, dir).catch((e) => {
       this.state = 'error';
       this.error = String(e.message || e);
-      return { ok: false, error: this.error };
+      console.error('[rag] 模型下载失败: ' + this.error);
+    });
+    return { ok: true, started: true };
+  }
+
+  /** 后台下载：mac 先置备 venv → 探测可达源 → 按可达顺序逐个文件断点续传 */
+  async _runDownload(kind, spec, dir) {
+    const t0 = Date.now();
+    if (kind === 'mlx') await this.ensureVenv();
+    const { fetchImpl, kind: fetchKind } = pickFetch();
+    const log = (msg) => console.log('[rag] ' + msg);
+    console.log('[rag] 模型下载开始: ' + kind + '，fetch=' + fetchKind);
+    const hosts = await probeHosts(HOSTS, spec.repo, { fetchImpl, log });
+    if (!hosts.length) throw new Error('无法连接 huggingface.co 与 hf-mirror.com，请检查网络或代理');
+    const manifest = { model: MODEL_ID, kind, files: [] };
+    for (const f of spec.files) {
+      await withActivity('下载模型 ' + f, async () => {
+        const dest = path.join(dir, f);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        const urls = hosts.map((h) => `${h}/${spec.repo}/resolve/main/${f}`);
+        this.progress.file = f;
+        this.progress.bytes = 0;
+        this.progress.total = 0;
+        this.progress.host = '';
+        this.progress.attempt = 0;
+        this.progress.speedBps = 0;
+        await downloadFile({
+          urls, dest, fetchImpl,
+          onProgress: (p) => {
+            this.progress.bytes = p.bytes;
+            this.progress.total = p.total;
+            this.progress.host = p.host;
+            this.progress.attempt = p.attempt;
+            this.progress.speedBps = p.speedBps;
+          },
+          log,
+        });
+        manifest.files.push({ path: f, sha256: await sha256File(dest), bytes: fs.statSync(dest).size });
+        this.progress.done++;
+      });
     }
+    fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
+    this._shaCache = manifest.files.find((x) => x.path.includes('safetensors') || x.path.endsWith('.onnx'))?.sha256 || null;
+    this.state = 'ready';
+    this.backend = kind;
+    this._runtime = null; // 重新加载
+    console.log('[rag] 模型下载完成: ' + kind + '，耗时 ' + (Date.now() - t0) + 'ms');
   }
 
   /** 手动导入模型目录（含权重文件的目录，写入清单） */

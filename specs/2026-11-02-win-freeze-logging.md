@@ -229,7 +229,21 @@ export function pickFetch() // 托管（utilityProcess）时返回 require('elec
 1. `.part` 已存在且大小 n > 0 → 带 `Range: bytes=n-` 请求。响应 206 → 追加写；200 → 截断重写；416 → 删除 `.part` 从头再来一次。
 2. 用 `Readable.fromWeb(res.body)` + 计数 Transform + `fs.createWriteStream(part, { flags })`，以 `stream.promises.pipeline` 连接（背压与出错时关闭流都由 pipeline 负责）。
 3. 空闲超时：每收到一块数据重置 `idleTimeoutMs` 计时器；超时用 AbortController 中止，本次尝试记为失败（原因 `idle-timeout`）。
-4. 失败后按 backoffMs 等待再试，续传；连续两次在同一源失败则换 `urls` 中的下一个源。超过 `maxAttempts` 抛错，错误信息为中文且带原因码，例：`下载 onnx/model_fp16.onnx 失败（已尝试 5 次）：连接超时（UND_ERR_CONNECT_TIMEOUT）`。原因码取 `err.cause?.code || err.code || err.name`。
+4. 失败后按 backoffMs 等待再试，续传；连续两次在同一源失败则换 `urls` 中的下一个源。超过 `maxAttempts` 抛错，错误信息为「中文原因（原因码）」，取**最后一次尝试**的真实原因，例：`下载 model_fp16.onnx 失败（已尝试 5 次）：连接超时（UND_ERR_CONNECT_TIMEOUT）`。原因码提取顺序：空闲超时 → `idle-timeout`；非 200/206 响应 → `HTTP <状态码>`；`err.cause?.code || err.code`；Electron `net.fetch` 的错误消息形如 `net::ERR_CONNECTION_RESET`，从 message 中提取 `ERR_[A-Z_]+`；都没有时用 `err.name`。中文原因对照（未列出的写「网络错误」）：
+
+   | 原因码 | 中文 |
+   |---|---|
+   | `idle-timeout` | 空闲超时（<idleTimeoutMs 换算的秒数> 秒无数据） |
+   | `HTTP 4xx/5xx` | 服务器返回错误 |
+   | `UND_ERR_CONNECT_TIMEOUT`、`ETIMEDOUT`、`ERR_CONNECTION_TIMED_OUT`、`ERR_TIMED_OUT` | 连接超时 |
+   | `ECONNREFUSED`、`ERR_CONNECTION_REFUSED` | 连接被拒绝 |
+   | `ECONNRESET`、`UND_ERR_SOCKET`、`ERR_CONNECTION_RESET`、`ERR_CONNECTION_CLOSED` | 连接被重置 |
+   | `ENOTFOUND`、`EAI_AGAIN`、`ERR_NAME_NOT_RESOLVED` | 域名解析失败 |
+   | `ERR_PROXY_CONNECTION_FAILED`、`ERR_TUNNEL_CONNECTION_FAILED` | 代理连接失败 |
+   | `ERR_INTERNET_DISCONNECTED` | 网络未连接 |
+   | 以 `CERT_`、`ERR_CERT_`、`UNABLE_TO_`、`SELF_SIGNED` 开头或含 `CERT` 的 | 证书校验失败 |
+
+   每次尝试失败的日志行也用同样的「中文原因（原因码）」。`probeHosts` 增加可选参数 `log`，对每个源记录一行结果：可达时 `探测 <host> 可达，<ms>ms`，不可达时 `探测 <host> 不可达：<中文原因（原因码）>`；`EmbedService` 传入 `log`。
 5. 成功后 `.part` 改名为 dest。
 6. 日志（经 `log` 回调写 console）：每次尝试的源、起始偏移、HTTP 状态；每个文件完成时字节数、耗时、平均速度；每次失败的原因码。
 

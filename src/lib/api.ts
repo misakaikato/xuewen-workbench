@@ -246,7 +246,7 @@ export const api = {
   // ---- RAG ----
   ragStatus: () =>
     req<RagStatus>('/api/rag/status'),
-  ragModelDownload: () => req<{ ok: boolean; error?: string }>('/api/rag/model/download', json('POST', {})),
+  ragModelDownload: () => req<{ ok: boolean; error?: string; started?: boolean; already?: boolean; ready?: boolean }>('/api/rag/model/download', json('POST', {})),
   ragModelImport: (dir: string) => req<{ ok: boolean; error?: string; kind?: string }>('/api/rag/model/import', json('POST', { dir })),
   ragIndexBuild: (rebuild: boolean) => req<{ ok: boolean }>('/api/rag/index/build', json('POST', { rebuild })),
   ragIndexPause: () => req<{ ok: boolean }>('/api/rag/index/pause', json('POST', {})),
@@ -382,7 +382,7 @@ export interface RagModelStatus {
   id: string;
   dim: number;
   sha: string | null;
-  progress: { file: string; bytes: number; total: number; done: number; files: number } | null;
+  progress: { file: string; bytes: number; total: number; done: number; files: number; host: string; attempt: number; speedBps: number } | null;
   error: string | null;
 }
 

@@ -61,11 +61,12 @@ export default function RagManage() {
     }
   }, [dsId]);
 
+  const downloading = st?.model?.state === 'downloading';
   useEffect(() => {
     poll();
-    const t = setInterval(poll, 5000);
+    const t = setInterval(poll, downloading ? 1000 : 5000);
     return () => clearInterval(t);
-  }, [poll, dsId]);
+  }, [poll, dsId, downloading]);
 
   useEffect(() => {
     api.ragConfigGet().then((r) => setCfg(r.config)).catch(() => {});
@@ -128,10 +129,10 @@ export default function RagManage() {
         </div>
         {m?.state === 'downloading' && m.progress && (
           <div className="text-xs mb-3">
-            <div className="flex justify-between text-muted-foreground mb-1">
-              <span className="truncate">{m.progress.file}</span>
-              <span>{m.progress.done}/{m.progress.files} 文件 · {fmtBytes(m.progress.bytes)}{m.progress.total ? ' / ' + fmtBytes(m.progress.total) : ''}</span>
+            <div className="text-muted-foreground mb-1 truncate">
+              正在从 {m.progress.host || '…'} 下载 {m.progress.file || '…'}：{fmtBytes(m.progress.bytes)} / {m.progress.total ? fmtBytes(m.progress.total) : '…'}{m.progress.speedBps ? '（' + (m.progress.speedBps / 1048576).toFixed(1) + ' MB/s）' : ''}，第 {m.progress.attempt || 1} 次尝试
             </div>
+            <div className="text-muted-foreground mb-1 text-right">{m.progress.done}/{m.progress.files} 文件</div>
             <div className="h-1.5 rounded bg-muted overflow-hidden">
               <div className="h-full bg-primary transition-all" style={{ width: m.progress.total ? Math.min(100, (m.progress.bytes / m.progress.total) * 100) + '%' : '30%' }} />
             </div>
