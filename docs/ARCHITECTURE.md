@@ -1,6 +1,6 @@
 # 学问工作台 · 架构设计文档
 
-版本：v0.3（2026-11-02，对应代码 v0.1.6 / `a3a4977`）｜读者：主人、后续开发者（含 AI 执行方）｜产品需求见 [PRD.md](./PRD.md)｜各功能实现规格见 [`specs/`](../specs/)
+版本：v0.3（2026-11-02，对应代码 `64b65f2`，v0.1.6 之后）｜读者：主人、后续开发者（含 AI 执行方）｜产品需求见 [PRD.md](./PRD.md)｜各功能实现规格见 [`specs/`](../specs/)
 
 本文只写结构、规则、取舍和坑；实现细节以代码和规格为准，这里只给指针。路径均相对仓库根目录，不含任何语料正文。
 
@@ -10,7 +10,7 @@
 
 ## 1. 现状：阅读、编辑、内链、检索、助手都已可用，版本历史与加工数据增量更新未做
 
-学问工作台是给一位教传统文化的老师用的本地桌面应用：以一个或多个语料目录（几百份 md / txt / json / html / Word 文稿）为资料库，集中阅读、检索、编辑，并叠加自动内链、语义检索、AI 助手和二次加工数据。Electron 壳在进程内跑 Express 后端，前端是 React 单页。
+学问工作台是给一位教传统文化的老师用的本地桌面应用：以一个或多个语料目录（几百份 md / txt / json / html / Word 文稿）为资料库，集中阅读、检索、编辑，并叠加自动内链、语义检索、AI 助手和二次加工数据。Electron 主进程只管窗口，Express 后端跑在它托管的独立 utilityProcess 里，前端是 React 单页。
 
 | 能力 | 状态 | 主要代码 | 规格 / 文档 |
 |---|---|---|---|
@@ -22,7 +22,8 @@
 | 自动内链与反向链接 | 已实现 | `server/linkMatch.js`、`server/links.js` | — |
 | 元数据旁注与 AI 批量导入 | 已实现 | `server/meta.js`、`schema/` | — |
 | 加工数据 `.derived/` | 部分实现：概念 / 主题 / 图谱已只读接入；字义、摘要、「待更新」标记未做 | `server/derived.js` | [derived-data-protocol.md](./derived-data-protocol.md) |
-| RAG 智能检索 | 已实现（Windows 仅 CPU） | `server/rag/` | `specs/2026-10-18-rag.md`、`specs/retrieval-regression.md` |
+| RAG 智能检索 | 已实现（Windows 先试 DirectML，不可用时 CPU） | `server/rag/` | `specs/2026-10-18-rag.md`、`specs/retrieval-regression.md` |
+| 运行日志、卡顿记录与诊断包导出 | 已实现（只导出，不上传） | `server/logger.js`、`server/lagWatch.js`、`server/diagnostics.js` | `specs/2026-11-02-win-freeze-logging.md` |
 | 智能助手（pi agent，三层记忆） | 已实现 | `server/agent/`、`src/pages/AgentChat.tsx` | `specs/2026-10-18-agent.md`、`specs/2026-10-19-memory-design.md` |
 | 自动更新与 CI 发布 | 已实现 | `electron/updater.js`、`server/update.js`、`.github/workflows/release.yml` | `specs/2026-10-18-auto-update.md` |
 | 语料本地版本历史 | 已定未做 | — | 本文 §10 |
@@ -45,7 +46,7 @@
 ```mermaid
 flowchart TB
   subgraph Electron["Electron 壳 electron/"]
-    Main["main.js<br/>单实例 · 进程内加载后端 · 建窗"]
+    Main["main.js<br/>单实例 · 启动页 · 托管后端进程 · 宿主能力 RPC"]
     Upd["updater.js<br/>自动更新（仅打包版）"]
   end
 
@@ -54,7 +55,7 @@ flowchart TB
     CM["CodeMirror 6 单引擎<br/>阅读与编辑共用 livePreview"]
   end
 
-  subgraph BE["后端 server/（Express，默认 7410）"]
+  subgraph BE["后端 server/（utilityProcess 中的 Express，默认 7410）"]
     API["index.js<br/>REST 入口 · 多库 libs Map"]
     Scan["scanner.js + chokidar"]
     Idx["indexer.js 精确检索"]
@@ -77,7 +78,7 @@ flowchart TB
     Data["应用数据目录 ~/.xuewen-workbench"]
   end
 
-  Main -->|import| API
+  Main -->|utilityProcess.fork · parentPort RPC| API
   Main --> Upd --> GH
   FE -->|HTTP /api/*、SSE| API
   API --> Scan & Idx & Links & Meta & Store & Word & RAG & Agent
@@ -101,8 +102,9 @@ flowchart TB
 
 | 文件 | 职责 |
 |---|---|
-| `main.js` | 单实例锁；从 7410 起找空闲端口，进程内 import 后端；轮询 `/api/config` 就绪（最长 180 秒）后建 1440×900 窗口；macOS 用 `hiddenInset` 标题栏；注入系统回收站、系统默认应用打开、更新桥 |
-| `preload.cjs` | contextBridge 白名单，只暴露 `selectDirectory` 与平台信息 |
+| `main.js` | 单实例锁（二次启动还原并显示已有窗口）；启动即建 1440×900 窗口显示启动页；从 7410 起找空闲端口，用 `utilityProcess.fork` 托管后端，后端 `ready` 后切到应用；经 parentPort RPC 向后端提供回收站、系统打开、定位、更新、GPU 信息；后端崩溃时窗口保留，可重启后端或导出诊断包；macOS 用 `hiddenInset` 标题栏 |
+| `startup.html` | 启动页：显示启动进度；后端失败或超过 60 秒未就绪时提供「重新启动」「导出诊断信息」 |
+| `preload.cjs` | contextBridge 白名单：`selectDirectory`、平台信息、启动页用的 `onBoot` / `exportDiagnostics` / `restartBackend` |
 | `updater.js` | 自动更新桥（§6.8） |
 
 **后端 `server/`**
@@ -117,9 +119,12 @@ flowchart TB
 | `meta.js` | `.meta.json` 读写、问题报告、AI 元数据导入 |
 | `derived.js` | 读取 `.derived/` 概念、主题、图谱 |
 | `word.js` | Word 只读预览：docx 用 mammoth；doc 优先 LibreOffice，缺失时回退 word-extractor 纯文本 |
-| `rag/` | 切块 `chunk.js`、存储 `store.js`、嵌入 `embed.js`（含 MLX sidecar `mlx-embed.py`）、参数 `config.js`、编排 `manager.js` |
+| `rag/` | 切块 `chunk.js`、存储 `store.js`、嵌入 `embed.js`（MLX sidecar `mlx-embed.py`、ONNX 推理线程 `onnxWorker.js`）、模型下载 `download.js`、参数 `config.js`、编排 `manager.js` |
 | `agent/` | `manager.js`（AgentHub：会话、工具、模式）、`memory.js`、`settings.js`（agent 可读写的设置项）、`imagegen.js` |
-| `update.js` / `trash.js` / `hostOpen.js` | 宿主能力的可插拔桥：更新、回收站、系统打开；独立运行后端时退化 |
+| `update.js` / `trash.js` / `hostOpen.js` | 宿主能力的可插拔桥：更新、回收站、系统打开与定位；独立运行后端时退化 |
+| `host.js` | 托管模式（utilityProcess）下与主进程的 RPC、启动进度与就绪上报；独立运行时为空操作 |
+| `logger.js` / `logInit.js` / `lagWatch.js` | 分进程日志（接管 console 写文件、5MB 轮转）与事件循环卡顿看门狗；`logInit.js` 必须是 `index.js` 的第一条 import |
+| `diagnostics.js` / `zip.js` | 异常事件记录（`incidents.jsonl`）与诊断 zip 导出 |
 
 **前端 `src/`**：路由 `/`（概览）、`/setup`、`/browse`、`/read/*`、`/edit/*`、`/search`、`/rag`、`/agent`、`/settings`，定义在 `src/App.tsx`；接口封装在 `src/lib/api.ts`；三套主题 A 宣纸书卷 / B 现代极简 / C 夜读在 `src/styles/themes.css`，可在设置里切换。
 
@@ -156,6 +161,8 @@ flowchart TB
 ├── ui-settings.json        # 主题、自动更新开关、笔记目录名等
 ├── llm-settings.json       # LLM 端点（baseUrl / model / apiKey / 思考强度）
 ├── links/<dsId>.json       # 内链缓存（JSON，可删）
+├── logs/                   # main.log / backend.log / renderer.log（各 5MB×3）、incidents.jsonl、session.json
+├── diagnostics/            # 桌面不可写时诊断包的退路
 ├── memory/                 # 全局记忆
 ├── agents/default/         # Agent 定义：AGENTS.md、skills/、mcp.json、memory/、models.json
 ├── models/bge-m3/          # 嵌入模型
@@ -198,8 +205,8 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 - **切块**：md 按标题层级，txt / docx 按段落，json 按条目，超长节按段落边界二次分组；块上带文档路径、标题路径。
 - **存储**：每库一个 `rag.db`（better-sqlite3），FTS5 中文 bigram + 向量 BLOB；可暂停续建，删除即全量重建。
 - **检索**：BM25 与余弦各取 top-N，RRF 融合，语义路加权；低于融合阈值不显示，查不到就明说“没有找到”。查询与切块都经繁→简归一化。全部默认值在 `server/rag/config.js`，可在 RAG 管理页按库调整。
-- **嵌入**：bge-m3（1024 维）。macOS 走 MLX Python sidecar，Python 环境先尝试 uv 在线置备，否则用安装包内捆绑的离线环境（`scripts/fetch-mlx-env.mjs` 构建期拉取）；Windows 走 onnxruntime-node，目前只用 CPU。测试可设 `WORKBENCH_RAG_EMBED=mock`。
-- **模型获取**：首次在 RAG 管理页下载，huggingface.co 失败回退 hf-mirror.com；也可手动导入模型目录。模型不进安装包。
+- **嵌入**：bge-m3（1024 维）。macOS 走 MLX Python sidecar，Python 环境先尝试 uv 在线置备，否则用安装包内捆绑的离线环境（`scripts/fetch-mlx-env.mjs` 构建期拉取）；Windows 走 onnxruntime-node，在 worker 线程里加载与推理，默认先试 DirectML、不可用时降级 CPU（原因写入 backend.log，`WORKBENCH_RAG_ONNX_EP` 可覆盖）。测试可设 `WORKBENCH_RAG_EMBED=mock`。
+- **模型获取**：首次在 RAG 管理页下载。并发探测 huggingface.co 与 hf-mirror.com，按先响应者顺序取；托管模式用 Electron `net.fetch`（Chromium 网络栈，走系统代理）；`.part` 断点续传、30 秒空闲超时、退避重试、连续失败换源；接口立即返回，进度靠轮询。也可手动导入模型目录。模型不进安装包。
 
 ### 6.7 智能助手：内嵌 pi agent，工作台能力以工具暴露
 - **运行时**：`@earendil-works/pi-coding-agent` SDK 内嵌在后端进程；agent 资源目录为 `agents/default/`，与用户全局 `~/.pi` 隔离。端点是任意 OpenAI 兼容服务（Ollama、LM Studio 或远端），配置存 `llm-settings.json`，自动生成 pi 的 `models.json`。
@@ -209,7 +216,15 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 - **前端入口**：`/agent` 聊天页，另有阅读页侧栏问答与浮窗问答，会注入当前文档上下文。
 
 ### 6.8 自动更新：Windows 全自动，macOS 半自动
-仅打包版启用（开发模式与独立后端下停用），启动 10 秒后首查，之后每 6 小时一次，设置里可关。Windows 用 electron-updater：blockmap 差量下载、安装并重启。macOS 未签名，electron-updater 只负责检查；下载从 `github.com/.../releases/download/` 直接取 DMG（不调限流的 api.github.com），然后打开安装包并退出，由用户拖入 Applications。签名后 mac 可切回 electron-updater。
+仅打包版启用（开发模式与独立后端下停用），启动 10 秒后首查，之后每 6 小时一次，设置里可关。Windows 用 electron-updater：blockmap 差量下载、安装并重启。macOS 未签名，electron-updater 只负责检查；下载从 `github.com/.../releases/download/` 直接取 DMG（不调限流的 api.github.com），然后打开安装包并退出，由用户拖入 Applications。签名后 mac 可切回 electron-updater。更新桥留在主进程，后端经 RPC 调用。
+
+### 6.9 进程结构与诊断：后端重活不许碰窗口所在的线程
+Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其中运行，扫描、解析 Word、ONNX 推理、下载都会让窗口“未响应”。现在主进程只建窗、托管后端进程、实现宿主 RPC；后端的同步重活最多卡后端自己的 HTTP 服务。三个进程各写一份日志；看门狗记下事件循环阻塞 ≥1 秒的时长与当时的活动（`setActivity` / `withActivity` 登记）；异常退出、后端崩溃、渲染进程崩溃记入 `incidents.jsonl`，下次启动顶部横幅提示；设置页与横幅可一键导出诊断 zip（不含正文、对话、API Key、端点地址）。
+
+**坑**：
+- 不得对 ONNX worker 调用 `worker.terminate()`：它正处于 onnxruntime 原生推理时被终止，会因未捕获的 `Napi::Error` 让整个后端进程 SIGABRT。关闭一律走 `close` 消息的优雅流程。
+- worker 线程里的 `console` 不经过后端已接管的 console，写不进 backend.log；worker 日志必须发消息给主线程转写。
+- utilityProcess 里 `require('electron')` 只有 `net`、`systemPreferences`；需要 `shell`、`app` 的能力都走 RPC。
 
 ---
 
@@ -217,7 +232,7 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 
 | 出口 | 触发 | 发出的内容 |
 |---|---|---|
-| huggingface.co → hf-mirror.com | 用户点下载嵌入模型 | 无语料 |
+| huggingface.co / hf-mirror.com（并发探测择一） | 用户点下载嵌入模型 | 无语料 |
 | github.com（DMG 名称取不到时退回 api.github.com） | 打包版检查 / 下载更新，可关闭 | 无语料 |
 | 用户配置的 LLM 端点 | 助手对话 | **检索到的语料片段与对话内容** |
 | api.uniapi.io | 助手调用 `generate_image`；凭据取 `~/.config/uniapi/config.json` 或 `UNIAPI_API_KEY` | 生图提示词 |
@@ -231,7 +246,7 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 
 ## 8. 构建、发布与测试
 
-**开发**：`npm run dev` 同时起后端（7410）与 Vite（3000）；`npm run electron:dev` 在壳里跑。环境变量：`WORKBENCH_DATA_DIR`、`WORKBENCH_PORT`、`WORKBENCH_HOST`、`WORKBENCH_STATIC_DIR`、`WORKBENCH_RAG_EMBED`。
+**开发**：`npm run dev` 同时起后端（7410）与 Vite（3000）；`npm run electron:dev` 在壳里跑。环境变量：`WORKBENCH_DATA_DIR`、`WORKBENCH_PORT`、`WORKBENCH_HOST`、`WORKBENCH_STATIC_DIR`、`WORKBENCH_RAG_EMBED`、`WORKBENCH_RAG_ONNX_EP`、`WORKBENCH_RAG_MODEL_HOSTS`（逗号分隔，测试用）、`WORKBENCH_LAG_THRESHOLD_MS`（看门狗阈值，测试用）。
 
 **发布**：代码仓库是公开的 GitHub 仓库 `misakaikato/xuewen-workbench`，坐标写在 `package.json` 的 `build.publish`。`npm version patch` 打 tag 并推送后，`.github/workflows/release.yml` 依次执行：
 1. `prepare` 预建唯一的 draft release，避免多个发布器各建一个 draft；
@@ -247,6 +262,9 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 | `npx tsc -b` | 前端类型检查 |
 | `npm run lint` | ESLint |
 | `node scripts/test-linkmatch.mjs` | 内链匹配引擎回归 |
+| `node scripts/test-diagnostics.mjs` | 日志轮转与格式、卡顿看门狗、异常事件、诊断 zip |
+| `node scripts/test-download.mjs` | 模型下载：选源、断点续传、空闲超时、失败原因、无句柄残留 |
+| `node scripts/test-onnx-worker.mjs` | ONNX worker：夹具模型（需 uv，首次需联网取分词器）比对新旧向量、推理期间主线程延迟、优雅关闭压力 |
 | `npm run test:retrieval` | 检索确定性回归：真实 SQLite / 切块 / FTS / RRF，向量为夹具，不评估语义质量 |
 | `npm run test:retrieval:e2e` | Electron 内检索与阅读定位端到端（标准见 `specs/retrieval-regression.md`） |
 | `npm run test:e2e` | 编辑器端到端 |
@@ -263,7 +281,8 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 - **助手运行模式不持久化，启动恒为 auto。** `mode` 只存在 `AgentHub` 内存里；每次启动后 `bash`、改名、移动等工具都不经确认直接执行，`bash` 可在资料库根目录跑任意命令。
 - **开发模式后端监听所有地址。** `npm run dev` / `dev:server` 不设 `WORKBENCH_HOST` 时 `app.listen` 不限地址，局域网内可访问全部接口（含助手）。
 - **模型下载不校验完整性。** 下载后只计算并记录 sha256，没有对照预置值。
-- **Windows 嵌入只跑 CPU。** CUDA EP（RTX 5070 / Blackwell）是规格里的实测点，未做。
+- **Windows 嵌入的 GPU 路径未实测。** 默认先试 DirectML，不可用时降级 CPU；DirectML 在老师机器上能否加载、性能如何都没测过。CUDA EP（RTX 5070 / Blackwell）未做。
+- **进程拆分、下载重写、ONNX worker 只在 macOS 验证过**（含打包产物与夹具模型），Windows 真机未验证。2026-11-02 的 Windows 卡死事故（下载模型时界面卡住、`fetch failed`、结束进程后重开不显示）根因尚未用该机器的日志确认。
 - **安装包未签名。** 首次打开需接受 Gatekeeper / SmartScreen 提示；mac 自动更新因此只能半自动。
 - **本机打 DMG 可能被系统服务卡住。** dmgbuild 最后一步是非强制卸载；若 CoreSimulatorService 卡在 “Simulators are still shutting down”，它会经 DiskArbitration 否决一切非强制卸载，任何工具都造不出 DMG，只能清理相关进程或重启。诊断与后备：`node scripts/make-dmg.mjs`。
 - **仅前端用的依赖仍在 `dependencies`。** 前端已被 Vite 打成静态文件，这些依赖本可移到 `devDependencies` 给安装包瘦身。
