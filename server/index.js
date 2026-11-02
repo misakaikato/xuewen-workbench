@@ -14,6 +14,7 @@ import { pendingIncident, ackIncidents, readIncidents, exportDiagnostics } from 
 import { planImport, applyImport, contentHash } from './meta.js';
 import { getTrashHandler } from './trash.js';
 import { mountUpdateRoutes, getUpdateBridge, disabledUpdateState } from './update.js';
+import { installHostBridges, postBoot, postReady, hosted, rpc } from './host.js';
 import { RagManager } from './rag/manager.js';
 import { mountRag } from './rag/routes.js';
 import { AgentHub } from './agent/manager.js';
@@ -367,6 +368,7 @@ app.post('/api/rescan', async (req, res) => {
 
 // ---------- 应用更新（桥接由 Electron 主进程注入；无桥接时停用） ----------
 
+installHostBridges();
 mountUpdateRoutes(app);
 
 // ---------- 界面设置（外观主题；不依赖数据源，未配置时也可用） ----------
@@ -1712,7 +1714,7 @@ app.post('/api/diagnostics/ack', (req, res) => {
 app.post('/api/diagnostics/export', async (req, res) => {
   try {
     const outDir = process.env.WORKBENCH_DESKTOP_DIR || undefined;
-    const r = await exportDiagnostics({ dataDir: dataDir(), outDir, summary: buildSummary() });
+    const r = await exportDiagnostics({ dataDir: dataDir(), outDir, summary: await buildSummary() });
     try { await revealInFolder(r.file); } catch { /* 定位失败不影响导出 */ }
     res.json({ ok: true, file: r.file });
   } catch (e) {
@@ -1758,8 +1760,13 @@ function agentSummary() {
   };
 }
 
-function buildSummary() {
+async function buildSummary() {
   const ui = getUiSettings();
+  // 托管模式下 GPU 状态经宿主 RPC host.info 取；取不到写 null
+  let gpu = null;
+  if (hosted) {
+    try { gpu = (await rpc('host.info')).gpu ?? null; } catch { /* 保持 null */ }
+  }
   return {
     app: { version: process.env.WORKBENCH_APP_VERSION || null, hosted: !!process.versions.electron },
     runtime: {
@@ -1773,7 +1780,7 @@ function buildSummary() {
       totalMemGB: Math.round(os.totalmem() / 1024 / 1024 / 1024 * 10) / 10,
       freeMemGB: Math.round(os.freemem() / 1024 / 1024 / 1024 * 10) / 10,
     },
-    host: { gpu: null },
+    host: { gpu },
     dataDir: dataDir(), logsDir: logsDir(dataDir()),
     libraries: [...libs.values()].map(libSummary),
     rag: ragSummary(),
@@ -1842,6 +1849,7 @@ async function boot() {
     libs.set(lib.id, lib);
     try {
       fs.accessSync(lib.baseDir, fs.constants.R_OK);
+      postBoot('正在扫描资料库：' + lib.name);
       const t0 = Date.now();
       await lib.start();
       console.log('[boot] 资料库「' + lib.name + '」就绪: ' + lib.baseDir + '，' + (lib.scanner.snapshot?.files.length ?? 0) + ' 个文件，扫描耗时 ' + (Date.now() - t0) + 'ms');
@@ -1855,7 +1863,10 @@ async function boot() {
   }));
   activeId = libs.has(savedActive) ? savedActive : (libraries[0]?.id ?? null);
   if (activeId) setActiveLibInStore(activeId);
-  app.listen(PORT, HOST, () => console.log('服务开始监听: http://localhost:' + PORT + '，距进程启动 ' + (Date.now() - PROC_START) + 'ms'));
+  app.listen(PORT, HOST, () => {
+    console.log('服务开始监听: http://localhost:' + PORT + '，距进程启动 ' + (Date.now() - PROC_START) + 'ms');
+    postReady(PORT);
+  });
 }
 
 boot();

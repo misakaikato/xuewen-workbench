@@ -1,9 +1,11 @@
 // 「用系统默认应用打开本地路径」策略（可插拔，与 trash.js 同一桥接模式）：
 // Electron 宿主注入 shell.openPath；独立 dev server 回退到平台 opener。
 // revealInFolder：在系统文件管理器中定位文件（Finder / 资源管理器 / xdg-open）。
+// 托管模式下改走宿主 RPC shell.showItemInFolder。
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { hosted, rpc } from './host.js';
 
 let handler = null;
 
@@ -32,6 +34,10 @@ export async function revealInFolder(absPath) {
     isDir = fs.statSync(absPath).isDirectory();
   } catch {
     throw new Error('路径不存在（可能已被移动或删除）');
+  }
+  if (hosted) {
+    await rpc('shell.showItemInFolder', absPath);
+    return;
   }
   let cmd;
   let args;

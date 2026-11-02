@@ -159,7 +159,8 @@ POST /api/diagnostics/export  → 200 { ok: true, file: string }；失败 500 { 
 #### 主进程 `electron/main.js` 新流程
 
 1. 单实例锁不变。`second-instance`：若 `win` 存在 → 还原、显示、聚焦（窗口现在总是先于后端存在）。
-2. `app.whenReady()` 后：初始化日志与看门狗 → 记录启动环境 → `markSessionStart` → `buildMenu()` → `freePort` 选端口 → 读主题（保留 `import store.js` 的 `getUiSettings`，这一步也保证 store 的迁移副作用在后端启动前完成）→ **立即**建窗并加载启动页（`show: true`，不再等 `ready-to-show`；`backgroundColor` 仍按主题）→ 打包模式创建更新桥（`createUpdaterBridge` 不变）→ `startBackend()`。
+2. `app.whenReady()` 后：初始化日志与看门狗 → 记录启动环境 → `markSessionStart` → `buildMenu()` → 读主题（保留 `import store.js` 的 `getUiSettings`，这一步也保证 store 的迁移副作用在后端启动前完成）→ **立即**建窗并加载启动页（`backgroundColor` 仍按主题）→ `freePort` 选端口 → 打包模式创建更新桥（`createUpdaterBridge` 不变）→ `startBackend()`。
+   - 窗口显示时机：`show: false`，在 `ready-to-show` 与「建窗后 1500ms」两者**先到者**时 `show()`（只显示一次）。兜底计时器保证渲染进程或 GPU 出问题、首帧迟迟不来时窗口仍会出现；因兜底而显示时记一条 WARN `[window] 首帧 1500ms 内未就绪，先行显示窗口`。
 3. `startBackend()`：
    ```js
    backend = utilityProcess.fork(path.join(ROOT, 'server', 'index.js'), [], {

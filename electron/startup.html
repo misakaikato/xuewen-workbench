@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>学问 Workbench</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { text-align: center; max-width: 480px; padding: 24px; }
+  img { width: 88px; height: 88px; border-radius: 18px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 20px 0 8px; letter-spacing: 0.5px; }
+  p { margin: 6px 0; font-size: 14px; opacity: 0.85; }
+  #status { font-size: 15px; opacity: 1; min-height: 22px; }
+  #elapsed { opacity: 0.55; }
+  #actions { margin-top: 20px; }
+  #msg { opacity: 0.9; }
+  .row { display: flex; gap: 10px; justify-content: center; margin-top: 12px; }
+  button {
+    padding: 8px 18px; font-size: 14px; border-radius: 8px; cursor: pointer;
+    background: transparent; color: inherit;
+    border: 1px solid rgba(127, 127, 127, 0.45);
+  }
+  button:hover { border-color: rgba(127, 127, 127, 0.85); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #result { margin-top: 12px; font-size: 13px; opacity: 0.8; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <img src="../assets/icons/icon.png" alt="">
+  <h1>学问 Workbench</h1>
+  <p id="status">正在启动…</p>
+  <p id="elapsed">已用 0 秒</p>
+  <div id="actions" hidden>
+    <p id="msg"></p>
+    <div class="row">
+      <button id="restart" hidden>重新启动</button>
+      <button id="export">导出诊断信息</button>
+    </div>
+    <p id="result"></p>
+  </div>
+</main>
+<script>
+  var COLORS = { A: ['#f7f1e3', '#3b2f22'], B: ['#ffffff', '#1f2328'], C: ['#1b1c20', '#d8d4cc'] };
+  var theme = new URLSearchParams(location.search).get('theme');
+  var c = COLORS[theme] || COLORS.A;
+  document.body.style.background = c[0];
+  document.body.style.color = c[1];
+
+  var statusEl = document.getElementById('status');
+  var elapsedEl = document.getElementById('elapsed');
+  var actionsEl = document.getElementById('actions');
+  var msgEl = document.getElementById('msg');
+  var restartBtn = document.getElementById('restart');
+  var exportBtn = document.getElementById('export');
+  var resultEl = document.getElementById('result');
+  var t0 = Date.now();
+  var failed = false;
+  var slowTimer = null;
+
+  function showSlowHint() {
+    if (failed) return;
+    msgEl.textContent = '资料库较大或磁盘较慢时首次启动会久一些';
+    actionsEl.hidden = false;
+  }
+  function armSlowTimer() {
+    if (slowTimer) clearTimeout(slowTimer);
+    slowTimer = setTimeout(showSlowHint, 60000);
+  }
+  armSlowTimer();
+
+  window.wbHost.onBoot(function (p) {
+    if (!p) return;
+    if (p.state === 'starting') {
+      failed = false;
+      restartBtn.hidden = true;
+      actionsEl.hidden = true;
+      resultEl.textContent = '';
+      statusEl.textContent = p.step || '正在启动';
+      armSlowTimer();
+    } else if (p.state === 'error') {
+      failed = true;
+      if (slowTimer) clearTimeout(slowTimer);
+      statusEl.textContent = '';
+      msgEl.textContent = p.message || '后台服务意外退出';
+      restartBtn.hidden = false;
+      actionsEl.hidden = false;
+    }
+  });
+
+  setInterval(function () {
+    elapsedEl.textContent = '已用 ' + Math.floor((Date.now() - t0) / 1000) + ' 秒';
+  }, 1000);
+
+  restartBtn.onclick = function () {
+    restartBtn.disabled = true;
+    resultEl.textContent = '';
+    statusEl.textContent = '正在重新启动后台服务…';
+    window.wbHost.restartBackend().finally(function () { restartBtn.disabled = false; });
+  };
+
+  exportBtn.onclick = function () {
+    exportBtn.disabled = true;
+    resultEl.textContent = '';
+    window.wbHost.exportDiagnostics().then(function (r) {
+      exportBtn.disabled = false;
+      if (r && r.file) resultEl.textContent = '已导出到 ' + r.file;
+      else resultEl.textContent = '导出失败：' + (r && r.error ? r.error : '未知原因');
+    });
+  };
+</script>
+</body>
+</html>

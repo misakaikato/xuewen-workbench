@@ -7,4 +7,14 @@ contextBridge.exposeInMainWorld('wbHost', {
   selectDirectory: (defaultPath) => ipcRenderer.invoke('wb:selectDirectory', defaultPath),
   /** 在系统文件管理器中定位（已有 /api/reveal，这里备用） */
   platform: process.platform,
+  /** 订阅启动页状态（starting/error） */
+  onBoot: (cb) => {
+    const h = (_e, p) => cb(p);
+    ipcRenderer.on('wb:boot', h);
+    return () => ipcRenderer.removeListener('wb:boot', h);
+  },
+  /** 导出诊断包（后端已就绪时走后端，否则主进程直接导出） */
+  exportDiagnostics: () => ipcRenderer.invoke('wb:exportDiagnostics'),
+  /** 后端崩溃后重新拉起 */
+  restartBackend: () => ipcRenderer.invoke('wb:restartBackend'),
 });

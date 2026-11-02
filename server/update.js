@@ -17,8 +17,8 @@ export function disabledUpdateState() {
 }
 
 export function mountUpdateRoutes(app) {
-  app.get('/api/update/state', (req, res) => {
-    res.json(bridge ? bridge.state() : disabledUpdateState());
+  app.get('/api/update/state', async (req, res) => {
+    res.json(bridge ? await bridge.state() : disabledUpdateState());
   });
 
   for (const action of ['check', 'download']) {
