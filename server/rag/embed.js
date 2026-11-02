@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { T2S_MAP } from '../t2s.js';
 import { withActivity } from '../lagWatch.js';
@@ -182,6 +183,7 @@ export class EmbedService {
     this._shaCache = manifest.files.find((x) => x.path.includes('safetensors') || x.path.endsWith('.onnx'))?.sha256 || null;
     this.state = 'ready';
     this.backend = kind;
+    if (this._runtime?.dispose) this._runtime.dispose();
     this._runtime = null; // 重新加载
     console.log('[rag] 模型下载完成: ' + kind + '，耗时 ' + (Date.now() - t0) + 'ms');
   }
@@ -205,6 +207,7 @@ export class EmbedService {
     fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
     this.state = 'ready';
     this.backend = kind;
+    if (this._runtime?.dispose) this._runtime.dispose();
     this._runtime = null;
     return { ok: true, kind };
   }
@@ -288,65 +291,100 @@ export class EmbedService {
   }
 
   async _loadOnnx() {
-    // tokenizer 走 transformers.js；推理会话直用 onnxruntime-node（可指定执行提供者：
-    // win 包内自带 DirectML（RTX 直接可用，零安装），cuda 需自编/边车（M2 实测点），
-    // mac 为 CPU。创建失败自动降级到 cpu 并记录实际后端。
-    const { AutoTokenizer, env } = await import('@huggingface/transformers');
-    env.allowLocalModels = true;
-    env.allowRemoteModels = false;
-    const ort = await import('onnxruntime-node');
+    // tokenizer 与推理会话都移入 worker_threads：onnxruntime-node 的 create/run 是同步原生调用，
+    // 直接在主线程会阻塞事件循环。win 包内默认 DirectML，失败降级 cpu（与旧实现相同）。
     const dir = this.modelDir('onnx');
     const modelPath = path.join(dir, 'onnx', 'model_fp16.onnx');
     if (!fs.existsSync(modelPath)) throw new Error('缺少 ONNX 权重: onnx/model_fp16.onnx');
-    const tokenizer = await AutoTokenizer.from_pretrained(dir);
-    const want = (process.env.WORKBENCH_RAG_ONNX_EP || (process.platform === 'win32' ? 'dml' : 'cpu')).split(',');
-    let session = null;
+    const eps = (process.env.WORKBENCH_RAG_ONNX_EP || (process.platform === 'win32' ? 'dml' : 'cpu')).split(',');
+    const worker = new Worker(new URL('./onnxWorker.js', import.meta.url), { workerData: { dir, modelPath, eps } });
+    const pending = new Map(); // seq -> { resolve, reject }
+    let seq = 0;
     let usedEp = 'cpu';
-    for (const ep of [...want, 'cpu']) {
-      try {
-        session = await ort.InferenceSession.create(modelPath, { executionProviders: [ep] });
-        usedEp = ep;
-        break;
-      } catch (e) {
-        this.error = null; // 降级不算错误，但记入日志
-        console.error(`[rag] ONNX EP ${ep} 不可用，降级: ${String(e.message || e).slice(0, 120)}`);
+    let settled = false; // ready 或 fatal 已结算
+    let closing = false; // 已进入优雅关闭：新请求立即报错
+    let exited = false;
+    let deadErr = null;
+    let closeTimer = null;
+    let readyResolve;
+    let readyReject;
+    const ready = new Promise((resolve, reject) => {
+      readyResolve = resolve;
+      readyReject = reject;
+    });
+
+    // worker 意外退出：挂起请求全部报错；就绪后退出则清空运行时，下次调用重建
+    const failAll = (err) => {
+      deadErr = deadErr || err;
+      for (const p of pending.values()) p.reject(deadErr);
+      pending.clear();
+      if (settled) {
+        if (this._runtime && this._runtime._worker === worker) {
+          this._runtime = null;
+          this._loading = null;
+        }
+      } else {
+        readyReject(deadErr);
       }
-    }
-    if (!session) throw new Error('ONNX 会话创建失败（含 cpu）');
-    const epUsed = usedEp;
+    };
+
+    worker.on('error', (e) => failAll(new Error('ONNX worker 错误: ' + String(e.message || e))));
+    worker.on('exit', (code) => {
+      exited = true;
+      if (closeTimer) {
+        clearTimeout(closeTimer);
+        closeTimer = null;
+      }
+      failAll(new Error(code === 0 ? 'ONNX worker 已退出' : 'ONNX worker 意外退出（code=' + code + '）'));
+    });
+    worker.on('message', (msg) => {
+      if (msg.t === 'ready') {
+        settled = true;
+        usedEp = msg.ep;
+        readyResolve();
+        return;
+      }
+      if (msg.t === 'fatal') {
+        failAll(new Error(msg.error));
+        return;
+      }
+      if (msg.t === 'log') {
+        const level = msg.level === 'info' ? 'log' : msg.level;
+        console[level]('[rag] ' + msg.message);
+        return;
+      }
+      const p = pending.get(msg.id);
+      if (!p) return;
+      pending.delete(msg.id);
+      if (msg.t === 'result') p.resolve(msg.vecs);
+      else p.reject(new Error(msg.error));
+    });
+
+    await ready;
+    if (deadErr) throw deadErr; // ready 后、返回前就退出的极端竞态
+
     return {
       kind: 'onnx',
-      ep: epUsed,
-      embed: async (texts, opts = {}) => {
-        const maxLen = opts.maxLength || 1024;
-        const out = [];
-        for (let i = 0; i < texts.length; i += 8) {
-          const batch = texts.slice(i, i + 8);
-          const enc = await tokenizer(batch, { padding: true, truncation: true, max_length: maxLen });
-          const feeds = {
-            input_ids: new ort.Tensor('int64', BigInt64Array.from(enc.input_ids.data), enc.input_ids.dims),
-            attention_mask: new ort.Tensor('int64', BigInt64Array.from(enc.attention_mask.data), enc.attention_mask.dims),
-          };
-          const r = await session.run(feeds);
-          // 输出名不假设（Xenova 导出可能叫 last_hidden_state / token_embeddings），取首个
-          const t = Object.values(r)[0];
-          const raw = t.type === 'float16' ? f16To32(t.data) : t.data instanceof Float32Array ? t.data : Float32Array.from(t.data);
-          const dims = t.dims; // [B, L, D]
-          const dim = dims[2];
-          for (let b = 0; b < dims[0]; b++) {
-            const v = new Float32Array(dim);
-            let nrm = 0;
-            for (let j = 0; j < dim; j++) {
-              const x = raw[b * dims[1] * dim + j]; // CLS = 位置 0
-              v[j] = x;
-              nrm += x * x;
-            }
-            nrm = Math.sqrt(nrm) || 1;
-            for (let j = 0; j < dim; j++) v[j] /= nrm;
-            out.push(v);
-          }
-        }
-        return out;
+      ep: usedEp,
+      _worker: worker,
+      embed: (texts, opts = {}) => {
+        if (closing || exited || deadErr) return Promise.reject(deadErr || new Error('ONNX worker 已关闭'));
+        const id = ++seq;
+        return new Promise((resolve, reject) => {
+          pending.set(id, { resolve, reject });
+          worker.postMessage({ t: 'embed', id, texts, maxLength: opts.maxLength || 1024 });
+        });
+      },
+      dispose: () => {
+        // 优雅关闭：不再接受新请求，已发出的请求照常等结果；close 排在 worker 已收到的 embed 之后
+        if (closing) return;
+        closing = true;
+        worker.postMessage({ t: 'close' });
+        closeTimer = setTimeout(() => {
+          closeTimer = null;
+          if (!exited) console.warn('[rag] ONNX worker 关闭超时（60s），保留线程');
+        }, 60000);
+        if (closeTimer.unref) closeTimer.unref();
       },
     };
   }
@@ -442,21 +480,6 @@ export class EmbedService {
     this._runtime = null;
     this._loading = null;
   }
-}
-
-// fp16 位模式 → float32（ORT float16 输出为 Uint16Array 位模式）
-function f16To32(h) {
-  const out = new Float32Array(h.length);
-  for (let i = 0; i < h.length; i++) {
-    const b = h[i];
-    const s = (b & 0x8000) >> 15;
-    const e = (b & 0x7c00) >> 10;
-    const f = b & 0x03ff;
-    if (e === 0) out[i] = (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
-    else if (e === 0x1f) out[i] = f ? NaN : (s ? -1 : 1) * Infinity;
-    else out[i] = (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
-  }
-  return out;
 }
 
 // 确定性哈希向量（e2e）：对文本做字符 trigram 哈希叠加，同义近形文本向量相近

@@ -257,7 +257,11 @@ export function pickFetch() // 托管（utilityProcess）时返回 require('elec
 ### 七、ONNX 推理移入 worker_threads
 
 - `server/rag/onnxWorker.js`（新，worker 入口）：`workerData = { dir, modelPath, eps: string[] }`。加载 `AutoTokenizer.from_pretrained(dir)`（`env.allowLocalModels = true; env.allowRemoteModels = false`）与 `ort.InferenceSession.create`（按 eps 顺序尝试并降级 `cpu`，与现 `_loadOnnx` 相同）。就绪后 `postMessage({ t: 'ready', ep })`，加载失败 `{ t: 'fatal', error }`。收到 `{ t: 'embed', id, texts, maxLength }` 执行**从 `_loadOnnx` 原样搬来**的分批（8 条一批）、`f16To32`、CLS 取向量、L2 归一化代码，回 `{ t: 'result', id, vecs }`（vecs 为 `Float32Array[]`，用 transferList 转移各自 buffer），出错回 `{ t: 'error', id, error }`。`f16To32` 若在 embed.js 中定义，移到可共享的位置或在 worker 内保留唯一一份，不要两处各一份。
-- `embed.js` 的 `_loadOnnx()`：创建 `new Worker(new URL('./onnxWorker.js', import.meta.url), { workerData })`，等 `ready`（或 `fatal` → 抛错）；返回 `{ kind: 'onnx', ep, embed(texts, opts) → Promise<Float32Array[]>, dispose() → worker.terminate() }`。worker 意外退出时：所有挂起请求以错误结束，`this._runtime`、`this._loading` 置空，下次调用重新加载。`EmbedService` 在 `_runtime = null` 的已有位置（重新下载、导入、`dispose`）调用旧运行时的 `dispose`。
+- `embed.js` 的 `_loadOnnx()`：创建 `new Worker(new URL('./onnxWorker.js', import.meta.url), { workerData })`，等 `ready`（或 `fatal` → 抛错）；返回 `{ kind: 'onnx', ep, embed(texts, opts) → Promise<Float32Array[]>, dispose() }`。worker 意外退出时：所有挂起请求以错误结束，`this._runtime`、`this._loading` 置空，下次调用重新加载。`EmbedService` 在 `_runtime = null` 的已有位置（重新下载、导入、`dispose`）调用旧运行时的 `dispose`。
+- **禁止对 ONNX worker 调用 `worker.terminate()`**：worker 正处于 onnxruntime 原生 `session.run` 时被终止，会因未捕获的 `Napi::Error` 触发 `std::terminate`，整个后端进程 SIGABRT 退出（已实测，约 2/3 概率）。`dispose()` 改为**优雅关闭**：
+  - 主线程：该运行时此后的新 `embed` 调用立即以错误结束（调用方经 `EmbedService.ensureReady` 会重建新运行时）；已发出的请求照常等待结果；向 worker 发 `{ t: 'close' }`。60 秒后 worker 仍未退出则 `console.warn('[rag] ONNX worker 关闭超时（60s），保留线程')`，**仍不 terminate**。
+  - worker：所有消息按到达顺序串行处理（用一条 Promise 链），`close` 排在已收到的 `embed` 之后，执行到它时 `process.exit(0)`（此时不在原生调用中）。
+- worker 内的日志不得直接用 `console.*`（worker 的 console 不经过后端进程已接管的 console，写不进 backend.log）：用 `parentPort.postMessage({ t: 'log', level: 'info'|'warn'|'error', message })`，主线程收到后 `console[level === 'info' ? 'log' : level]('[rag] ' + message)`。EP 降级原因、会话加载耗时都按此上报。
 - 调用方（`server/rag/manager.js`）不改。
 
 ### 八、界面
@@ -325,8 +329,9 @@ export function pickFetch() // 托管（utilityProcess）时返回 require('elec
 - C3 托管模式下 `pickFetch().kind === 'electron-net'`（backend.log 记录），独立模式为 `node`。
 
 步骤 4：
-- D1 强制 onnx 后端（`WORKBENCH_RAG_EMBED=onnx`，已有 onnx 权重时）在 RAG 构建期间，后端看门狗（阈值 200ms）不出现标签为「向量推理」的 `[lag]` 行；同一查询的检索结果与改动前逐条一致（对比 `scripts/test-retrieval.mjs` 不受影响，另用固定 3 条文本比较向量前 8 维到 1e-6）。没有 onnx 权重时此条由验收方在具备权重的环境执行。
-- D2 杀掉 worker（测试钩子：`EmbedService` 暴露的运行时 `dispose` 后立即发起 embed）→ 当次报错，再次调用自动恢复。
+- D1 `node scripts/test-onnx-worker.mjs` 通过：用 `scripts/make-onnx-fixture.py` 生成的夹具模型（输入输出签名与 bge-m3 ONNX 相同，输出 float16）加真实 bge-m3 分词器，强制 `WORKBENCH_RAG_EMBED=onnx`。① 固定 3 条文本，新 worker 实现与旧同步实现的向量逐维差值 ≤ 1e-6；② 64 条约 500 字文本推理期间，主线程 20ms 定时器最大延迟 < 100ms（同负载下旧同步实现的最大延迟作为对照报告）。缺网络或缺 `uv` 是唯一允许的跳过条件。
+- D2 同一脚本：`dispose()` 后立即 `embed` 报错、再次调用自动恢复；worker 被 `terminate()` 时挂起请求报错、之后自动恢复。
+- D3 `node scripts/test-retrieval.mjs` 不受影响。
 
 ## 明确禁止
 
