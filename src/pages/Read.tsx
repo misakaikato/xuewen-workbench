@@ -7,6 +7,7 @@ import { Sparkles } from 'lucide-react';
 import { findSearchLocation, searchLocationRange, findAllRanges } from '@/lib/searchLocation';
 import { markDomFind, unmarkDomFind } from '@/lib/domFind';
 import { setFindHl } from '@/lib/readFindHighlight';
+import { perfInc } from '@/lib/perf';
 import { useApp } from '@/store/app';
 import { useReadingPrefs } from '@/lib/prefs';
 import { loadReadPos, saveReadPos, loadDraft, saveDraft, clearDraft } from '@/lib/drafts';
@@ -64,6 +65,7 @@ const txtReaderStyle = {
 interface TocItem { key: string; text: string; level: number; pos?: number; id?: string }
 
 export default function Read() {
+  perfInc('readRenders'); // 渲染计数（仅开发/e2e 钩子下存在）
   const params = useParams();
   const relPath = useMemo(() => decodeURIComponent(params['*'] || ''), [params]);
   const { dsId, config } = useApp();
@@ -87,8 +89,28 @@ export default function Read() {
   const [showPrefs, setShowPrefs] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findQ, setFindQ] = useState('');
+  const [findQEff, setFindQEff] = useState(''); // 150ms 防抖后的生效查询（大文档不逐键重算）
   const [findMode, setFindMode] = useState<'smart' | 'exact'>('smart');
   const [findHits, setFindHits] = useState(0);
+  useEffect(() => {
+    // 清空立即生效（关闭查找即清高亮，不等防抖）；非空查询 150ms 防抖，大文档不逐键重算
+    if (findQ === '') { setFindQEff(''); return; }
+    const t = setTimeout(() => setFindQEff(findQ), 150);
+    return () => clearTimeout(t);
+  }, [findQ]);
+  // 命中结果按（文档版本 + 查询词 + 模式）缓存：回车跳转不重算，输入防抖后也只算一次
+  const findCacheRef = useRef<{ doc: unknown; key: string; ranges: { from: number; to: number }[] } | null>(null);
+  const findRanges = useCallback((q: string, mode: 'smart' | 'exact') => {
+    const v = viewRef.current;
+    if (!v || !q) return [];
+    const doc = v.state.doc;
+    const key = mode + ':' + q;
+    const c = findCacheRef.current;
+    if (c && c.doc === doc && c.key === key) return c.ranges;
+    const ranges = findAllRanges(doc.toString(), q, mode === 'smart');
+    findCacheRef.current = { doc, key, ranges };
+    return ranges;
+  }, []);
   const [docNotes, setDocNotes] = useState<{ notePath: string; count: number; quotes?: { quote: string; anchor: string | null }[] }[]>([]);
   const [sel, setSel] = useState<{ text: string; x: number; y: number } | null>(null);
   useEffect(() => {
@@ -155,6 +177,30 @@ export default function Read() {
   const [conceptName, setConceptName] = useState<string | null>(null);
   // TXT 阅读正文的歧义链接候选弹层（md 的同类弹层在 ReadOnlyDoc 内部）
   const [txtCandReq, setTxtCandReq] = useState<PathListRequest | null>(null);
+  // 传给 memo 组件（TxtReadBody 等）的回调保持身份稳定，避免无谓重渲
+  const openDocPath = useCallback(
+    (p: string, heading?: string | null) => {
+      const nav = '/read/' + p.split('/').map(encodeURIComponent).join('/');
+      navigate(heading ? nav + '#' + encodeURIComponent(heading) : nav);
+    },
+    [navigate]
+  );
+  const onTxtOpenTarget = useCallback(
+    (t: { path: string; heading?: string | null }) => {
+      if (t.path.startsWith('concept:')) {
+        setConceptName(t.path.slice('concept:'.length));
+        return;
+      }
+      openDocPath(t.path, t.heading);
+    },
+    [openDocPath]
+  );
+  const onTxtCandidates = useCallback(
+    (term: string, candidates: string[], at: { x: number; y: number }) =>
+      setTxtCandReq({ title: `「${term}」指向 ${candidates.length} 个文档，请选择：`, paths: candidates, ...at }),
+    []
+  );
+  const onOpenNoteHref = useCallback((href: string) => navigate(href), [navigate]);
   const [aiWidth, setAiWidth] = useState(() => {
     const n = Number(localStorage.getItem('wb.read.aiWidth'));
     return Number.isFinite(n) && n >= 260 && n <= 720 ? n : 380;
@@ -193,29 +239,50 @@ export default function Read() {
   const findDomIdxRef = useRef(-1); // 非 markdown：DOM mark 循环游标
 
   // ---------- 原位编辑会话（与 Edit 页保存机制同源：原子写/备份/冲突/草稿） ----------
+  // 编辑缓冲区不进组件 state：按键只翻转 dirty 标志，内容需要时从 view 读取
   const [editing, setEditing] = useState(false);
-  const [editBuffer, setEditBuffer] = useState('');
   const [saveState, setSaveState] = useState<EditSaveState>('clean');
   const [saveMsg, setSaveMsg] = useState('');
   const [conflict, setConflict] = useState<{ current: string; currentMtimeMs: number } | null>(null);
   const [draftPrompt, setDraftPrompt] = useState<{ content: string; savedAt: number } | null>(null);
   const [lineSep, setLineSep] = useState<'\r\n' | '\n'>('\n');
-  const [fmtVer, setFmtVer] = useState(0);
   const baseTextRef = useRef('');
   const baseMtimeRef = useRef(0);
   const editingRef = useRef(false);
   editingRef.current = editing;
   const dirty = saveState === 'dirty' || saveState === 'error';
+  // saveState 镜像：按键路径上只做同值判断，避免无变化也走一遍 setState
+  const saveStateRef = useRef<EditSaveState>('clean');
+  useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
 
   const buffer = useCallback(
     () => (viewRef.current ? viewRef.current.state.sliceDoc(0) : file?.content || ''),
     [file]
   );
 
+  // 草稿防抖写入：按键路径只重置计时器，实际读文本在计时器触发时做
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const scheduleDraft = useCallback(() => {
+    if (!dsId) return;
+    clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = setTimeout(() => {
+      if (!editingRef.current) return;
+      const text = buffer();
+      if (text !== baseTextRef.current) saveDraft(dsId, relPath, text);
+    }, 1200);
+  }, [dsId, relPath, buffer]);
+  useEffect(() => () => clearTimeout(draftTimerRef.current), []);
+
   const onEditDocChanged = useCallback((exact: string) => {
-    setEditBuffer(exact);
-    setSaveState(exact === baseTextRef.current ? 'clean' : 'dirty');
-  }, []);
+    if (!editingRef.current) return; // 阅读态的外部刷新不算编辑（diffReplace 也产生 docChanged）
+    // 只在「干净 ⇄ 脏」翻转时 setState；其余按键完全不动 React
+    const next: EditSaveState = exact === baseTextRef.current ? 'clean' : 'dirty';
+    if (saveStateRef.current !== next) {
+      saveStateRef.current = next;
+      setSaveState(next);
+    }
+    scheduleDraft();
+  }, [scheduleDraft]);
 
   const performSave = useCallback(
     async (text: string, overrideMtime?: number) => {
@@ -322,7 +389,6 @@ export default function Read() {
     // 与进入时同理：补偿编辑条收起带来的布局位移
     const beforeTop = contentRef.current?.getBoundingClientRect().top;
     setEditing(false);
-    setEditBuffer('');
     setSaveMsg('');
     requestAnimationFrame(() => {
       const afterTop = contentRef.current?.getBoundingClientRect().top;
@@ -340,11 +406,10 @@ export default function Read() {
     if (editingRef.current && !follow) {
       // 非跟随导航到新文档：退出原位编辑（脏状态已被路由拦截器拦下）
       setEditing(false);
-      setEditBuffer('');
       setSaveState('clean');
       setSaveMsg('');
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 既有行为：切换文档时先清空
+
     setFile(null);
     setError(null);
     setDocLinks([]); // 上一文档的链接区间对新文档是非法坐标，必须先清（否则 field 里 lineAt 越界）
@@ -417,7 +482,7 @@ export default function Read() {
           .catch(() => {});
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [config?.status.scannedAt, dsId, relPath]);
 
   // 渲染后：markdown 走只读 CM（TOC 从源文扫，?h= 由组件内部装饰）；Word/JSON 沿用 DOM 标题/高亮
@@ -669,12 +734,7 @@ export default function Read() {
     return () => window.removeEventListener('keydown', onKey);
   }, [file, enterEdit, finishEdit, doSave]);
 
-  // 原位编辑：草稿自动保存（防抖）+ 关页保护 + 目录树操作前 flush
-  useEffect(() => {
-    if (!editing || !dirty || !dsId) return;
-    const t = setTimeout(() => saveDraft(dsId, relPath, editBuffer), 1200);
-    return () => clearTimeout(t);
-  }, [editing, dirty, dsId, relPath, editBuffer]);
+  // 原位编辑：草稿写入由 onEditDocChanged 的防抖计时器负责（scheduleDraft）；关页保护 + 目录树操作前 flush
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (editingRef.current && dirty) e.preventDefault();
@@ -723,10 +783,11 @@ export default function Read() {
   useEffect(() => {
     const v = viewRef.current;
     const isMd = file?.type === 'markdown';
-    if (!findQ) {
+    if (!findQEff) {
       setFindHits(0);
       lastFindRef.current = null;
       findDomIdxRef.current = -1;
+      findCacheRef.current = null;
       if (isMd && v) v.dispatch({ effects: setFindHl.of({ ranges: [], current: null }) });
       else if (contentRef.current) unmarkDomFind(contentRef.current);
       return;
@@ -734,7 +795,7 @@ export default function Read() {
     lastFindRef.current = null;
     findDomIdxRef.current = -1;
     if (isMd && v && scrollRef.current) {
-      const ranges = findAllRanges(v.state.doc.toString(), findQ, findMode === 'smart');
+      const ranges = findRanges(findQEff, findMode);
       setFindHits(ranges.length);
       const hit = ranges[0];
       v.dispatch({ effects: setFindHl.of({ ranges, current: hit || null }) });
@@ -747,21 +808,21 @@ export default function Read() {
     }
     const el = contentRef.current;
     if (!el) return;
-    const n = markDomFind(el, findQ, findMode === 'smart');
+    const n = markDomFind(el, findQEff, findMode === 'smart');
     setFindHits(n);
     const first = el.querySelector('mark.wb-find-hl');
     if (first) { findDomIdxRef.current = 0; first.classList.add('wb-find-current'); (first as HTMLElement).scrollIntoView({ block: 'center' }); }
     return () => unmarkDomFind(el);
-  }, [findQ, file, findMode, viewReady]);
+  }, [findQEff, file, findMode, viewReady, findRanges]);
 
-  // 查找条 Enter：下一个命中（到尾回绕）
+  // 查找条 Enter：下一个命中（到尾回绕）；命中集合走缓存，不重算
   const findNext = useCallback(() => {
-    if (!findQ) return;
+    if (!findQEff) return;
     const v = viewRef.current;
     const sc = scrollRef.current;
     if (file?.type === 'markdown') {
       if (!v || !sc) return;
-      const ranges = findAllRanges(v.state.doc.toString(), findQ, findMode === 'smart');
+      const ranges = findRanges(findQEff, findMode);
       const from = lastFindRef.current ? lastFindRef.current.to : 0;
       const hit = ranges.find((r) => r.from >= from) || ranges[0];
       if (hit) {
@@ -781,7 +842,7 @@ export default function Read() {
     const current = marks.filter((m) => m.dataset.findIndex === String(findDomIdxRef.current));
     current.forEach((m) => m.classList.add('wb-find-current'));
     current[0]?.scrollIntoView({ block: 'center' });
-  }, [findQ, file, findMode]);
+  }, [findQEff, file, findMode, findRanges]);
 
   // 划线：选中正文后在选区旁浮出「记笔记」按钮
   useEffect(() => {
@@ -894,7 +955,7 @@ export default function Read() {
               data-wb-inplace-bar
             >
               <div className="flex-1 min-w-0">
-                {file.type === 'markdown' && <FormatToolbar view={viewRef.current} version={fmtVer} />}
+                {file.type === 'markdown' && <FormatToolbar view={viewRef.current} />}
               </div>
               <span
                 className={`text-xs px-2 py-0.5 rounded-full border shrink-0 ${
@@ -1178,9 +1239,6 @@ export default function Read() {
                 editing={editing}
                 lineSep={lineSep}
                 onDocChanged={onEditDocChanged}
-                onViewUpdate={(u) => {
-                  if (u.docChanged || u.selectionSet) setFmtVer((x) => x + 1);
-                }}
                 onReady={(v) => {
                   viewRef.current = v;
                   setViewReady((s) => s + 1);
@@ -1208,18 +1266,9 @@ export default function Read() {
                   style={txtReaderStyle}
                   noteMarks={noteMarks}
                   highlightTerm={highlightTerm}
-                  onOpenNote={(href) => navigate(href)}
-                  onOpenTarget={(t) => {
-                    if (t.path.startsWith('concept:')) {
-                      setConceptName(t.path.slice('concept:'.length));
-                      return;
-                    }
-                    const nav = '/read/' + t.path.split('/').map(encodeURIComponent).join('/');
-                    navigate(t.heading ? nav + '#' + encodeURIComponent(t.heading) : nav);
-                  }}
-                  onCandidates={(term, candidates, at) =>
-                    setTxtCandReq({ title: `「${term}」指向 ${candidates.length} 个文档，请选择：`, paths: candidates, ...at })
-                  }
+                  onOpenNote={onOpenNoteHref}
+                  onOpenTarget={onTxtOpenTarget}
+                  onCandidates={onTxtCandidates}
                 />
               ))}
             {file.type === 'json' && <JsonViewer key={relPath} content={file.content || ''} highlightTerm={highlightTerm || hitText || findQ} />}

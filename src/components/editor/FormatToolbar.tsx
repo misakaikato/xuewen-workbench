@@ -1,10 +1,11 @@
 // 格式工具栏：论坛编辑器式按钮排。所有动作走 formatCommands（CodeMirror 事务）。
 // 按钮高亮由光标处语法树探测（在粗体里 B 高亮，再点一次取消）。
 // mousedown 一律阻默认：点按钮不抢编辑器焦点、不动光标。
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import type { EditorView } from '@codemirror/view';
 import { undo, redo } from '@codemirror/commands';
+import { subscribeViewUpdates } from './viewEvents';
 import {
   Bold, Italic, Strikethrough, Code, Heading2,
   List, ListOrdered, ListTodo, TextQuote, Minus, Link2, Image as ImageIcon,
@@ -48,8 +49,15 @@ function Sep() {
 const inputCls =
   'w-full border border-input bg-background rounded px-2 py-1.5 text-sm outline-none focus:border-ring mb-2';
 
-export function FormatToolbar({ view, version }: { view: EditorView | null; version: number }) {
-  void version; // 仅用于触发重渲染（选区/文档变化时由父组件递增）
+// 激活态由工具栏自己订阅编辑器更新（局部 state），父组件不再随光标移动整页重渲
+export function FormatToolbar({ view }: { view: EditorView | null }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!view) return;
+    return subscribeViewUpdates(view, (u) => {
+      if (u.docChanged || u.selectionSet) setTick((t) => t + 1);
+    });
+  }, [view]);
   const [menu, setMenu] = useState<'h' | 'link' | 'image' | null>(null);
   const [linkInfo, setLinkInfo] = useState<LinkInfo | null>(null);
   const [selText, setSelText] = useState('');

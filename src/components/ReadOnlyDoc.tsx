@@ -149,11 +149,13 @@ export function ReadOnlyDoc({
   onDocChangedRef.current = onDocChanged;
   const onViewUpdateRef = useRef(onViewUpdate);
   onViewUpdateRef.current = onViewUpdate;
-  const vuListenerRef = useRef(
-    EditorView.updateListener.of((u) => {
+  // 统一更新入口：经 CodeMirrorEditor 的唯一 updateListener 调用（不再另挂第二个监听器）
+  const onUpdate = useCallback(
+    (u: ViewUpdate) => {
       if (u.docChanged) onDocChangedRef.current?.(u.state.sliceDoc(0));
       onViewUpdateRef.current?.(u);
-    })
+    },
+    []
   );
 
   const extensions = useMemo<Extension[]>(() => {
@@ -173,7 +175,7 @@ export function ReadOnlyDoc({
       findHlField,
     ];
     if (editing) {
-      stack.push(...editorBaseExtensions({ lineNumbers: false, foldGutter: false }), vuListenerRef.current);
+      stack.push(...editorBaseExtensions({ lineNumbers: false, foldGutter: false }));
     } else {
       stack.push(EditorView.editable.of(false), EditorState.readOnly.of(true), copyAsRendered());
     }
@@ -208,11 +210,11 @@ export function ReadOnlyDoc({
       <CodeMirrorEditor
         initialDoc={content}
         extensions={extensions}
+        onUpdate={onUpdate}
         onCreate={(v) => {
           viewRef.current = v;
           onReady?.(v);
         }}
-        onDocChanged={onDocChanged}
         height="auto"
         ariaLabel="文档阅读器"
       />

@@ -1,7 +1,8 @@
 // 应用级上下文：知识库配置、扫描状态、目录树。支持多知识库并行，
 // 当前库由 activeId 决定；所有请求经 api 作用域携带 ds，切库后统一重取并丢弃旧库响应。
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, setApiScope } from '@/lib/api';
+import { usePolling } from '@/hooks/usePolling';
 import type { ConfigResponse, LibraryInfo, TreeNode, UpdateState } from '@/lib/types';
 
 interface AppState {
@@ -27,6 +28,21 @@ const Ctx = createContext<AppState>({
   refreshConfig: async () => {}, refreshTree: async () => {}, rescan: async () => {},
   activateLib: async () => {}, removeLib: async () => {},
 });
+
+// 更新状态内容相同则视为未变（服务端每次返回新对象，身份相同但字段不变不应触发整树重渲）
+function sameUpdate(a: UpdateState | null, b: UpdateState | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.enabled === b.enabled &&
+    a.status === b.status &&
+    a.currentVersion === b.currentVersion &&
+    a.error === b.error &&
+    (a.info?.version ?? null) === (b.info?.version ?? null) &&
+    (a.progress?.percent ?? null) === (b.progress?.percent ?? null) &&
+    (a.progress?.transferred ?? null) === (b.progress?.transferred ?? null)
+  );
+}
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
@@ -98,30 +114,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     refreshConfig().catch(() => setLoading(false));
-    // 轮询扫描状态（文件监听触发服务端重扫后同步前端；多库时看各库 scannedAt）
-    const timer = setInterval(async () => {
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在挂载时执行
+  }, []);
+
+  // 轮询扫描状态（文件监听触发服务端重扫后同步前端；多库时看各库 scannedAt）。
+  // 页面隐藏时暂停（usePolling），回到可见立即补拉。
+  usePolling(() => {
+    (async () => {
       try {
         const st = await api.status();
-        setUpdate(st.update ?? null); // 更新状态搭同一班车（规格：不新增请求循环）
+        setUpdate((prev) => (sameUpdate(prev, st.update ?? null) ? prev : (st.update ?? null))); // 更新状态搭同一班车（规格：不新增请求循环）
         const active = config?.dsId ? st.libs?.[config.dsId] : null;
         if (active?.scannedAt && config?.status.scannedAt && active.scannedAt !== config.status.scannedAt) {
           await refreshConfig();
         }
       } catch { /* 后端未就绪时忽略 */ }
-    }, 5000);
-    return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config?.dsId, config?.status.scannedAt]);
+    })();
+  }, 5000);
 
-  return (
-    <Ctx.Provider value={{
-      config, libraries: config?.libraries ?? [], tree, loading, dsId: config?.dsId ?? null,
-      update, scanning, applyUpdate: setUpdate,
+  const libraries = useMemo(() => config?.libraries ?? [], [config]);
+  const dsId = config?.dsId ?? null;
+  const value = useMemo<AppState>(
+    () => ({
+      config, libraries, tree, loading, dsId, update, scanning, applyUpdate: setUpdate,
       refreshConfig, refreshTree, rescan, activateLib, removeLib,
-    }}>
-      {children}
-    </Ctx.Provider>
+    }),
+    [config, libraries, tree, loading, dsId, update, scanning, refreshConfig, refreshTree, rescan, activateLib, removeLib]
   );
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
 export function useApp() {

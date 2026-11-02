@@ -21,6 +21,9 @@ const setDocLinks = StateEffect.define<{ links: DocLink[]; seq: number }>();
 interface AlState {
   links: DocLink[];
   seq: number;
+  /** 只在 setDocLinks（服务端数据到达）时自增；文档变更仅做位置映射，选区变化不触碰。
+      下游（corpusRefs / livePreview 表格）按 version 判断「链接语义是否变了」，不再按对象身份。 */
+  version: number;
   deco: DecorationSet;
 }
 
@@ -63,11 +66,12 @@ function buildDecorations(links: DocLink[], state: EditorState): DecorationSet {
 // 供 corpusRefs 等扩展查询词条装饰区间，避免同一文本双重标记
 export const alField = StateField.define<AlState>({
   create() {
-    return { links: [], seq: 0, deco: Decoration.none };
+    return { links: [], seq: 0, version: 0, deco: Decoration.none };
   },
   update(value, tr) {
     let links = value.links;
     let seq = value.seq;
+    let version = value.version;
     let rebuild = false;
     for (const e of tr.effects) {
       if (e.is(setDocLinks)) {
@@ -75,6 +79,7 @@ export const alField = StateField.define<AlState>({
         // 这里再拦一层，避免旧文档坐标直接炸 lineAt / mapPos）
         links = e.value.links.filter((l) => l.from >= 0 && l.to <= tr.state.doc.length);
         seq = e.value.seq;
+        version++;
         rebuild = true;
       }
     }
@@ -95,11 +100,12 @@ export const alField = StateField.define<AlState>({
         });
       rebuild = true;
     }
-    if (tr.selection) rebuild = true;
+    // 选区变化不重建：装饰与选区无关（全时渲染，光标行不揭示源码）
     if (!rebuild) return value;
     return {
       links,
       seq,
+      version,
       deco: buildDecorations(links, tr.state),
     };
   },

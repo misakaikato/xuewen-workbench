@@ -1145,9 +1145,13 @@ const lpTableField = StateField.define<DecorationSet>({
     return buildTableDecorations(state);
   },
   update(value, tr) {
-    if (tr.docChanged || tr.selection || tr.effects.some((e) => e.is(lpTreeRefresh)) ||
-        syntaxTree(tr.state) !== syntaxTree(tr.startState) ||
-        tr.state.field(alField, false) !== tr.startState.field(alField, false)) {
+    // 选区只在编辑态有意义（光标所在表格揭示源码）；只读态恒渲染，选区变化不重算。
+    // 内链按 version 比较：文档变更只做位置映射，按键/选区不会把「链接没变」误判为变了。
+    const ro = tr.state.facet(lpReadOnly);
+    const alChanged =
+      tr.state.field(alField, false)?.version !== tr.startState.field(alField, false)?.version;
+    if (tr.docChanged || (tr.selection && !ro) || tr.effects.some((e) => e.is(lpTreeRefresh)) ||
+        syntaxTree(tr.state) !== syntaxTree(tr.startState) || alChanged) {
       return buildTableDecorations(tr.state);
     }
     return value;

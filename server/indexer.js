@@ -32,21 +32,26 @@ export class Indexer {
       const CONCURRENCY = 8;
       const queue = [...this.files];
       const workers = Array.from({ length: CONCURRENCY }, async () => {
+        let sliceStart = Date.now();
         while (queue.length) {
           const f = queue.shift();
-          const abs = path.join(this.baseDir, f.path);
           try {
             if (f.ext === '.md' || f.ext === '.json' || f.ext === '.txt' || f.ext === '.html' || f.ext === '.htm') {
               // 与前端 CodeMirror 的文档表示逐字符对齐：剥 BOM、纯 CRLF 归一为 LF、
               // 孤立 \r 与混用文档里的 \r 保留；非 UTF-8 经 decodeText 正确解码。
-              const { content } = decodeText(fs.readFileSync(abs));
+              const { content } = decodeText(fs.readFileSync(path.join(this.baseDir, f.path)));
               this.texts.set(f.path, toEditorText(content));
             } else {
-              const t = await extractWordText(this.dsId, abs, f.path, f.mtimeMs);
+              const t = await extractWordText(this.dsId, path.join(this.baseDir, f.path), f.path, f.mtimeMs);
               if (t !== null) this.texts.set(f.path, t);
             }
           } catch {
             // 单个文件读取失败不阻塞整体索引
+          }
+          // 每处理完一个文件检查已用时间，超过 30ms 让出事件循环（结果与顺序不变）
+          if (Date.now() - sliceStart > 30) {
+            await new Promise((r) => setImmediate(r));
+            sliceStart = Date.now();
           }
         }
       });

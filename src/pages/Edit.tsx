@@ -74,7 +74,8 @@ export default function Edit() {
 
   const [file, setFile] = useState<FilePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [content, setContent] = useState(''); // 精确文本（含 CRLF 等，与磁盘字节一致）
+  const [content, setContent] = useState(''); // 载入的精确文本（含 CRLF）；编辑中不逐键更新，内容从 view 读取
+  const contentRef = useRef(''); // view 未就绪时 buffer() 的兜底
   const [previewContent, setPreviewContent] = useState(''); // 分栏/预览面板的防抖文本（300ms）
   const [saveState, setSaveState] = useState<SaveState>('clean');
   const [saveMsg, setSaveMsg] = useState('');
@@ -99,13 +100,8 @@ export default function Edit() {
   const [showBacklinks, setShowBacklinks] = useState(false);
   const splitPreviewRef = useRef<HTMLDivElement | null>(null);
   const syncLockRef = useRef(0);
-  // 工具栏重渲染触发：选区/文档变化时递增版本（扩展身份稳定，随 reconfigure 复用）
-  const [fmtVer, setFmtVer] = useState(0);
-  const fmtListenerRef = useRef(
-    EditorView.updateListener.of((u) => {
-      if (u.docChanged || u.selectionSet) setFmtVer((v) => v + 1);
-    })
-  );
+  // 工具栏在编辑器实例创建后需要一次重渲拿到 view；激活态刷新由 FormatToolbar 自订阅（viewEvents）
+  const [, setViewVer] = useState(0);
 
   const isJson = file?.type === 'json';
   const isTxt = file?.type === 'text'; // 纯文本：与 JSON 同待遇恒源码，无格式校验
@@ -120,18 +116,64 @@ export default function Edit() {
 
   // 缓冲区当前精确文本（保存与脏检测都以此为准，避免 React 状态滞后）
   const buffer = useCallback(
-    () => (viewRef.current ? viewRef.current.state.sliceDoc(0) : content),
-    [content]
+    () => (viewRef.current ? viewRef.current.state.sliceDoc(0) : contentRef.current),
+    []
   );
+
+  // 草稿与预览的防抖计时器：按键路径只重置计时器，取文本在触发时做
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const dsIdRef = useRef(dsId);
+  dsIdRef.current = dsId;
+  useEffect(() => () => {
+    clearTimeout(draftTimerRef.current);
+    clearTimeout(previewTimerRef.current);
+  }, []);
+
+  const validateJson = useCallback(
+    (text: string): boolean => {
+      if (!isJson) return true;
+      try {
+        JSON.parse(text);
+        setJsonError(null);
+        return true;
+      } catch (e) {
+        setJsonError((e as Error).message);
+        return false;
+      }
+    },
+    [isJson]
+  );
+
+  const scheduleDraft = useCallback(() => {
+    clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = setTimeout(() => {
+      const text = buffer();
+      if (text !== baseTextRef.current && dsIdRef.current) saveDraft(dsIdRef.current, pathRef.current, text);
+    }, 1200);
+  }, [buffer]);
+
+  // 预览面板内容防抖 300ms：输入时不逐键重排整篇（内链装饰只在变化段外保留）；JSON 校验随预览一起做
+  const schedulePreview = useCallback(() => {
+    clearTimeout(previewTimerRef.current);
+    previewTimerRef.current = setTimeout(() => {
+      const text = buffer();
+      setPreviewContent(text);
+      if (isJsonRef.current) validateJson(text);
+    }, 300);
+  }, [buffer, validateJson]);
 
   const onDocChanged = useCallback(
     (exact: string) => {
-      setContent(exact);
-      setSaveState(exact === baseTextRef.current ? 'clean' : 'dirty');
-      if (isJson) validateJson(exact);
+      // 只在「干净 ⇄ 脏」翻转时 setState；同值返回自身不触发重渲
+      setSaveState((s) => {
+        const next: SaveState = exact === baseTextRef.current ? 'clean' : 'dirty';
+        return s === next ? s : next;
+      });
+      scheduleDraft();
+      schedulePreview();
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isJson]
+    [scheduleDraft, schedulePreview]
   );
 
   // 编辑器滚动比例（阅读↔编辑往返延续用）
@@ -190,23 +232,8 @@ export default function Edit() {
       left.removeEventListener('scroll', onLeft);
       right.removeEventListener('scroll', onRight);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effMode, loadSeq]);
 
-  const validateJson = useCallback(
-    (text: string): boolean => {
-      if (!isJson) return true;
-      try {
-        JSON.parse(text);
-        setJsonError(null);
-        return true;
-      } catch (e) {
-        setJsonError((e as Error).message);
-        return false;
-      }
-    },
-    [isJson]
-  );
+  }, [effMode, loadSeq]);
 
   // 加载文件 + 草稿检测（草稿不自动进入编辑，由用户选择恢复）。
   // wbFollow 到达的新路径 = 本文档被重命名/移动：只重绑路径与 mtime 基准，
@@ -219,6 +246,12 @@ export default function Edit() {
     const rebind =
       everLoadedRef.current && from !== null && from !== relPath &&
       (location.state as { wbFollow?: boolean } | null)?.wbFollow === true;
+    if (!rebind) {
+      // 切换/首次加载：丢弃上一篇尚未触发的草稿与预览计时器，
+      // 否则其触发时会以新路径保存旧文本（新内容载入前 buffer() 仍是旧文）
+      clearTimeout(draftTimerRef.current);
+      clearTimeout(previewTimerRef.current);
+    }
     api.file(relPath)
       .then((f) => {
         if (dead) return;
@@ -237,6 +270,7 @@ export default function Edit() {
         if (draft && draft.content !== f.content) setDraftPrompt(draft);
         const text = f.content || '';
         setContent(text);
+        contentRef.current = text;
         setPreviewContent(text);
         baseTextRef.current = text;
         setLineSep(detectLineSeparator(text));
@@ -256,18 +290,7 @@ export default function Edit() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dsId, relPath]);
 
-  // 草稿自动保存（防抖）
-  useEffect(() => {
-    if (!dirty || !dsId) return;
-    const t = setTimeout(() => saveDraft(dsId, relPath, content), 1200);
-    return () => clearTimeout(t);
-  }, [content, dirty, dsId, relPath]);
-
-  // 预览面板内容防抖 300ms：输入时不逐键重排整篇（内链装饰只在变化段外保留）
-  useEffect(() => {
-    const t = setTimeout(() => setPreviewContent(content), 300);
-    return () => clearTimeout(t);
-  }, [content]);
+  // 草稿与预览防抖写入由 onDocChanged 的计时器负责（scheduleDraft / schedulePreview）
 
   // 关闭页面保护
   useEffect(() => {
@@ -390,7 +413,10 @@ export default function Edit() {
   const replaceBuffer = useCallback((text: string) => {
     const v = viewRef.current;
     if (v) v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text } });
-    else setContent(text);
+    else {
+      contentRef.current = text;
+      setContent(text);
+    }
   }, []);
 
   // 登记为“打开中的文档”：目录树重命名/移动前会先 flush
@@ -497,7 +523,6 @@ export default function Edit() {
   const extensions = useMemo<Extension[]>(() => {
     const list: Extension[] = [
       EditorState.lineSeparator.of(lineSep),
-      fmtListenerRef.current,
       dropInsertExtRef.current,
       ...editorBaseExtensions({ lineNumbers: !isLive, foldGutter: !isLive }),
     ];
@@ -555,7 +580,7 @@ export default function Edit() {
       extensions={extensions}
       onCreate={(v) => {
         viewRef.current = v;
-        setFmtVer((x) => x + 1);
+        setViewVer((x) => x + 1);
       }}
       onDocChanged={onDocChanged}
     />
@@ -672,7 +697,7 @@ export default function Edit() {
 
       {/* 编辑区 */}
       <div className="flex-1 min-h-0 flex flex-col">
-        {isLive && <FormatToolbar view={viewRef.current} version={fmtVer} />}
+        {isLive && <FormatToolbar view={viewRef.current} />}
         <div className="flex-1 min-h-0 flex">
           {effMode !== 'preview' && (
             <div className={`min-w-0 ${effMode === 'split' ? 'w-1/2 border-r border-border' : 'flex-1'}`}>{editorEl}</div>

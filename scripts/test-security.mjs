@@ -404,6 +404,18 @@ await put('/api/agent/settings', { baseUrl: FAKE_BASE, model: 'test-model', apiK
   check('④ confirm 模式 read 库外被拒（历史无秘密）', !JSON.stringify(hist.body).includes('SECRET-CONTENT-12345'), '');
 }
 
+// ---------- S11 Word 资产路由标识校验（P3） ----------
+console.log('S11 Word 资产路由');
+{
+  const cases = ['..', '.', '../x'];
+  for (const key of cases) {
+    const r = await j('/api/word/asset?key=' + encodeURIComponent(key) + '&name=img-1.png');
+    check(`S11 key=${key} → 400`, r.status === 400, String(r.status));
+  }
+  const bad = await j('/api/word/asset?key=' + encodeURIComponent('0123456789abcdef0123456789abcdef01234567-1') + '&name=img-1.svg');
+  check('S11 非白名单扩展名 → 400/404', bad.status === 400 || bad.status === 404, String(bad.status));
+}
+
 // ---------- 收尾 ----------
 await kill(server);
 fakeServer.close();

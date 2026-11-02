@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { RagStatus, RagConfig } from '@/lib/api';
 import { useApp } from '@/store/app';
+import { usePolling } from '@/hooks/usePolling';
 import { extIcon } from '@/lib/extIcon';
 import { Download, FolderInput, Play, Pause, RotateCcw, Cpu, Zap, FlaskConical, CheckCircle2, AlertTriangle, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -64,9 +65,8 @@ export default function RagManage() {
   const downloading = st?.model?.state === 'downloading';
   useEffect(() => {
     poll();
-    const t = setInterval(poll, downloading ? 1000 : 5000);
-    return () => clearInterval(t);
-  }, [poll, dsId, downloading]);
+  }, [poll, dsId]);
+  usePolling(() => { poll(); }, downloading ? 1000 : 5000, { enabled: !!dsId });
 
   useEffect(() => {
     api.ragConfigGet().then((r) => setCfg(r.config)).catch(() => {});

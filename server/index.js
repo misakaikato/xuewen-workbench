@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir, renameWithRetry } from './store.js';
+import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir, renameWithRetry, cacheDir } from './store.js';
 import { isWithin } from './paths.js';
 import { caseRenameAction } from './renamePlan.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
@@ -1481,7 +1481,8 @@ app.get('/api/links/counts', (req, res) => {
   for (const [target, srcs] of lib.linkIndex.backlinks) {
     if (srcs.size) counts[target] = srcs.size;
   }
-  res.json({ dsId: lib.id, counts });
+  // 索引冷启动异步构建，未就绪时 counts 为空；前端据 ready 决定是否补拉
+  res.json({ dsId: lib.id, ready: lib.linkIndex.ready, counts });
 });
 
 app.get('/api/links/terms', (req, res) => {
@@ -1804,6 +1805,35 @@ app.get('/api/tags/doc', (req, res) => {
 
 app.get('/api/word-capability', async (req, res) => {
   res.json(await wordCapability());
+});
+
+// Word 预览图片（转换时外置到 word-assets，HTML 只引用此接口）。
+// key/name 必须与实际生成格式严格匹配（key=<路径 sha1>-<mtime>，name=img-<n>.<ext>），
+// 拒绝 `..` 等 traversing 值；路径校验对 word-assets 根目录做 isWithin 双保险；
+// 目录名含 mtime，内容不变 → immutable 长缓存。
+const WORD_ASSET_TYPES = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+};
+const WORD_ASSET_KEY = /^[0-9a-f]{40}-\d+(\.\d+)?$/;
+const WORD_ASSET_NAME = /^img-\d+\.(png|jpeg|gif|webp|bmp)$/;
+app.get('/api/word/asset', (req, res) => {
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const key = String(req.query.key || '');
+  const name = String(req.query.name || '');
+  if (!WORD_ASSET_KEY.test(key) || !WORD_ASSET_NAME.test(name)) {
+    return res.status(400).json({ error: '非法的资产标识' });
+  }
+  const ct = WORD_ASSET_TYPES[path.extname(name).toLowerCase()];
+  if (!ct) return res.status(404).json({ error: '不支持的资产类型' });
+  const root = path.join(cacheDir(lib.id), 'word-assets');
+  const abs = path.join(root, key, name);
+  if (!isWithin(abs, root)) return res.status(403).json({ error: '路径越界' });
+  if (!fs.existsSync(abs)) return res.status(404).json({ error: '资产不存在' });
+  res.setHeader('Content-Type', ct);
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  fs.createReadStream(abs).on('error', () => res.destroy()).pipe(res);
 });
 
 // ---------- 日志上报与诊断包（只导出不上传） ----------

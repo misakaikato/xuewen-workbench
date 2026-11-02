@@ -308,6 +308,34 @@ process.exit(0);
   delete process.env.FAKE_SOFFICE_NO_OUTPUT;
 }
 
+// ---------- P3 回归：Word 缓存格式版本（旧内嵌 data URI 缓存不命中） ----------
+console.log('P3 Word 缓存版本失效');
+{
+  const AdmZip = (await import('adm-zip')).default;
+  const { createHash } = await import('node:crypto');
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+  const zip = new AdmZip();
+  zip.addFile('[Content_Types].xml', Buffer.from('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'));
+  zip.addFile('_rels/.rels', Buffer.from('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'));
+  zip.addFile('word/document.xml', Buffer.from('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body><w:p><w:r><w:t>带图文档</w:t></w:r></w:p><w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="914400" cy="914400"/><wp:docPr id="1" name="图1"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="图1"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdImg"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>'));
+  zip.addFile('word/_rels/document.xml.rels', Buffer.from('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/></Relationships>'));
+  zip.addFile('word/media/image1.png', png);
+  const dir = fs.mkdtempSync(path.join(tmp, 'p3-'));
+  const docxPath = path.join(dir, '带图.docx');
+  fs.writeFileSync(docxPath, zip.toBuffer());
+  // 写入无版本号的旧格式缓存（mtime 与文件一致，仅缺 v 字段）：不应命中
+  const rel = '带图.docx';
+  const key = createHash('sha1').update(rel).digest('hex');
+  const cacheFile = path.join(process.env.WORKBENCH_DATA_DIR, 'knowledge', 'p3word', 'cache', 'word-' + key + '.json');
+  fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+  const st = fs.statSync(docxPath);
+  fs.writeFileSync(cacheFile, JSON.stringify({ mtimeMs: st.mtimeMs, result: { html: '<p>旧</p><img src="data:image/png;base64,' + png.toString('base64') + '">', text: '旧', engine: 'mammoth' } }));
+  const { parseWord } = await import('../server/word.js');
+  const r = await parseWord('p3word', docxPath, rel, st.mtimeMs);
+  check('P3 旧格式缓存不命中（重新解析）', !r.html.includes('data:image'), (r.html || '').slice(0, 120));
+  check('P3 图片外置引用资产接口', r.html.includes('/api/word/asset'), '');
+}
+
 // ---------- HTTP 侧（R10 / R12 / R1d） ----------
 function spawnBackend(dataDir, port, extraEnv = {}) {
   const proc = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {

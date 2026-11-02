@@ -135,9 +135,13 @@ async function main() {
   const onAttrs = await exec(`(() => { const bad = []; for (const el of document.querySelectorAll('*')) { for (const a of el.attributes) { if (/^on/i.test(a.name)) bad.push(a.name); } } return bad; })()`);
   check('无 on* 属性的元素', onAttrs.length === 0, JSON.stringify(onAttrs));
 
-  // ② 内嵌图片保留且已加载
-  const imgOk = await exec(`(() => [...document.querySelectorAll('img')].some((i) => i.src.startsWith('data:image/') && i.naturalWidth > 0))()`);
-  check('保留 data:image 图片且已加载', imgOk === true, String(imgOk));
+  // ② 内嵌图片保留且已加载：P3 后图片外置为 /api/word/asset（HTML 引用接口而非内嵌 data URI），
+  //    同时 /api/file 响应不含 data:image。等待图片真正加载完成再断言。
+  await waitFor(`(() => [...document.querySelectorAll('img')].some((i) => (i.getAttribute('src') || '').startsWith('/api/word/asset?') && i.complete === true && i.naturalWidth > 0))()`, '内嵌图片经资产接口加载');
+  const imgOk = await exec(`(() => [...document.querySelectorAll('img')].some((i) => (i.getAttribute('src') || '').startsWith('/api/word/asset?') && i.complete === true && i.naturalWidth > 0))()`);
+  check('内嵌图片保留且已加载（外置为 /api/word/asset）', imgOk === true, String(imgOk));
+  const fileJson = JSON.stringify(await (await fetch(BASE + '/api/file?path=' + encodeURIComponent('evil.docx'))).json());
+  check('/api/file 响应不含 data:image', !fileJson.includes('data:image'), '');
 
   // ③ 真实点击超链接，等待后库中不应出现 xss-proof.md
   const rect = await exec(`(() => { const a = [...document.querySelectorAll('a')].find((x) => x.textContent.includes('点我领奖')); if (!a) return null; const r = a.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);

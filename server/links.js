@@ -119,8 +119,9 @@ export class LinkIndex {
 
   // ---------- 词条表构建 ----------
 
-  // 从快照 + 旁注 + 内存文本构建词条原始条目；同时得到标题/摘录/标题锚点/旁注 id
-  collectVocab(snapshot, texts) {
+  // 从快照 + 旁注 + 内存文本构建词条原始条目；同时得到标题/摘录/标题锚点/旁注 id。
+  // 逐文件处理，超过 30ms 让出事件循环（结果与顺序不变）。
+  async collectVocab(snapshot, texts) {
     const entries = [];
     const sidecarIds = new Map();
     const fileMeta = new Map(); // path -> {title, excerpt, headings}
@@ -158,6 +159,13 @@ export class LinkIndex {
     }
     // md 标题锚点（1–3 级）进入词条；记录各文档标题清单供 [[..#锚点]] 与预览用
     const headingDocs = new Map(); // normHeading -> Set<path>（仅统计用，不两处重复判定）
+    let sliceStart = Date.now();
+    const maybeYield = async () => {
+      if (Date.now() - sliceStart > 30) {
+        await new Promise((r) => setImmediate(r));
+        sliceStart = Date.now();
+      }
+    };
     for (const f of snapshot.files) {
       if (f.ext !== '.md') continue;
       const raw = texts.get(f.path);
@@ -169,6 +177,7 @@ export class LinkIndex {
       for (const h of fm.headings) {
         entries.push({ term: h.text, path: f.path, heading: h.text, kind: 'heading' });
       }
+      await maybeYield();
     }
     for (const f of snapshot.files) {
       const fm = fileMeta.get(f.path);
@@ -176,6 +185,7 @@ export class LinkIndex {
         const raw = texts.get(f.path);
         if (raw != null) fm.excerpt = plainExcerpt(raw.startsWith('\uFEFF') ? raw.slice(1) : raw);
       }
+      await maybeYield();
     }
     return { entries, sidecarIds, fileMeta };
     // 通用标题（≥2 个文档里都出现的同名标题）交给 buildAutoIndex：同名跨文档 → 歧义占位，
@@ -271,11 +281,13 @@ export class LinkIndex {
     return out;
   }
 
-  extractFor(p, text) {
+  // 分相位让出：extractLinks 全文扫描是大头，其后让出一次再做 wikilink 解析（结果与顺序不变）
+  async extractFor(p, text) {
     const out = [];
     for (const l of extractLinks(text, this.autoIndex, { selfPath: p })) {
       out.push({ from: l.from, to: l.to, term: l.term, norm: l.norm, kind: 'auto', target: l.target, candidates: l.candidates || null, display: null });
     }
+    if (text.length > 200000) await new Promise((r) => setImmediate(r));
     for (const w of extractWikilinks(text)) {
       const norm = normalizeText(w.name);
       const r = this.resolveWiki(w.name);
@@ -341,7 +353,7 @@ export class LinkIndex {
     try {
       const texts = indexer.texts;
       const blocklist = this.blocklist();
-      const { entries, sidecarIds, fileMeta } = this.collectVocab(snapshot, texts);
+      const { entries, sidecarIds, fileMeta } = await this.collectVocab(snapshot, texts);
       // 加工数据里的概念：概念名与别名也进词条表，target 用 concept: 前缀（前端据此打开概念详情）
       // 与文档词条同名时会被 buildAutoIndex 判为歧义而不链，属可接受行为
       try {
@@ -359,21 +371,20 @@ export class LinkIndex {
       this.buildResolve(entries, snapshot);
       // 词条展示表：norm -> 原始条目（同名同目标取首个，展示名保留原文）
       const normEntry = new Map();
+      const firstEntryByNorm = new Map(); // 歧义词条展示的 O(1) 查询（原嵌套循环为 O(歧义数×词条数)）
       for (const e of entries) {
-        const key = normalizeText(e.term) + '\u0000' + e.path + '\u0000' + (e.heading || '');
+        const norm0 = normalizeText(e.term);
+        const key = norm0 + '\u0000' + e.path + '\u0000' + (e.heading || '');
         if (!normEntry.has(key)) normEntry.set(key, e);
+        if (!firstEntryByNorm.has(norm0)) firstEntryByNorm.set(norm0, e);
       }
       this.vocab = [...this.autoIndex.byNorm.values()].map((it) => {
         const e = normEntry.get(it.norm + '\u0000' + it.targets[0].path + '\u0000' + (it.targets[0].heading || ''));
         return { term: e ? e.term : it.norm, path: it.targets[0].path, heading: it.targets[0].heading, ambiguous: false };
       });
       for (const norm of this.autoIndex.ambiguous) {
-        for (const [key, e] of normEntry) {
-          if (key.split('\u0000')[0] === norm) {
-            this.vocab.push({ term: e.term, path: null, heading: null, ambiguous: true });
-            break;
-          }
-        }
+        const e = firstEntryByNorm.get(norm);
+        if (e) this.vocab.push({ term: e.term, path: null, heading: null, ambiguous: true });
       }
 
       // 缓存：词表未变且 mtime/size 一致的文件复用旧结果
@@ -386,7 +397,7 @@ export class LinkIndex {
 
       const nextFiles = new Map();
       let changed = vocabChanged;
-      let count = 0;
+      let sliceStart = Date.now();
       for (const f of snapshot.files) {
         if (f.ext !== '.md' && f.ext !== '.json' && f.ext !== '.txt' && f.ext !== '.html' && f.ext !== '.htm') continue;
         const fm = fileMeta.get(f.path);
@@ -399,12 +410,16 @@ export class LinkIndex {
           const isHtml = f.ext === '.html' || f.ext === '.htm';
           nextFiles.set(f.path, {
             mtimeMs: f.mtimeMs, size: f.size,
-            links: isHtml ? this.extractHtmlFor(f.path, text) : this.extractFor(f.path, text),
+            links: isHtml ? this.extractHtmlFor(f.path, text) : await this.extractFor(f.path, text),
             title: fm.title, excerpt: fm.excerpt, headings: fm.headings,
           });
           changed = true;
         }
-        if (++count % 40 === 0) await new Promise((r) => setImmediate(r));
+        // 每处理完一个文件检查已用时间，超过 30ms 让出事件循环（结果与顺序不变）
+        if (Date.now() - sliceStart > 30) {
+          await new Promise((r) => setImmediate(r));
+          sliceStart = Date.now();
+        }
       }
       if (this.files.size !== nextFiles.size) changed = true;
       this.files = nextFiles;

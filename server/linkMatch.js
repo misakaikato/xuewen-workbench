@@ -582,11 +582,13 @@ export function extractLinks(text, autoIndex, opts = {}) {
 export function extractWikilinks(text) {
   const out = [];
   const re = /\[\[([^\[\]\r\n]*?)\]\]/g;
+  // 代码区间只算一遍（原来每个命中都从文件头重扫到命中点，O(命中数×全文)）
+  const codeRanges = computeCodeRanges(text);
   let m;
   while ((m = re.exec(text))) {
     const from = m.index;
     const to = from + m[0].length;
-    if (inCode(text, from)) continue;
+    if (inCodeRanges(codeRanges, from)) continue;
     let body = m[1];
     let display = null;
     const bar = body.indexOf('|');
@@ -623,21 +625,33 @@ export function wikiNameAt(text, pos) {
   return { name: after, from: open + 2 };
 }
 
-// 某位置是否在国栏代码或行内代码内（wikilink 在代码里不解析）
-function inCode(text, pos) {
+// 某位置是否在围栏代码或行内代码内（wikilink 在代码里不解析）
+// 代码区间预计算（围栏块 + 行内等长反引号配对）：
+// 开口标记行整体算代码内；闭口标记行整体算代码外；围栏体含在 [开口行起点, 闭口行起点) 内；
+// 未闭合围栏延伸到文末；行内配对区间为 [开run起点, 关run终点)。
+function computeCodeRanges(text) {
+  const ranges = [];
   let i = 0;
   let inFence = false;
-  while (i <= pos) {
+  let fenceStart = 0;
+  for (;;) {
     let eol = text.indexOf('\n', i);
     if (eol < 0) eol = text.length;
     let end = eol;
     if (end > i && text[end - 1] === '\r') end--;
     const line = text.slice(i, end);
-    if (/^ {0,3}(`{3,}|~{3,})/.test(line)) inFence = !inFence;
-    else if (inFence) {
-      // 国栏内
+    if (/^ {0,3}(`{3,}|~{3,})/.test(line)) {
+      if (!inFence) {
+        inFence = true;
+        fenceStart = i;
+      } else {
+        ranges.push([fenceStart, i]);
+        inFence = false;
+      }
+    } else if (inFence) {
+      // 国栏内（由区间覆盖）
     } else {
-      // 行内代码：等长反引号配对区间包含 pos 则在代码内（扫整行，避免截断满气配对）
+      // 行内代码：等长反引号配对区间（扫整行，避免截断满气配对）
       let j = 0;
       while (j < line.length) {
         if (line[j] === '`') {
@@ -657,7 +671,7 @@ function inCode(text, pos) {
             } else k++;
           }
           if (close >= 0) {
-            if (pos - i >= j && pos - i < close + run) return true;
+            ranges.push([i + j, i + close + run]);
             j = close + run; // 配对成功：既过开也过关，避免把关闭反引号再当开标记
           } else {
             j += run;
@@ -668,5 +682,23 @@ function inCode(text, pos) {
     if (eol >= text.length) break;
     i = eol + 1;
   }
-  return inFence;
+  if (inFence) ranges.push([fenceStart, text.length]);
+  return ranges;
+}
+
+// 二分查区间：pos 是否落在任一 [from, to) 代码区间内
+function inCodeRanges(ranges, pos) {
+  let lo = 0;
+  let hi = ranges.length - 1;
+  let last = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (ranges[mid][0] <= pos) {
+      last = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return last >= 0 && pos < ranges[last][1];
 }

@@ -1,5 +1,5 @@
 // 全局检索页：双模式（精确/智能 RAG）+ 类型/目录筛选、排除目录、结果按文件归并、命中高亮与定位
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { RagSearchResponse } from '@/lib/api';
@@ -23,8 +23,12 @@ interface SearchSession {
   terms: string[];
   total: number;
   scrollTop: number;
+  shown: number;
 }
 let searchSession: SearchSession | null = null;
+
+// 结果分批渲染的批大小
+const BATCH = 50;
 
 const TYPE_OPTIONS = [
   { v: '.md', label: 'Markdown' },
@@ -79,9 +83,13 @@ export default function Search() {
   const seqRef = useRef(0);
   const hydratedRef = useRef(false);
   const [composing, setComposing] = useState(false); // 输入法组字中：组字期间不发请求
+  // 结果分批渲染：先渲染前 BATCH 个文件分组，接近底部自动续批，已加载的不卸载
+  const [shown, setShown] = useState(BATCH);
+  const loadMore = useCallback(() => setShown((n) => n + BATCH), []);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   // 最新状态镜像：供卸载时保存会话读取（cleanup 闭包捕获的是旧渲染值）
-  const latestRef = useRef({ input, types, dir, mode, smartLimit, results, smart, terms, total, scroll: 0 });
-  latestRef.current = { input, types, dir, mode, smartLimit, results, smart, terms, total, scroll: latestRef.current.scroll };
+  const latestRef = useRef({ input, types, dir, mode, smartLimit, results, smart, terms, total, shown, scroll: 0 });
+  latestRef.current = { input, types, dir, mode, smartLimit, results, smart, terms, total, shown, scroll: latestRef.current.scroll };
 
   // 会话恢复：同一库同一查询返回时直接还原（跳过重新检索），并恢复滚动位置
   useEffect(() => {
@@ -100,6 +108,7 @@ export default function Search() {
       setSmart(c.smart);
       setTerms(c.terms);
       setTotal(c.total);
+      setShown(c.shown || BATCH); // 恢复已展开的批数，滚动位置才能落回
       hydratedRef.current = true;
       // 恢复滚动：等列表渲染出足够高度再落。不依赖 rAF（后台标签页会暂停帧回调），
       // 用短间隔定时器轮询，设足即停
@@ -131,6 +140,7 @@ export default function Search() {
         types: l.types, dir: l.dir, smartLimit: l.smartLimit,
         results: l.results, smart: l.smart, terms: l.terms, total: l.total,
         scrollTop: l.scroll,
+        shown: l.shown,
       };
     };
     return () => {
@@ -157,6 +167,7 @@ export default function Search() {
         if (m === 'smart') {
           const r = await api.ragSearch(query, smartLimit);
           if (seq !== seqRef.current) return;
+          setShown(BATCH); // 新结果集：回到首批渲染
           setSmart(r);
           setTotal(r.hits.length);
           // 智能模式高亮：查询词 + 简繁各一形态
@@ -164,6 +175,7 @@ export default function Search() {
         } else {
           const r = await api.search(query, { types: ty, dir: d });
           if (seq !== seqRef.current) return;
+          setShown(BATCH);
           setResults(r.results);
           setTerms(r.terms);
           setTotal(r.total);
@@ -196,6 +208,20 @@ export default function Search() {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input, types, dir, dsId, mode, smartLimit, composing]);
+
+  // 接近底部自动续批（rootMargin 提前预载，滚动到按钮前已加载好）
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const ob = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMore();
+      },
+      { rootMargin: '600px' }
+    );
+    ob.observe(el);
+    return () => ob.disconnect();
+  });
 
   // 仅当 URL 的 q 与当前输入（trim 后）不同时才回写输入框，避免清掉用户键入的尾随空格
   useEffect(() => { setInput((prev) => (q !== prev.trim() ? q : prev)); }, [q]);
@@ -345,7 +371,7 @@ export default function Search() {
 
       {mode === 'smart' && smart && smart.hits.length > 0 && (
         <ul className="space-y-3 wb-selectable">
-          {smart.hits.map((h, i) => (
+          {smart.hits.slice(0, shown).map((h, i) => (
             <li
               key={h.path + ':' + h.ordinal + ':' + i}
               className="bg-card border border-border rounded-lg p-3 cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all"
@@ -396,10 +422,18 @@ export default function Search() {
           )}
         </Button>
       )}
+      {mode === 'smart' && smart && smart.hits.length > shown && (
+        <>
+          <div ref={sentinelRef} className="h-1" />
+          <Button variant="outline" className="mt-3 w-full text-xs text-muted-foreground" onClick={loadMore}>
+            再显示 {BATCH} 个（剩余 {smart.hits.length - shown}）
+          </Button>
+        </>
+      )}
 
       {mode === 'exact' && (
       <ul className="space-y-3 wb-selectable">
-        {results.map((r) => (
+        {results.slice(0, shown).map((r) => (
           <li
             key={r.file.path}
             className="bg-card border border-border rounded-lg p-3 cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all"
@@ -431,6 +465,14 @@ export default function Search() {
           </li>
         ))}
       </ul>
+      )}
+      {mode === 'exact' && results.length > shown && (
+        <>
+          <div ref={sentinelRef} className="h-1" />
+          <Button variant="outline" className="mt-3 w-full text-xs text-muted-foreground" onClick={loadMore}>
+            再显示 {BATCH} 个（剩余 {results.length - shown}）
+          </Button>
+        </>
       )}
       {mode === 'exact' && total > 200 && <div className="text-xs text-muted-foreground mt-3">仅展示前 200 个文件，请细化关键词</div>}
       <div className="mt-6 text-xs text-muted-foreground">

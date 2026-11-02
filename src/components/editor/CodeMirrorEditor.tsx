@@ -8,11 +8,15 @@ import { useEffect, useRef } from 'react';
 import { EditorState, StateEffect } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
+import type { ViewUpdate } from '@codemirror/view';
+import { emitViewUpdate } from './viewEvents';
 
 export interface CodeMirrorEditorProps {
   initialDoc: string;
   extensions: Extension[];
   onDocChanged?: (exactText: string) => void;
+  /** 统一更新回调（文档+选区）；提供时替代 onDocChanged，避免双重 sliceDoc */
+  onUpdate?: (u: ViewUpdate) => void;
   onCreate?: (view: EditorView) => void;
   className?: string;
   ariaLabel?: string;
@@ -20,17 +24,24 @@ export interface CodeMirrorEditorProps {
   height?: string;
 }
 
-export function CodeMirrorEditor({ initialDoc, extensions, onDocChanged, onCreate, className, ariaLabel, height = '100%' }: CodeMirrorEditorProps) {
+export function CodeMirrorEditor({ initialDoc, extensions, onDocChanged, onUpdate, onCreate, className, ariaLabel, height = '100%' }: CodeMirrorEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const changedRef = useRef(onDocChanged);
   changedRef.current = onDocChanged;
-  // 文档变化监听：稳定扩展，建实例与每次 reconfigure 都带上。
+  const updateRef = useRef(onUpdate);
+  updateRef.current = onUpdate;
+  // 全实例唯一 updateListener：文档变化回调 + 更新广播（FormatToolbar 订阅）。
   // （StateEffect.reconfigure 会整体替换扩展配置，只在建实例时加的监听会被丢弃，
   // 导致重命名/模式切换后脏状态、草稿自动保存与离开拦截全部失效。）
   const listenerExtRef = useRef(
     EditorView.updateListener.of((vu) => {
-      if (vu.docChanged) changedRef.current?.(vu.state.sliceDoc(0));
+      emitViewUpdate(vu);
+      if (updateRef.current) {
+        updateRef.current(vu);
+      } else if (vu.docChanged) {
+        changedRef.current?.(vu.state.sliceDoc(0));
+      }
     })
   );
 

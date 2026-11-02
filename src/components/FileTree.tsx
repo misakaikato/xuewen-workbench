@@ -467,7 +467,7 @@ export function FileTree({
   const [searchParams] = useSearchParams();
   const currentDir = location.pathname === '/browse' ? searchParams.get('dir') || '' : null;
   const navigate = useNavigate();
-  const { refreshTree, dsId } = useApp();
+  const { refreshTree, dsId, config } = useApp();
   const [action, setAction] = useState<EntryAction | null>(null);
   const onActionDone = () => setAction(null);
   const [target, setTarget] = useState<CreateTarget | null>(null);
@@ -478,22 +478,44 @@ export function FileTree({
     if (kind === 'md') navigate('/edit/' + p.split('/').map(encodeURIComponent).join('/'));
   };
 
-  // 外部数据：元数据问题（徽标汇总 + 行内红点）、集合配置（集合视图 + 集合引用）、被引用计数
-  //（链接索引异步构建，空结果时 2.5s 后补拉一次）
+  // 外部数据：元数据问题（徽标汇总 + 行内红点）、集合配置（集合视图 + 集合引用）、被引用计数。
+  // 三个请求并发拉一次；请求失败时重试；链接索引未就绪时只补拉 counts；
+  // tree 变化或库重扫（scannedAt 变化）后重拉。
   const [metaIssues, setMetaIssues] = useState<MetaIssue[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [linkCounts, setLinkCounts] = useState<Record<string, number>>({});
+  const scannedAt = config?.status.scannedAt ?? null;
   useEffect(() => {
     let dead = false;
-    const pull = () => {
-      api.metaIssues().then((r) => { if (!dead) setMetaIssues(r.issues); }).catch(() => {});
-      api.collections().then((r) => { if (!dead) setCollections(r.collections); }).catch(() => {});
-      api.linkCounts().then((r) => { if (!dead) setLinkCounts(r.counts); }).catch(() => {});
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    // 链接索引冷启动异步构建：未就绪时 counts 为空但请求并不失败，只补拉 counts 直至就绪
+    const pullCounts = async (readyRetry: number) => {
+      try {
+        const r = await api.linkCounts();
+        if (dead) return;
+        setLinkCounts(r.counts);
+        if (r.ready === false && readyRetry < 10) {
+          retryTimer = setTimeout(() => { if (!dead) void pullCounts(readyRetry + 1); }, 2500);
+        }
+      } catch { /* 留给下一个 tree/scannedAt 信号重拉 */ }
     };
-    pull();
-    const t = setTimeout(pull, 2500);
-    return () => { dead = true; clearTimeout(t); };
-  }, [tree]);
+    const pull = async (retry: number) => {
+      const [mi, col, lc] = await Promise.allSettled([api.metaIssues(), api.collections(), api.linkCounts()]);
+      if (dead) return;
+      if (mi.status === 'fulfilled') setMetaIssues(mi.value.issues);
+      if (col.status === 'fulfilled') setCollections(col.value.collections);
+      if (lc.status === 'fulfilled') setLinkCounts(lc.value.counts);
+      const failed = mi.status === 'rejected' || col.status === 'rejected' || lc.status === 'rejected';
+      const indexPending = lc.status === 'fulfilled' && lc.value.ready === false;
+      if (failed && retry < 3) {
+        retryTimer = setTimeout(() => { if (!dead) void pull(retry + 1); }, 2500);
+      } else if (indexPending) {
+        retryTimer = setTimeout(() => { if (!dead) void pullCounts(1); }, 2500);
+      }
+    };
+    void pull(0);
+    return () => { dead = true; if (retryTimer) clearTimeout(retryTimer); };
+  }, [tree, scannedAt]);
   const metaMsgs = useMemo(() => {
     const m = new Map<string, string[]>();
     for (const it of metaIssues) {

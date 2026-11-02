@@ -13,6 +13,10 @@ export interface TxtLinkTarget {
   heading?: string | null;
 }
 
+// 正文按每 200 行一个分块容器渲染，块上 content-visibility: auto
+// （视口外跳过布局与绘制），文本与链接结构不变。
+const TXT_BLOCK_LINES = 200;
+
 interface NoteMark {
   quote: string;
   href: string;
@@ -42,6 +46,16 @@ function noteQueries(quote: string): string[] {
   return cands.filter((q) => q.length >= floor);
 }
 
+interface TxtSeg {
+  key: number;
+  from: number;
+  to: number;
+  text: string;
+  link?: DocLink;
+  noteHref?: string;
+  hl?: boolean;
+}
+
 export const TxtReadBody = memo(function TxtReadBody({
   content,
   links,
@@ -63,7 +77,10 @@ export const TxtReadBody = memo(function TxtReadBody({
 }) {
   const text = useMemo(() => toEditorText(content), [content]);
 
-  const segs = useMemo(() => {
+  // 切点与分块：链接 / 笔记 / 高亮区间，加上每 200 行的块边界。
+  // 块边界取行首偏移，落在链接区间内时顺延到链接结束（链接不跨块、不被切断）；
+  // 普通文本也在块边界处切开，保证无链接的文本同样分成多个 content-visibility 块。
+  const { blocks } = useMemo(() => {
     const linkSpans = links
       .filter((l) => !l.ignored && l.to > l.from && l.to <= text.length)
       .map((l) => ({ from: l.from, to: l.to, link: l }))
@@ -93,13 +110,26 @@ export const TxtReadBody = memo(function TxtReadBody({
       }
     }
 
+    // 块边界：每 200 行取行首偏移；被链接跨过的顺延到链接结束之后
+    const lineStarts = [0];
+    for (let i = 0; i < text.length; i++) if (text[i] === '\n') lineStarts.push(i + 1);
+    const blockBounds: number[] = [];
+    for (let b = TXT_BLOCK_LINES; b < lineStarts.length; b += TXT_BLOCK_LINES) {
+      let bound = lineStarts[b];
+      for (const l of linkSpans) {
+        if (l.from < bound && l.to > bound) bound = Math.max(bound, l.to);
+      }
+      blockBounds.push(bound);
+    }
+
     const cuts = new Set<number>([0, text.length]);
     for (const s of [...linkSpans, ...noteSpans, ...hlSpans]) {
       if (s.from >= 0 && s.from <= text.length) cuts.add(s.from);
       if (s.to >= 0 && s.to <= text.length) cuts.add(s.to);
     }
+    for (const b of blockBounds) cuts.add(b); // 普通文本在块边界处切开
     const points = [...cuts].sort((a, b) => a - b);
-    const out: { key: number; text: string; link?: DocLink; noteHref?: string; hl?: boolean }[] = [];
+    const out: TxtSeg[] = [];
     let key = 0;
     for (let i = 0; i < points.length - 1; i++) {
       const from = points[i];
@@ -111,60 +141,83 @@ export const TxtReadBody = memo(function TxtReadBody({
         // 标签替换仅在整个链接未被打断时有效（链接区间内的切点只会来自链接自身边界）
         const full = from === link.from && to === link.to;
         const label = full && link.link.kind !== 'auto' ? wikiLabel(raw) : null;
-        out.push({ key: key++, text: label ?? raw, link: link.link });
+        out.push({ key: key++, from, to, text: label ?? raw, link: link.link });
         continue;
       }
       const note = noteSpans.find((n) => n.from <= from && to <= n.to);
       const hl = hlSpans.some((h) => h.from <= from && to <= h.to);
-      out.push({ key: key++, text: text.slice(from, to), noteHref: note?.href, hl });
+      out.push({ key: key++, from, to, text: text.slice(from, to), noteHref: note?.href, hl });
     }
-    return out;
+
+    // 按边界归组（相邻边界重合时去重排序，避免空块）；末块含文末
+    const bounds = [...new Set([0, ...blockBounds, text.length])].sort((a, b) => a - b);
+    const grouped: (typeof out)[] = [];
+    let bi = 0;
+    let cur: typeof out = [];
+    for (const s of out) {
+      while (bi + 1 < bounds.length && s.from >= bounds[bi + 1]) {
+        grouped.push(cur);
+        cur = [];
+        bi++;
+      }
+      cur.push(s);
+    }
+    if (text.length) grouped.push(cur);
+    return { blocks: grouped };
   }, [text, links, noteMarks, highlightTerm]);
+
+  // 按边界归组后的分块渲染；pre-wrap 下块尾单个换行不产生空行，文本原样保留即可
+  const renderSeg = (s: TxtSeg) => {
+    const txt = s.text;
+    if (s.link) {
+      const l = s.link;
+      const missing = l.kind === 'wiki-missing' || (!l.target && !l.candidates?.length);
+      const cls = missing ? 'wb-wikilink-missing' : l.kind === 'auto' ? 'wb-autolink' : 'wb-wikilink';
+      return (
+        <span
+          key={s.key}
+          className={cls}
+          title={missing ? '未找到目标文档' : undefined}
+          onClick={(e) => {
+            if (missing) return;
+            if (l.target) {
+              onOpenTarget(l.target);
+            } else if (l.candidates?.length) {
+              onCandidates(l.term, l.candidates, { x: e.clientX, y: e.clientY });
+            }
+          }}
+        >
+          {txt}
+        </span>
+      );
+    }
+    if (s.noteHref) {
+      return (
+        <a
+          key={s.key}
+          className="cm-note-mark"
+          title="此处有笔记，点击查看"
+          href={s.noteHref}
+          onClick={(e) => {
+            e.preventDefault();
+            onOpenNote?.(s.noteHref!);
+          }}
+        >
+          {s.hl ? <mark>{txt}</mark> : txt}
+        </a>
+      );
+    }
+    if (s.hl) return <mark key={s.key}>{txt}</mark>;
+    return <span key={s.key}>{txt}</span>;
+  };
 
   return (
     <div className="whitespace-pre-wrap break-words" style={style}>
-      {segs.map((s) => {
-        if (s.link) {
-          const l = s.link;
-          const missing = l.kind === 'wiki-missing' || (!l.target && !l.candidates?.length);
-          const cls = missing ? 'wb-wikilink-missing' : l.kind === 'auto' ? 'wb-autolink' : 'wb-wikilink';
-          return (
-            <span
-              key={s.key}
-              className={cls}
-              title={missing ? '未找到目标文档' : undefined}
-              onClick={(e) => {
-                if (missing) return;
-                if (l.target) {
-                  onOpenTarget(l.target);
-                } else if (l.candidates?.length) {
-                  onCandidates(l.term, l.candidates, { x: e.clientX, y: e.clientY });
-                }
-              }}
-            >
-              {s.text}
-            </span>
-          );
-        }
-        if (s.noteHref) {
-          return (
-            <a
-              key={s.key}
-              className="cm-note-mark"
-              title="此处有笔记，点击查看"
-              href={s.noteHref}
-              onClick={(e) => {
-                e.preventDefault();
-                onOpenNote?.(s.noteHref!);
-              }}
-            >
-              {s.hl ? <mark>{s.text}</mark> : s.text}
-            </a>
-          );
-        }
-        if (s.hl) return <mark key={s.key}>{s.text}</mark>;
-        return <span key={s.key}>{s.text}</span>;
-      })}
+      {blocks.map((block, i) => (
+        <div key={i} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 2000px' }}>
+          {block.map((s) => renderSeg(s))}
+        </div>
+      ))}
     </div>
   );
 });

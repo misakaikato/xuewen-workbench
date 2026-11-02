@@ -1,10 +1,12 @@
 // 智能助手 M4.1：可折叠侧栏 + 上下文指示在输入框上方 + 可编辑消息 + 设置面板 + 模型快切
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { AgentStatus, AgentMessage, AgentFailure } from '@/lib/api';
+import type { TreeNode } from '@/lib/types';
 import { readAgentStream, streamFailure } from '@/lib/agentStream';
 import { useApp } from '@/store/app';
+import { usePolling } from '@/hooks/usePolling';
 import { useTheme } from '@/lib/theme';
 import { useReadingPrefs } from '@/lib/prefs';
 import { MarkdownMsg } from '@/components/agent/MarkdownMsg';
@@ -148,7 +150,8 @@ export default function AgentChat() {
     }
   }, [active]);
   useEffect(() => { checkBgDone(conversations); }, [conversations, checkBgDone]);
-  useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [refresh, dsId]);
+  useEffect(() => { refresh(); }, [refresh, dsId]);
+  usePolling(() => { refresh(); }, 5000, { enabled: !!dsId });
 
   // 接收其他页面带来的引用预填（如阅读页选中文本「问 AI」）
   useEffect(() => {
@@ -814,15 +817,15 @@ function CompactionNotice({ cp }: { cp: { reason: string; tokensBefore: number |
 
 function FileRef({ name, bracket }: { name: string; bracket?: boolean }) {
   const navigate = useNavigate();
-  const [hit, setHit] = useState<string | null | undefined>(undefined);
-  useEffect(() => {
-    api.tree().then((r) => {
-      const flat: { name: string; path: string }[] = [];
-      const walk = (n: { files: { name: string; path: string }[]; dirs: unknown[] }) => { for (const f of n.files) flat.push(f); for (const d of n.dirs as typeof n[]) walk(d); };
-      walk(r.tree);
-      setHit(flat.find((f) => f.name === name)?.path ?? null);
-    }).catch(() => setHit(null));
-  }, [name]);
+  // 复用 store 里已有的目录树，不再为每个 @文件 引用单独请求 /api/tree
+  const { tree } = useApp();
+  const hit = useMemo<string | null | undefined>(() => {
+    if (!tree) return undefined;
+    const flat: { name: string; path: string }[] = [];
+    const walk = (n: TreeNode) => { for (const f of n.files) flat.push(f); for (const d of n.dirs) walk(d); };
+    walk(tree);
+    return flat.find((f) => f.name === name)?.path ?? null;
+  }, [tree, name]);
   const label = bracket ? `[${name}]` : `@${name}`;
   if (hit === undefined) return <span className="text-primary/50">{label}</span>;
   if (hit === null) return <span className="text-muted-foreground">{label}</span>;

@@ -13,6 +13,7 @@ import type { DecorationSet } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import { buildCorpusRefMatcher } from '@/lib/corpusRefMatch';
 import type { CorpusRefMatcher, CorpusRefNameEntry } from '@/lib/corpusRefMatch';
+import { perfInc } from '@/lib/perf';
 import { alField } from './autoLinks';
 
 const crReadOnly = Facet.define<boolean, boolean>({ combine: (v) => v.some(Boolean) });
@@ -40,6 +41,7 @@ interface CrState {
 const SCANNABLE = new Set(['Paragraph', 'ATXHeading1', 'ATXHeading2', 'ATXHeading3', 'ATXHeading4', 'ATXHeading5', 'ATXHeading6']);
 
 function scanHits(state: EditorState, matcher: CorpusRefMatcher): StoredHit[] {
+  perfInc('scanHits');
   const doc = state.doc;
   const out: StoredHit[] = [];
   const excluded: { from: number; to: number }[] = [];
@@ -136,9 +138,13 @@ const crField = StateField.define<CrState>({
         .filter((h): h is StoredHit => !!h && !changed.some(([a, b]) => h.from < b && h.to > a));
       rebuildDeco = true;
     }
-    if (tr.selection) rebuildDeco = true;
-    // 自动内链数据晚到（异步 API）时重扫：重叠让位逻辑需要 links 就位才有效
-    if (tr.state.field(alField, false) !== tr.startState.field(alField, false)) rescan = true;
+    // 选区变化不重建：装饰与选区无关（全时渲染）。按键期间只做区间映射，
+    // 全量重扫由防抖插件 250ms 后的 crRefresh 触发，不在按键路径上。
+    // 自动内链数据晚到（异步 API）时重扫：重叠让位逻辑需要 links 就位才有效。
+    // 按 version 比较：文档变更只做位置映射、version 不变，不会把每次按键误判成「链接变了」。
+    const alBefore = tr.startState.field(alField, false)?.version;
+    const alAfter = tr.state.field(alField, false)?.version;
+    if (alBefore !== alAfter) rescan = true;
     if (rescan && matcher) hits = scanHits(tr.state, matcher);
     if (!rescan && !rebuildDeco) return value;
     return { matcher, hits, deco: matcher ? buildDeco(hits) : Decoration.none };
