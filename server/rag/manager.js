@@ -9,6 +9,7 @@ import { chunkFile, embedTextOf } from './chunk.js';
 import { EmbedService, t2s, DIM } from './embed.js';
 import { loadRagConfig, saveRagConfig, indexConfigFingerprint, DEFAULT_RAG_CONFIG } from './config.js';
 import { readJson, writeJsonAtomic } from '../store.js';
+import { setActivity } from '../lagWatch.js';
 
 // 检索参数来自按库配置（loadRagConfig），以下仅为回退默认
 const { rrfK: RRF_K, topN: TOPN } = DEFAULT_RAG_CONFIG.search;
@@ -84,6 +85,7 @@ class RagIndex {
     this._pauseFlag = false;
     this.state = 'building';
     this.error = null;
+    const t0 = Date.now();
     try {
       if (rebuild || (store.metaGet('index_cfg') && store.metaGet('index_cfg') !== indexConfigFingerprint(this.cfg))) {
         store.db.exec('DELETE FROM files; DELETE FROM chunks_fts; DELETE FROM chunks; DELETE FROM vecs;');
@@ -95,43 +97,55 @@ class RagIndex {
       this.total = todo.length;
       this.done = 0;
       this.phase = '切块';
+      console.log('[rag] 索引构建开始: ' + todo.length + ' 个文件');
       for (const f of todo) {
         if (seq !== this._buildSeq) return { ok: true, superseded: true };
         if (this._pauseFlag) {
           this.state = 'paused';
           this.phase = '';
+          console.log('[rag] 索引构建暂停: 已完成 ' + this.done + ' 个文件');
           return { ok: true, paused: true };
         }
-        const text = this.getText(f.path);
-        if (text == null) {
-          // 扫描快照里没有正文缓存时记录为空完成（词表文件等极端情况）
-          store.replaceChunks(f.path, f.contentHash, [], f.ext?.slice(1) || 'md', () => '');
+        const restoreActivity = setActivity('RAG 切块/嵌入 ' + f.path);
+        try {
+          const text = this.getText(f.path);
+          if (text == null) {
+            // 扫描快照里没有正文缓存时记录为空完成（词表文件等极端情况）
+            store.replaceChunks(f.path, f.contentHash, [], f.ext?.slice(1) || 'md', () => '');
+            this.done++;
+            continue;
+          }
+          const chunks = chunkFile(f.ext || '.md', text, this.cfg.chunk);
+          if (chunks.length) chunks[0] = { ...chunks[0], text: f.name + '\n\n' + chunks[0].text }; // 文件名进入正文索引与定位
+          const eOpts = { headingContext: this.cfg.chunk.headingContext, fileName: this.cfg.chunk.fileNameContext ? f.name : '' };
+          store.replaceChunks(f.path, f.contentHash, chunks, kindOf(f.ext), (c) => ftsIndexText(t2s(embedTextOf(c, eOpts))));
+          // 立即嵌入该文件全部块（文件级完成粒度）
+          this.phase = '嵌入';
+          if (chunks.length) {
+            const ids = store.db.prepare('SELECT id FROM chunks WHERE path=? ORDER BY ordinal').all(f.path).map((r) => r.id);
+            const tEmb = Date.now();
+            const vecs = await this.embed.embed(chunks.map((c) => embedTextOf(c, eOpts)), { maxLength: this.cfg.embed.maxLength });
+            const embMs = Date.now() - tEmb;
+            if (embMs >= 2000) console.warn('[rag] 单文件嵌入慢: ' + f.path + '，' + chunks.length + ' 段，耗时 ' + embMs + 'ms');
+            store.writeVecs(ids.map((id, i) => ({ id, vec: vecs[i] })));
+          }
+          store.markFileDone(f.path);
           this.done++;
-          continue;
+          this._updatedAt = Date.now();
+        } finally {
+          restoreActivity();
         }
-        const chunks = chunkFile(f.ext || '.md', text, this.cfg.chunk);
-        if (chunks.length) chunks[0] = { ...chunks[0], text: f.name + '\n\n' + chunks[0].text }; // 文件名进入正文索引与定位
-        const eOpts = { headingContext: this.cfg.chunk.headingContext, fileName: this.cfg.chunk.fileNameContext ? f.name : '' };
-        store.replaceChunks(f.path, f.contentHash, chunks, kindOf(f.ext), (c) => ftsIndexText(t2s(embedTextOf(c, eOpts))));
-        // 立即嵌入该文件全部块（文件级完成粒度）
-        this.phase = '嵌入';
-        if (chunks.length) {
-          const ids = store.db.prepare('SELECT id FROM chunks WHERE path=? ORDER BY ordinal').all(f.path).map((r) => r.id);
-          const vecs = await this.embed.embed(chunks.map((c) => embedTextOf(c, eOpts)), { maxLength: this.cfg.embed.maxLength });
-          store.writeVecs(ids.map((id, i) => ({ id, vec: vecs[i] })));
-        }
-        store.markFileDone(f.path);
-        this.done++;
-        this._updatedAt = Date.now();
       }
       this.state = 'ready';
       this.phase = '完成';
       this._updatedAt = Date.now();
       store.metaSet('index_cfg', indexConfigFingerprint(this.cfg)); // 重建提示指纹
+      console.log('[rag] 索引构建完成: ' + this.done + ' 个文件，耗时 ' + (Date.now() - t0) + 'ms');
       return { ok: true };
     } catch (e) {
       this.state = 'error';
       this.error = String(e.message || e);
+      console.error('[rag] 索引构建失败: ' + this.error);
       return { ok: false, error: this.error };
     }
   }

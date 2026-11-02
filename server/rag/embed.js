@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { T2S_MAP } from '../t2s.js';
+import { withActivity } from '../lagWatch.js';
 
 export const MODEL_ID = 'bge-m3';
 export const DIM = 1024;
@@ -155,29 +156,31 @@ export class EmbedService {
       if (kind === 'mlx') await this.ensureVenv();
       const manifest = { model: MODEL_ID, kind, files: [] };
       for (const f of spec.files) {
-        const dest = path.join(dir, f);
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        this.progress.file = f;
-        this.progress.bytes = 0;
-        this.progress.total = 0;
-        let ok = false;
-        let lastErr = null;
-        for (const host of HOSTS) {
-          try {
-            const r = await downloadTo(`${host}/${spec.repo}/resolve/main/${f}`, dest + '.part', (b, t) => {
-              this.progress.bytes = b;
-              if (t) this.progress.total = t;
-            });
-            fs.renameSync(dest + '.part', dest);
-            ok = true;
-            break;
-          } catch (e) {
-            lastErr = e;
+        await withActivity('下载模型 ' + f, async () => {
+          const dest = path.join(dir, f);
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          this.progress.file = f;
+          this.progress.bytes = 0;
+          this.progress.total = 0;
+          let ok = false;
+          let lastErr = null;
+          for (const host of HOSTS) {
+            try {
+              const r = await downloadTo(`${host}/${spec.repo}/resolve/main/${f}`, dest + '.part', (b, t) => {
+                this.progress.bytes = b;
+                if (t) this.progress.total = t;
+              });
+              fs.renameSync(dest + '.part', dest);
+              ok = true;
+              break;
+            } catch (e) {
+              lastErr = e;
+            }
           }
-        }
-        if (!ok) throw lastErr || new Error('下载失败: ' + f);
-        manifest.files.push({ path: f, sha256: await sha256File(dest), bytes: fs.statSync(dest).size });
-        this.progress.done++;
+          if (!ok) throw lastErr || new Error('下载失败: ' + f);
+          manifest.files.push({ path: f, sha256: await sha256File(dest), bytes: fs.statSync(dest).size });
+          this.progress.done++;
+        });
       }
       fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
       this._shaCache = manifest.files.find((x) => x.path.includes('safetensors') || x.path.endsWith('.onnx'))?.sha256 || null;
@@ -275,9 +278,11 @@ export class EmbedService {
       this.state = 'ready';
     }
     this._loading ??= this._load(this.detectBackend());
+    const t0 = Date.now();
     try {
       this._runtime = await this._loading;
       this.backend = this._runtime.kind;
+      console.log('[rag] 运行时加载完成: ' + this._runtime.kind + (this._runtime.ep ? ' EP=' + this._runtime.ep : '') + '，耗时 ' + (Date.now() - t0) + 'ms');
     } catch (e) {
       this._loading = null;
       throw e;
@@ -438,7 +443,7 @@ export class EmbedService {
 
   async embed(texts, opts = {}) {
     const rt = await this.ensureReady();
-    return rt.embed(texts, opts);
+    return withActivity('向量推理 ' + texts.length + ' 段', () => rt.embed(texts, opts));
   }
 
   dispose() {

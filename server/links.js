@@ -10,6 +10,7 @@ import {
   normalizeText, isTermLike, buildAutoIndex, extractLinks, extractWikilinks, MATCH_ENGINE_VERSION,
 } from './linkMatch.js';
 import { loadConcepts } from './derived.js';
+import { setActivity } from './lagWatch.js';
 
 const CACHE_VERSION = 1;
 // HTML 链接图只跟踪这些文档扩展名的 href 目标（与 scanner.SUPPORTED_EXTS 对齐）
@@ -335,6 +336,7 @@ export class LinkIndex {
   async _rebuildNow(snapshot, indexer) {
     if (!this._textsOf) this.useTextsOf(() => indexer.texts);
     const t0 = Date.now();
+    const restoreActivity = setActivity('算内链 ' + path.basename(this.baseDir || ''));
     this.building = true;
     try {
       const texts = indexer.texts;
@@ -420,7 +422,9 @@ export class LinkIndex {
       this.stats.links = [...this.files.values()].reduce((s, d) => s + d.links.length, 0);
       if (changed || this._dirty) this.writeCache();
       this._dirty = false;
+      console.log('[links] 内链索引构建完成: ' + this.files.size + ' 个文件，耗时 ' + (Date.now() - t0) + 'ms');
     } finally {
+      restoreActivity();
       this.building = false;
     }
   }

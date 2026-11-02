@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { extractWordText } from './word.js';
 import { SUPPORTED_EXTS } from './scanner.js';
+import { withActivity } from './lagWatch.js';
 
 export class Indexer {
   constructor() {
@@ -21,31 +22,36 @@ export class Indexer {
 
   // 扫描完成后重建索引文本（md/json 直接读；word 走缓存提取）
   async build(snapshot) {
-    this.files = snapshot.files;
-    this.texts = new Map();
-    const CONCURRENCY = 8;
-    const queue = [...this.files];
-    const workers = Array.from({ length: CONCURRENCY }, async () => {
-      while (queue.length) {
-        const f = queue.shift();
-        const abs = path.join(this.baseDir, f.path);
-        try {
-          if (f.ext === '.md' || f.ext === '.json' || f.ext === '.txt' || f.ext === '.html' || f.ext === '.htm') {
-            // 与前端 CodeMirror 的文档表示对齐：剥 BOM、CRLF→LF。
-            // 否则含 \r 或 BOM 的文件，内链偏移会整体错位（每行差 1 字符），
-            // 表现为「标记落到错误位置/表格里没有标记」。
-            const raw = fs.readFileSync(abs, 'utf8');
-            this.texts.set(f.path, raw.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n'));
-          } else {
-            const t = await extractWordText(this.dsId, abs, f.path, f.mtimeMs);
-            if (t !== null) this.texts.set(f.path, t);
+    const t0 = Date.now();
+    const label = '建文本索引 ' + (this.baseDir ? path.basename(this.baseDir) : '');
+    await withActivity(label, async () => {
+      this.files = snapshot.files;
+      this.texts = new Map();
+      const CONCURRENCY = 8;
+      const queue = [...this.files];
+      const workers = Array.from({ length: CONCURRENCY }, async () => {
+        while (queue.length) {
+          const f = queue.shift();
+          const abs = path.join(this.baseDir, f.path);
+          try {
+            if (f.ext === '.md' || f.ext === '.json' || f.ext === '.txt' || f.ext === '.html' || f.ext === '.htm') {
+              // 与前端 CodeMirror 的文档表示对齐：剥 BOM、CRLF→LF。
+              // 否则含 \r 或 BOM 的文件，内链偏移会整体错位（每行差 1 字符），
+              // 表现为「标记落到错误位置/表格里没有标记」。
+              const raw = fs.readFileSync(abs, 'utf8');
+              this.texts.set(f.path, raw.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n'));
+            } else {
+              const t = await extractWordText(this.dsId, abs, f.path, f.mtimeMs);
+              if (t !== null) this.texts.set(f.path, t);
+            }
+          } catch {
+            // 单个文件读取失败不阻塞整体索引
           }
-        } catch {
-          // 单个文件读取失败不阻塞整体索引
         }
-      }
+      });
+      await Promise.all(workers);
     });
-    await Promise.all(workers);
+    console.log('[index] 文本索引构建完成: ' + this.files.length + ' 个文件，耗时 ' + (Date.now() - t0) + 'ms');
   }
 
   byName() {

@@ -4,7 +4,7 @@ import { api } from '@/lib/api';
 import { useApp } from '@/store/app';
 import { useReadingPrefs, DEFAULT_PREFS } from '@/lib/prefs';
 import type { Collection, MetadataMapping, TreeNode } from '@/lib/types';
-import { Plus, Trash2, Eye, ShieldBan, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, Eye, ShieldBan, RefreshCw, Download } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import MetaImport from '@/components/MetaImport';
@@ -66,6 +66,9 @@ export default function Settings() {
   const [inspect, setInspect] = useState<Record<string, string>>({});
   const [blocklistRaw, setBlocklistRaw] = useState('');
   const [ignoredCount, setIgnoredCount] = useState<number | null>(null);
+  const [diagMsg, setDiagMsg] = useState('');
+  const [diagBusy, setDiagBusy] = useState(false);
+  const [logsDir, setLogsDir] = useState('');
 
   useEffect(() => {
     if (!dsId) return;
@@ -78,6 +81,23 @@ export default function Settings() {
       })
       .catch(() => setBlocklistRaw(''));
   }, [dsId]);
+
+  useEffect(() => {
+    api.diagnosticsState().then((s) => setLogsDir(s.logsDir)).catch(() => {});
+  }, []);
+
+  const onExportDiagnostics = async () => {
+    setDiagBusy(true);
+    setDiagMsg('');
+    try {
+      const r = await api.exportDiagnostics();
+      setDiagMsg('已导出到 ' + r.file);
+    } catch (e) {
+      setDiagMsg('导出失败：' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setDiagBusy(false);
+    }
+  };
 
   const allDirs = useMemo(() => {
     const out: string[] = [];
@@ -202,6 +222,19 @@ export default function Settings() {
             {checkMsg && <span className="text-xs text-muted-foreground">{checkMsg}</span>}
           </div>
         )}
+        <div className="mt-4 pt-4 border-t border-border">
+          <h3 className="text-sm font-semibold mb-1">诊断信息</h3>
+          <p className="text-xs text-muted-foreground mb-3">
+            出现卡顿、白屏或报错时，导出诊断信息发给开发者。包含运行日志与环境信息，不含文档正文、对话与 API Key。
+          </p>
+          <div className="flex items-center gap-3 flex-wrap">
+            <Button size="sm" variant="outline" disabled={diagBusy} onClick={onExportDiagnostics}>
+              <Download className="w-3.5 h-3.5" />导出诊断信息
+            </Button>
+            {diagMsg && <span className="text-xs text-muted-foreground break-all">{diagMsg}</span>}
+          </div>
+          {logsDir && <p className="text-xs text-muted-foreground mt-2">日志目录：{logsDir}</p>}
+        </div>
       </section>
       )}
 

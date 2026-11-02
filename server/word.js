@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import mammoth from 'mammoth';
 import WordExtractor from 'word-extractor';
 import { cacheDir, readJson, writeJsonAtomic } from './store.js';
+import { withActivity } from './lagWatch.js';
 
 const extractor = new WordExtractor();
 
@@ -132,7 +133,7 @@ export async function parseWord(dsId, absPath, relPath, mtimeMs) {
 // 仅提取正文（用于搜索索引），失败时返回 null
 export async function extractWordText(dsId, absPath, relPath, mtimeMs) {
   try {
-    const r = await parseWord(dsId, absPath, relPath, mtimeMs);
+    const r = await withActivity('解析 Word ' + relPath, () => parseWord(dsId, absPath, relPath, mtimeMs));
     return r.text || '';
   } catch {
     return null;

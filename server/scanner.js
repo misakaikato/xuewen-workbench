@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import chokidar from 'chokidar';
 import { EventEmitter } from 'node:events';
+import { withActivity } from './lagWatch.js';
 
 export const SUPPORTED_EXTS = ['.md', '.json', '.txt', '.doc', '.docx', '.html', '.htm'];
 // 元数据旁注文件：<原文件名>.meta.json，不出现在目录树/检索中
@@ -195,9 +196,10 @@ export class Scanner extends EventEmitter {
     if (this.scanning) return this.snapshot;
     this.scanning = true;
     this.emit('scan-start');
+    const t0 = Date.now();
     try {
       // 放到 setImmediate 中避免阻塞事件循环太久
-      const result = await new Promise((resolve, reject) => {
+      const result = await withActivity('扫描 ' + path.basename(this.baseDir), () => new Promise((resolve, reject) => {
         setImmediate(() => {
           try {
             resolve(scanTree(this.baseDir, { showMetaFiles: this.showMetaFiles }));
@@ -205,8 +207,9 @@ export class Scanner extends EventEmitter {
             reject(e);
           }
         });
-      });
+      }));
       this.snapshot = { ...result, scannedAt: new Date().toISOString() };
+      console.log('[scan] 扫描完成: ' + this.baseDir + '，' + result.files.length + ' 个文件，耗时 ' + (Date.now() - t0) + 'ms');
       this.emit('scan-done', this.snapshot);
       return this.snapshot;
     } finally {

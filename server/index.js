@@ -1,13 +1,16 @@
 // 主服务：Express API。语料配置、扫描状态、目录树、文件读写（原子写+备份+冲突检测）、
 // 检索、引用解析、集合与元数据映射、最近记录与常用入口、Word 能力诊断。
+import './logInit.js';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import express from 'express';
 import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir } from './store.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
-import { hostOpenPath } from './hostOpen.js';
+import { hostOpenPath, revealInFolder } from './hostOpen.js';
+import { logsDir, createLogWriter } from './logger.js';
+import { pendingIncident, ackIncidents, readIncidents, exportDiagnostics } from './diagnostics.js';
 import { planImport, applyImport, contentHash } from './meta.js';
 import { getTrashHandler } from './trash.js';
 import { mountUpdateRoutes, getUpdateBridge, disabledUpdateState } from './update.js';
@@ -23,8 +26,27 @@ import { loadDerived, loadTopics, DERIVED_DIR } from './derived.js';
 const PORT = process.env.WORKBENCH_PORT || 7410;
 const HOST = process.env.WORKBENCH_HOST || undefined; // 未设置时保持原行为（监听所有地址）
 const STATIC_DIR = process.env.WORKBENCH_STATIC_DIR || null; // 设置后托管已构建的前端（Electron 用）
+const PROC_START = Date.now();
 const app = express();
 app.use(express.json({ limit: '20mb' }));
+
+// 慢请求 / 5xx 日志：响应状态 ≥ 500 或耗时 ≥ 3000ms 记一条；SSE 与模型下载只按状态记（不计耗时）
+const SLOW_SKIP = ['/api/agent/chat', '/api/rag/model/download'];
+app.use((req, res, next) => {
+  const t0 = Date.now();
+  const skipSlow = SLOW_SKIP.includes(req.path);
+  res.on('finish', () => {
+    const ms = Date.now() - t0;
+    const status = res.statusCode;
+    if (status >= 500 || (!skipSlow && ms >= 3000)) {
+      console.warn('[http] ' + req.method + ' ' + req.path + ' ' + status + ' ' + ms + 'ms');
+    }
+  });
+  next();
+});
+
+// 界面日志上报写入 renderer.log（tag: renderer）
+const rendererLog = createLogWriter({ dir: logsDir(dataDir()), name: 'renderer' });
 
 // ---------- 资料库运行时（多库并行：各自 scanner/indexer/链接索引） ----------
 
@@ -550,33 +572,18 @@ app.post('/api/open-external', async (req, res) => {
   }
 });
 
-app.post('/api/reveal', (req, res) => {
+app.post('/api/reveal', async (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;
   const rel = String(req.body?.path || '');
   try {
     const abs = resolveWithin(lib, rel);
-    let isDir = false;
     try {
-      isDir = fs.statSync(abs).isDirectory();
+      fs.statSync(abs);
     } catch {
       return res.status(404).json({ error: '路径不存在（可能已被移动或删除）' });
     }
-    let cmd;
-    let args;
-    if (process.platform === 'win32') {
-      cmd = 'explorer.exe';
-      args = isDir ? [abs] : ['/select,' + abs];
-    } else if (process.platform === 'darwin') {
-      cmd = 'open';
-      args = isDir ? [abs] : ['-R', abs];
-    } else {
-      cmd = 'xdg-open';
-      args = [isDir ? abs : path.dirname(abs)];
-    }
-    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
-    child.on('error', () => {});
-    child.unref();
+    await revealInFolder(abs);
     res.json({ ok: true, revealed: rel });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
@@ -1676,6 +1683,106 @@ app.get('/api/word-capability', async (req, res) => {
   res.json(await wordCapability());
 });
 
+// ---------- 日志上报与诊断包（只导出不上传） ----------
+
+app.post('/api/log', (req, res) => {
+  const entries = req.body?.entries;
+  if (!Array.isArray(entries)) return res.status(400).json({ error: 'entries 必须是数组' });
+  if (entries.length > 50) return res.status(400).json({ error: 'entries 最多 50 条' });
+  for (const e of entries) {
+    if (!e || typeof e !== 'object') continue;
+    const level = ['ERROR', 'WARN', 'INFO'].includes(e.level) ? e.level : 'INFO';
+    let message = typeof e.message === 'string' ? e.message : String(e.message ?? '');
+    if (message.length > 4000) message = message.slice(0, 4000);
+    const prefix = typeof e.at === 'string' && e.at ? e.at + ' ' : '';
+    rendererLog.write(level, 'renderer', prefix + message);
+  }
+  res.json({ ok: true });
+});
+
+app.get('/api/diagnostics/state', (req, res) => {
+  res.json({ pending: pendingIncident(dataDir()), logsDir: logsDir(dataDir()) });
+});
+
+app.post('/api/diagnostics/ack', (req, res) => {
+  ackIncidents(dataDir());
+  res.json({ ok: true });
+});
+
+app.post('/api/diagnostics/export', async (req, res) => {
+  try {
+    const outDir = process.env.WORKBENCH_DESKTOP_DIR || undefined;
+    const r = await exportDiagnostics({ dataDir: dataDir(), outDir, summary: buildSummary() });
+    try { await revealInFolder(r.file); } catch { /* 定位失败不影响导出 */ }
+    res.json({ ok: true, file: r.file });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+function libSummary(lib) {
+  const snap = lib.scanner.snapshot;
+  const files = {};
+  for (const f of snap?.files || []) files[f.ext] = (files[f.ext] || 0) + 1;
+  return {
+    id: lib.id, name: lib.name, baseDir: lib.baseDir,
+    active: lib.id === activeId,
+    scanning: lib.scanner.scanning,
+    watching: !!lib.scanner.watcher,
+    scannedAt: snap?.scannedAt || null,
+    files,
+    totalBytes: (snap?.files || []).reduce((s, f) => s + f.size, 0),
+    dirErrors: snap?.dirErrors?.length || 0,
+    fileErrors: snap?.fileErrors?.length || 0,
+  };
+}
+
+function ragSummary() {
+  const st = ragManager.embed.status();
+  return {
+    model: { state: st.state, backend: st.backend, ep: st.ep, error: st.error, progress: st.progress },
+    indices: [...ragManager.indices.entries()].map(([dsId, ix]) => {
+      const s = ix.status();
+      return { dsId, state: s.state, files: s.files, filesDone: s.filesDone, chunks: s.chunks, dbBytes: s.dbBytes };
+    }),
+  };
+}
+
+function agentSummary() {
+  const st = agentHub.status();
+  const endpoint = st.endpoint || {};
+  return {
+    endpointConfigured: !!(endpoint.baseUrl && endpoint.model),
+    model: endpoint.model || null,
+    mode: st.mode || 'auto',
+  };
+}
+
+function buildSummary() {
+  const ui = getUiSettings();
+  return {
+    app: { version: process.env.WORKBENCH_APP_VERSION || null, hosted: !!process.versions.electron },
+    runtime: {
+      electron: process.versions.electron || null,
+      node: process.versions.node || null,
+      chrome: process.versions.chrome || null,
+    },
+    os: {
+      platform: os.platform(), release: os.release(), arch: os.arch(),
+      cpu: os.cpus()[0]?.model || null, cores: os.cpus().length,
+      totalMemGB: Math.round(os.totalmem() / 1024 / 1024 / 1024 * 10) / 10,
+      freeMemGB: Math.round(os.freemem() / 1024 / 1024 / 1024 * 10) / 10,
+    },
+    host: { gpu: null },
+    dataDir: dataDir(), logsDir: logsDir(dataDir()),
+    libraries: [...libs.values()].map(libSummary),
+    rag: ragSummary(),
+    agent: agentSummary(),
+    ui: { theme: ui.theme, autoUpdate: ui.autoUpdate },
+    incidents: readIncidents(dataDir(), { limit: 50 }),
+  };
+}
+
 // ---------- 前端静态资源（仅在设置 WORKBENCH_STATIC_DIR 时启用） ----------
 
 // index.html 不交由 express.static 直接下发：注入持久化主题（data-theme / __WB_THEME__），
@@ -1735,8 +1842,9 @@ async function boot() {
     libs.set(lib.id, lib);
     try {
       fs.accessSync(lib.baseDir, fs.constants.R_OK);
+      const t0 = Date.now();
       await lib.start();
-      console.log('已恢复资料库:', lib.baseDir);
+      console.log('[boot] 资料库「' + lib.name + '」就绪: ' + lib.baseDir + '，' + (lib.scanner.snapshot?.files.length ?? 0) + ' 个文件，扫描耗时 ' + (Date.now() - t0) + 'ms');
     } catch (e) {
       // 目录不可达：保留在列表中可移除，但不扫描不监听
       lib.scanner.setBaseDir(lib.baseDir);
@@ -1747,7 +1855,7 @@ async function boot() {
   }));
   activeId = libs.has(savedActive) ? savedActive : (libraries[0]?.id ?? null);
   if (activeId) setActiveLibInStore(activeId);
-  app.listen(PORT, HOST, () => console.log('语料工作台后端已启动: http://localhost:' + PORT));
+  app.listen(PORT, HOST, () => console.log('服务开始监听: http://localhost:' + PORT + '，距进程启动 ' + (Date.now() - PROC_START) + 'ms'));
 }
 
 boot();

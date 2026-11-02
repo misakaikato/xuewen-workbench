@@ -168,6 +168,9 @@ export const api = {
   // install 会在安装时杀死应用，请求可能中途断开——调用方需吞错
   updateInstall: () => req<{ ok: boolean }>('/api/update/install', json('POST')),
   openReleasePage: () => req<{ ok: boolean }>('/api/update/open-release', json('POST')),
+  diagnosticsState: () => req<{ pending: DiagnosticsIncident | null; logsDir: string }>('/api/diagnostics/state'),
+  diagnosticsAck: () => req<{ ok: boolean }>('/api/diagnostics/ack', json('POST', {})),
+  exportDiagnostics: () => req<{ ok: boolean; file: string }>('/api/diagnostics/export', json('POST', {})),
   status: () => req<ScanStatus & { libs?: Record<string, { scanning: boolean; watching: boolean; scannedAt: string | null }> } & { update: UpdateState }>('/api/status'),
   tree: () => req<{ dsId: string; tree: TreeNode }>('/api/tree'),
   stats: () => req<StatsResponse>('/api/stats'),
@@ -432,6 +435,12 @@ export interface RagSearchResponse {
   reason?: string | null;
   took: number;
   backend?: string;
+}
+
+export interface DiagnosticsIncident {
+  kind: string;
+  at: string;
+  detail?: unknown;
 }
 
 export function rawFileUrl(path: string) {
