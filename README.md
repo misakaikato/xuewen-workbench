@@ -1,6 +1,6 @@
 # 学问 Workbench（批量文档语料工作台）
 
-以批量 Markdown（`.md`）、纯文本（`.txt`）、JSON（`.json`）、Word（`.doc` / `.docx`）文件为资料库的本机 Web 工作台，覆盖「资料库管理 → Dashboard 概览 → 浏览/检索 → 阅读 → 引用跳转 → 编辑 → 保存写回」全流程。可同时打开多个资料库，随时切换或移出工作区。
+以批量 Markdown（`.md`）、纯文本（`.txt`）、JSON（`.json`）、HTML（`.html` / `.htm`）、Word（`.doc` / `.docx`）文件为资料库的本机桌面工作台（Electron，开发时也可直接用浏览器），覆盖「资料库管理 → Dashboard 概览 → 浏览/检索 → 阅读 → 引用跳转 → 编辑 → 保存写回」全流程，并带语义检索与智能助手。可同时打开多个资料库，随时切换或移出工作区。架构与已知缺口见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 启动与构建
 
@@ -9,17 +9,22 @@ npm install        # 首次安装依赖
 npm run dev        # 同时启动后端(7410)与前端(默认 3000)，可追加 -- --port 7100
 npm run build      # 生产构建（tsc + vite build）→ dist/
 npm run dev:server # 仅后端；npm run dev:client 仅前端
+npm run electron:dev # 在 Electron 壳里运行
 ```
 
 浏览器打开前端地址后，首次使用会进入**资料库管理**页。
+
+应用数据（配置、索引、备份、模型、对话）存放在用户目录下的 `.xuewen-workbench/`（macOS 为 `~/.xuewen-workbench/`，Windows 为 `%USERPROFILE%\.xuewen-workbench\`），开发与打包版共用；设环境变量 `WORKBENCH_DATA_DIR` 可改到别处。下文的 `<数据目录>` 都指这里。
+
+注意：`npm run dev` / `dev:server` 默认监听所有网络地址，局域网内可访问全部接口；只想本机访问时设 `WORKBENCH_HOST=127.0.0.1`。打包版只绑 `127.0.0.1`。
 
 ## 资料库：打开、切换、移除
 
 1. 在「资料库管理」输入语料根目录（支持中文、空格、Windows 反斜杠、末尾分隔符有无均可）。可先「测试连接」检查存在/可读/可写；只读目录可阅读检索但编辑入口会受限说明。
 2. 「添加并打开」后自动扫描并进入 Dashboard。可以同样方式打开多个资料库：顶栏切换器列出全部已打开库（各含文件数），点击即切换，各库监听与索引常驻内存。
 3. 从切换器或管理页可把资料库移出工作区（停监听、卸内存索引）——不删除磁盘文件，最近记录/草稿/集合配置保留在应用数据目录，重新添加同目录即恢复。
-4. 配置持久化在 `server/data/config.json`（v2：多库清单 + 当前库），刷新/重启自动恢复全部库；旧单库配置自动迁移。
-5. 目录树、检索索引、最近记录、草稿、集合与元数据映射均按资料库隔离（`server/data/sources/<dsId>/`）。
+4. 配置持久化在 `<数据目录>/config.json`（v2：多库清单 + 当前库），刷新/重启自动恢复全部库；旧单库配置自动迁移。
+5. 目录树、检索索引、最近记录、草稿、集合与元数据映射均按资料库隔离（`<数据目录>/knowledge/<dsId>/`）。
 
 ## 自动检测变化的能力与限制
 
@@ -47,19 +52,30 @@ npm run dev:server # 仅后端；npm run dev:client 仅前端
 - **完整文件名引用**：正文中出现实际存在文件的完整文件名（含扩展名）自动成为链接；行内代码中完整出现的文件名同样可点且保留代码外观；代码围栏内不解析。
 - **集合引用**：`集合名|文件名`（扩展名可省略）。集合在「设置 → 逻辑集合」中映射到实际目录；集合内未命中时给出全库建议但不自动跨集合跳转。
 - **解析顺序**：显式路径 → 集合范围 → 完整文件名精确匹配 → 省略扩展名匹配。唯一命中直接打开；同名/跨格式冲突显示含路径的候选；缺失显示原因。自动引用只存在于阅读视图，绝不写回源文件。
-- **检索**：覆盖文件名、路径、MD 正文、TXT 正文、JSON 键值、Word 提取正文；空格分隔多关键词（AND）、双引号精确短语；支持类型/目录筛选，结果按文件归并并高亮命中片段。
+- **检索**：覆盖文件名、路径、MD 正文、TXT 正文、HTML 正文、JSON 键值、Word 提取正文；空格分隔多关键词（AND）、双引号精确短语；支持类型/目录筛选，结果按文件归并并高亮命中片段。
 
 ## RAG 智能检索（v1）
 
 检索页新增「智能」模式（与「精确」并列）：语义 + 关键词混合检索，段落级结果卡带出处（文件 + 标题路径）、命中高亮与融合分数，点击跳回原文；繁简互通（查询与切块均经繁→简归一化参与检索，展示原文）；无关查询诚实显示「没有找到」。顶栏「RAG 管理」页四区：
 
-- **嵌入模型**：bge-m3（1024 维）。首次点「下载」（约 1.1GB，Hugging Face → hf-mirror 自动回退，sha256 校验），或手动导入模型目录；macOS 走 MLX（Apple GPU，uv 自动置备 Python 环境），Windows 走 ONNX runtime（CUDA EP 为打包期实测点，失败回退 CPU）；开发/测试可用 `WORKBENCH_RAG_EMBED=mock`。
-- **语义索引**：按库隔离（`sources/<dsId>/rag.db`，better-sqlite3 + FTS5 中文 bigram + 向量 BLOB）；结构化切块（md 按标题层级、txt/docx 按段落、json 按条目，超长节按段落边界二次分组）；构建有进度、可暂停续建；文件改动后经 chokidar 自动增量（mtime+size 对账）；索引是可重建缓存，删除即全量重建。
+- **嵌入模型**：bge-m3（1024 维）。首次点「下载」（约 1.1GB，Hugging Face → hf-mirror 自动回退；下载后计算并显示权重 sha256，不对照预置值校验），或手动导入模型目录；macOS 走 MLX（Apple GPU；Python 环境优先用 uv 在线置备，没有 uv 时用安装包内捆绑的离线环境），Windows 走 ONNX runtime（目前只用 CPU）；开发/测试可用 `WORKBENCH_RAG_EMBED=mock`。
+- **语义索引**：按库隔离（`<数据目录>/knowledge/<dsId>/rag.db`，better-sqlite3 + FTS5 中文 bigram + 向量 BLOB）；结构化切块（md 按标题层级、txt/docx 按段落、json 按条目，超长节按段落边界二次分组）；构建有进度、可暂停续建；文件改动后经 chokidar 自动增量（mtime+size 对账）；索引是可重建缓存，删除即全量重建。
 - **检索测试台**：与检索页智能 tab 同链路，附 bm25/语义/融合分便于调参。
-- **参数配置**（按库）：目标块上限 / JSON 单值截断 / 标题路径语境 / 超长单元硬切（切块）；嵌入截断 token（嵌入）；每路 Top-N / RRF k / 最低融合分 / 余弦下限 / 余弦 σ 倍数（检索）。切块与嵌入参数改动后状态页提示「建议重建」并一键重建；检索参数即时生效。越界值自动钳制，可一键恢复默认。
-- **本地问答（v2 预留）**：OpenAI 兼容端点配置（默认 `http://localhost:11434/v1`，兼容 Ollama / LM Studio），生成回答为 M3 里程碑。
+- **参数配置**（按库）：目标块上限 / JSON 单值截断 / 标题路径语境 / 文件名语境 / 超长单元硬切（切块）；嵌入截断 token（嵌入）；每路 Top-N / RRF k / 最低融合分 / 余弦下限 / 余弦 σ 倍数 / 语义路权重（检索）。默认值见 `server/rag/config.js`。切块与嵌入参数改动后状态页提示「建议重建」并一键重建；检索参数即时生效。越界值自动钳制，可一键恢复默认。
 
-实现规格见 `specs/2026-10-18-rag.md`。
+实现规格见 `specs/2026-10-18-rag.md`，检索与阅读定位验收标准见 `specs/retrieval-regression.md`。
+
+## 智能助手
+
+顶栏「智能助手」（`/agent`）是内嵌 pi agent 的多轮对话：回答基于工具检索到的语料并标注出处，点击可跳回原文。阅读页另有侧栏问答与浮窗问答，会带上当前文档。
+
+- **模型端点**：任意 OpenAI 兼容服务（Ollama、LM Studio 或远端 API）。在聊天页设置面板（或输入 `/model`）的「模型端点」页填 baseUrl / 模型 / apiKey。端点在远端时，检索到的语料片段会随对话发出。
+- **工具**：检索、读文档、列目录、改名与移动、读写设置、记忆、生图，以及在当前资料库根目录执行命令的 `bash`。生图走 UniAPI，凭据取 `~/.config/uniapi/config.json` 或环境变量 `UNIAPI_API_KEY`。
+- **运行模式**（聊天页顶部切换）：自动 / 确认（改名、移动、命令等操作需点确认）/ 只读（只能检索阅读）。模式不保存，每次启动回到「自动」。
+- **Skills 与 MCP**：在设置面板的 Skills / MCP 页管理，文件位于 `<数据目录>/agents/default/`（`skills/<名称>/SKILL.md`、`mcp.json`）。
+- **记忆**：全局 / 助手 / 资料库三层；对话按资料库隔离保存。
+
+规格见 `specs/2026-10-18-agent.md`、`specs/2026-10-19-memory-design.md`。
 
 ## 编辑与保存
 
@@ -72,7 +88,7 @@ npm run dev:server # 仅后端；npm run dev:client 仅前端
 
 - 默认一切文件以阅读模式打开；点击「编辑」或 Ctrl+E 才进入编辑器。
 - Markdown：源码/预览/分栏，Ctrl+S 保存；JSON：语法校验（错误阻止写入）、格式化。
-- 保存为显式操作，原子写回资料库原文件，写前自动备份到 `server/data/sources/<dsId>/backups/`，保留原 BOM 与换行。外部修改冲突时提供磁盘内容预览与「重新加载/覆盖/继续编辑」选择。未保存修改有路由拦截与本地草稿（按资料库隔离，重进编辑时提示恢复，不自动打开编辑器）。
+- 保存为显式操作，原子写回资料库原文件，写前自动备份到 `<数据目录>/knowledge/<dsId>/backups/`，保留原 BOM 与换行。外部修改冲突时提供磁盘内容预览与「重新加载/覆盖/继续编辑」选择。未保存修改有路由拦截与本地草稿（按资料库隔离，重进编辑时提示恢复，不自动打开编辑器）。
 - **Word 为只读预览**：`.docx` 用 mammoth 解析（保留标题/段落/列表/表格/图片/链接）；`.doc` 优先调用 LibreOffice 转换，缺失时回退 word-extractor 纯文本并在页面给出诊断。提供「下载原文件」与「另存为 Markdown 副本」（独立新文件，不改原件）。预览 HTML 与正文缓存只存于应用数据目录，不计入语料统计。
 
 ## 检索测试套件
@@ -92,14 +108,14 @@ npm run dev:server # 仅后端；npm run dev:client 仅前端
 
 ## 备份恢复
 
-保存前的旧版本在 `server/data/sources/<dsId>/backups/<相对路径>.<时间戳>.bak`，直接复制回原路径即可恢复。
+保存前的旧版本在 `<数据目录>/knowledge/<dsId>/backups/<相对路径>.<时间戳>.bak`，直接复制回原路径即可恢复。
 
 ## 验收结果（2026-10-17，Windows 11 + Node 24）
 
 - `node scripts/acceptance.mjs`：43/43 通过（配置/扫描/树/读取/引用解析/检索/保存/冲突/隔离/元数据/性能/路径安全）。
 - 性能实测：1000 个 MD 文件（约 2 MB）扫描+索引 176 ms，单次全文搜索 20 ms。
 - 浏览器端实测：Dashboard 统计与主题/概念聚合正确；文件名/集合/候选/缺失引用跳转正常；搜索定位后默认阅读模式；编辑保存写回磁盘且自动生成链接未混入源码；草稿恢复提示与未保存拦截生效；`.doc`/`.docx` 阅读与检索可用；阅读偏好即时生效并持久化。
-- 目录树 Electron 冾烟（`./node_modules/.bin/electron scripts/e2e-filetree.mjs`，先 `npm run build`）：53/53 通过——reveal/持久化/键盘（含 F2/首字母/End 跨窗口聚焦）、右键复制到剪贴板、`/api/reveal` 越界拒绝、平铺过滤与 Esc、虚拟滚动（总行数摊铺与窗口化）、集合视图、被引用数徽标与开关、拖入编辑器插引用、创建副本与剪切/粘贴移动、Browse 共享菜单、侧栏宽度拖拽与持久化、`>` 前缀转全文检索、新建模板。注：`acceptance.mjs` 第 6 段「备份文件已生成」硬编码了仓库内 `server/data` 备份路径，在干净检出 + `WORKBENCH_DATA_DIR` 环境下必误报（主树历史残留数据掩盖了它）。
+- 目录树 Electron 冒烟（`./node_modules/.bin/electron scripts/e2e-filetree.mjs`，先 `npm run build`）：53/53 通过——reveal/持久化/键盘（含 F2/首字母/End 跨窗口聚焦）、右键复制到剪贴板、`/api/reveal` 越界拒绝、平铺过滤与 Esc、虚拟滚动（总行数摊铺与窗口化）、集合视图、被引用数徽标与开关、拖入编辑器插引用、创建副本与剪切/粘贴移动、Browse 共享菜单、侧栏宽度拖拽与持久化、`>` 前缀转全文检索、新建模板。注：`acceptance.mjs` 第 6 段「备份文件已生成」仍到旧的 `<数据目录>/sources/` 下找备份，数据目录改为 `knowledge/` 后这一项会误报失败。
 - 未验证项：LibreOffice 完整排版转换（本机未安装，已验证回退路径与诊断提示）；真实用户语料。
 
 ## 应用更新与发布（GitHub Releases）
@@ -108,18 +124,15 @@ npm run dev:server # 仅后端；npm run dev:client 仅前端
 - **Windows**：下载（blockmap 差量，只传变更块）→ 重启并安装，全自动；
 - **macOS**（当前未签名）：应用内下载 DMG → 打开安装包并退出，拖入 Applications 完成（Gatekeeper 首次需右键打开）。
 
-### 首次启用（一次性）
-
-1. 把 `package.json` 里 `build.publish` 的 `owner`/`repo` 占位符替换为真实 GitHub 仓库坐标；
-2. `git remote add origin <仓库地址>` 并推送。
+发布仓库为 [misakaikato/xuewen-workbench](https://github.com/misakaikato/xuewen-workbench)（公开），坐标写在 `package.json` 的 `build.publish`。
 
 ### 发布新版本
 
 ```bash
 npm version patch   # 或 minor（改 package.json version 并打 tag）
 git push --follow-tags
-# CI（.github/workflows/release.yml）自动构建 mac+win 并上传为 draft release
-# 到 GitHub Releases 页人工核对后点 Publish —— 对客户端可见，横幅开始出现
+# CI（.github/workflows/release.yml）：预建 draft → mac + win 并行构建上传
+# → 两个平台都成功后自动发布为 latest，客户端随即能查到新版本、出现横幅
 ```
 
 本地兜底（跳过 CI）：`GH_TOKEN=<token> npm run release:mac`（或 `release:win`）。
