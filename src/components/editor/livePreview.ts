@@ -27,8 +27,6 @@ export interface LivePreviewOptions {
   /** 版式几何：page=编辑页全幅（预留页边留白）；card=卡片/面板内（容器即排版列）。
    *  与 readOnly 正交——阅读页原位编辑 = card + 可编辑 */
   geometry?: 'page' | 'card';
-  /** 划线笔记标记：正文中匹配到 quote 时加下划线，点击跳到笔记锚点 */
-  noteMarks?: { quote: string; href: string }[];
   /** 点击内链词条（表格单元格内）：target 为 {path, heading} */
   openDocLink?: (target: { path: string; heading?: string | null }) => void;
   /** 点击歧义词条（表格单元格内）：弹候选选择 */
@@ -38,7 +36,15 @@ export interface LivePreviewOptions {
 // 文档路径以 facet 提供，构建装饰时读取
 const lpDocPath = Facet.define<string, string>({ combine: (v) => (v.length ? v[v.length - 1] : '') });
 const lpReadOnly = Facet.define<boolean, boolean>({ combine: (v) => v.some(Boolean) });
-const lpNoteMarks = Facet.define<{ quote: string; href: string }[], { quote: string; href: string }[]>({ combine: (v) => v[v.length - 1] ?? [] });
+// 划线笔记标记：经 StateEffect 注入（与 pushDocLinks 同一方式），不依赖扩展创建时的闭包
+const setNoteMarks = StateEffect.define<{ quote: string; href: string }[]>();
+const noteMarksField = StateField.define<{ quote: string; href: string }[]>({
+  create: () => [],
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setNoteMarks)) return e.value;
+    return value;
+  },
+});
 const lpOnCandidates = Facet.define<((term: string, candidates: string[], at: { x: number; y: number }) => void) | null, ((term: string, candidates: string[], at: { x: number; y: number }) => void) | null>({ combine: (v) => v[v.length - 1] ?? null });
 const lpOpenDocLink = Facet.define<((t: { path: string; heading?: string | null }) => void) | null, ((t: { path: string; heading?: string | null }) => void) | null>({ combine: (v) => v[v.length - 1] ?? null });
 
@@ -1076,7 +1082,7 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
     }
   }
   // 划线笔记标记：正文中出现做过的笔记的原文 → 加下划线 + data-note-href（点击跳笔记锚点）
-  const marks = state.facet(lpNoteMarks);
+  const marks = state.field(noteMarksField);
   if (marks.length) {
     for (const { from: vFrom, to: vTo } of view.visibleRanges) {
       const slice = doc.sliceString(vFrom, vTo);
@@ -1167,7 +1173,9 @@ function makeLpPlugin(openLink: (href: string) => void, openNote: (href: string)
 
       update(u: ViewUpdate) {
         const treeChanged = syntaxTree(u.view.state) !== syntaxTree(u.startState);
-        if (u.docChanged || u.selectionSet || u.viewportChanged || treeChanged) {
+        // noteMarks 经 StateEffect 注入（不伴随文档变化）：字段变了也要重算内联装饰
+        const marksChanged = u.state.field(noteMarksField, false) !== u.startState.field(noteMarksField, false);
+        if (u.docChanged || u.selectionSet || u.viewportChanged || treeChanged || marksChanged) {
           this.decorations = buildInlineDecorations(u.view);
         }
         if (treeChanged && !u.docChanged) {
@@ -1363,11 +1371,17 @@ export function livePreview(opts: LivePreviewOptions) {
     ...mdLang(),
     lpDocPath.of(opts.docPath),
     lpReadOnly.of(!!opts.readOnly),
-    lpNoteMarks.of(opts.noteMarks ?? []),
+    noteMarksField,
     lpOpenDocLink.of(opts.openDocLink ?? null),
     lpOnCandidates.of(opts.onCandidates ?? null),
     lpTableField,
     makeLpPlugin(opts.openLink, opts.openNote ?? (() => {})),
     makeLpTheme(opts.geometry === 'card'),
   ];
+}
+
+/** 注入划线笔记标记（notesFor 晚到也能显示，保存后重拉立即刷新） */
+export function pushNoteMarks(view: EditorView | null, marks: { quote: string; href: string }[]): void {
+  if (!view) return;
+  view.dispatch({ effects: setNoteMarks.of(marks ?? []) });
 }

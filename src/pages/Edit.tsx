@@ -75,6 +75,7 @@ export default function Edit() {
   const [file, setFile] = useState<FilePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState(''); // 精确文本（含 CRLF 等，与磁盘字节一致）
+  const [previewContent, setPreviewContent] = useState(''); // 分栏/预览面板的防抖文本（300ms）
   const [saveState, setSaveState] = useState<SaveState>('clean');
   const [saveMsg, setSaveMsg] = useState('');
   const [mode, setMode] = useState<Mode>('live'); // .md 默认实时预览；JSON 恒为源码
@@ -236,6 +237,7 @@ export default function Edit() {
         if (draft && draft.content !== f.content) setDraftPrompt(draft);
         const text = f.content || '';
         setContent(text);
+        setPreviewContent(text);
         baseTextRef.current = text;
         setLineSep(detectLineSeparator(text));
         setSaveState('clean');
@@ -260,6 +262,12 @@ export default function Edit() {
     const t = setTimeout(() => saveDraft(dsId, relPath, content), 1200);
     return () => clearTimeout(t);
   }, [content, dirty, dsId, relPath]);
+
+  // 预览面板内容防抖 300ms：输入时不逐键重排整篇（内链装饰只在变化段外保留）
+  useEffect(() => {
+    const t = setTimeout(() => setPreviewContent(content), 300);
+    return () => clearTimeout(t);
+  }, [content]);
 
   // 关闭页面保护
   useEffect(() => {
@@ -676,7 +684,7 @@ export default function Edit() {
             >
               <ReadOnlyDoc
                 key={relPath + (effMode === 'split' ? ':split' : ':preview')}
-                content={content}
+                content={previewContent}
                 docPath={relPath}
                 refNames={refNames}
                 collections={collections}

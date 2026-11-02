@@ -12,6 +12,7 @@ import { loadTopics } from '../derived.js';
 import { decodeText } from '../textDecode.js';
 import { applySettings, readSettings, SETTABLE, buildPatch, normalizeCategory } from './settings.js';
 import { generateImage, uniapiKey } from './imagegen.js';
+import { isWithin } from '../paths.js';
 
 const CONV_META = 'conversations.json';
 // 运行模式：auto=全自动 / confirm=破坏性工具需确认 / readonly=仅检索阅读
@@ -463,7 +464,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
           try {
             const base = path.resolve(l.baseDir);
             const abs = path.resolve(base, params.path);
-            if (abs !== base && !abs.startsWith(base + path.sep)) throw new Error('路径越界');
+            if (!isWithin(abs, base)) throw new Error('路径越界');
             const ext = path.extname(params.path).toLowerCase();
             let text = '';
             if (ext === '.doc' || ext === '.docx') {
@@ -1469,7 +1470,7 @@ ${m.text}
     }
   }
 
-  /** read 工具路径白名单：只能读当前资料库或 agents/default/skills/（realpath + 分隔符前缀） */
+  /** read 工具路径白名单：只能读当前资料库或 agents/default/skills/（realpath 归属判断） */
   _readPathAllowed(input) {
     const lib = this.getLib();
     const skillsDir = path.join(this.agentDir, 'skills');
@@ -1481,7 +1482,7 @@ ${m.text}
     const within = (root) => {
       let r;
       try { r = fs.realpathSync(root); } catch { return false; }
-      return real === r || real.startsWith(r + path.sep);
+      return isWithin(real, r);
     };
     return (lib?.baseDir && within(lib.baseDir)) || within(skillsDir);
   }

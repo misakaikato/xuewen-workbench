@@ -73,22 +73,28 @@ async function docxToHtml(absPath) {
   return { html: htmlRes.value, text: textRes.value, engine: 'mammoth' };
 }
 
-async function docViaSoffice(absPath, workDir) {
-  fs.mkdirSync(workDir, { recursive: true });
-  await new Promise((resolve, reject) => {
-    execFile(
-      sofficePathCache,
-      ['--headless', '--convert-to', 'docx', '--outdir', workDir, absPath],
-      { timeout: 60000 },
-      (err, _stdout, stderr) => (err ? reject(new Error(stderr || String(err))) : resolve())
+async function docViaSoffice(absPath, cacheDir) {
+  // 每次转换独立临时目录：并发同名文件互不串扰，只读本次新产生的 docx，用完即删。
+  const workDir = fs.mkdtempSync(path.join(cacheDir, 'convert-'));
+  try {
+    await new Promise((resolve, reject) => {
+      execFile(
+        sofficePathCache,
+        ['--headless', '--convert-to', 'docx', '--outdir', workDir, absPath],
+        { timeout: 60000 },
+        (err, _stdout, stderr) => (err ? reject(new Error(stderr || String(err))) : resolve())
+      );
+    });
+    const converted = path.join(
+      workDir,
+      path.basename(absPath, path.extname(absPath)) + '.docx'
     );
-  });
-  const converted = path.join(
-    workDir,
-    path.basename(absPath, path.extname(absPath)) + '.docx'
-  );
-  if (!fs.existsSync(converted)) throw new Error('LibreOffice 转换未产生输出文件');
-  return docxToHtml(converted);
+    // 正常退出但没有产物 → 视为失败（由 parseWord 回退 word-extractor）
+    if (!fs.existsSync(converted)) throw new Error('LibreOffice 转换未产生输出文件');
+    return await docxToHtml(converted);
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* 清理失败不影响结果 */ }
+  }
 }
 
 async function docViaExtractor(absPath) {
@@ -112,7 +118,7 @@ export async function parseWord(dsId, absPath, relPath, mtimeMs) {
     const soffice = await findSoffice();
     if (soffice) {
       try {
-        result = await docViaSoffice(absPath, path.join(cacheDir(dsId), 'word-convert'));
+        result = await docViaSoffice(absPath, cacheDir(dsId));
         result.engine = 'libreoffice+mammoth';
       } catch (e) {
         result = await docViaExtractor(absPath);

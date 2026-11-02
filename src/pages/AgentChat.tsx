@@ -46,6 +46,39 @@ const TEMPLATES = [
   { icon: Brain, title: '深度问答', prompt: '知识库里关于「量化交易」的核心观点是什么？逐本书分析并标注出处' },
 ];
 
+// 消息编辑框（受控）：「保存」按钮与 Enter 走同一条取值路径，不再用 textContent 读 textarea
+function MessageEditor({
+  initialText, onSave, onCancel, rows = 3, mono = false, className = '',
+}: {
+  initialText: string;
+  onSave: (text: string) => void;
+  onCancel: () => void;
+  rows?: number;
+  mono?: boolean;
+  className?: string;
+}) {
+  const [v, setV] = useState(initialText);
+  return (
+    <div className={className}>
+      <textarea
+        autoFocus
+        value={v}
+        rows={rows}
+        onChange={(e) => setV(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSave(v); }
+          if (e.key === 'Escape') onCancel();
+        }}
+        className={`w-full text-sm bg-transparent outline-none resize-none ${mono ? 'font-mono' : ''}`}
+      />
+      <div className="flex gap-1.5 justify-end mt-1">
+        <Button variant="outline" size="sm" className="text-xs" onClick={onCancel}>取消</Button>
+        <Button size="sm" className="text-xs" onClick={() => onSave(v)}>保存</Button>
+      </div>
+    </div>
+  );
+}
+
 export default function AgentChat() {
   const { dsId } = useApp();
   const { setTheme } = useTheme();
@@ -555,13 +588,13 @@ export default function AgentChat() {
                   {m.role === 'user' ? (
                     <div className={`max-w-[80%] group/msg ${isHit ? 'ring-2 ring-warning/60 rounded-2xl' : ''}`}>
                       {m.editing ? (
-                        <div className="rounded-2xl border border-primary/40 bg-card p-3">
-                          <textarea autoFocus defaultValue={m.text} rows={3} className="w-full text-sm bg-transparent outline-none resize-none" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); editMsg(i, (e.target as HTMLTextAreaElement).value); } if (e.key === 'Escape') setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x))); }} />
-                          <div className="flex gap-1.5 justify-end mt-1">
-                            <Button variant="outline" size="sm" className="text-xs" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x)))}>取消</Button>
-                            <Button size="sm" className="text-xs" onClick={(e) => editMsg(i, (e.target as HTMLElement).parentElement?.previousElementSibling?.textContent || '')}>保存</Button>
-                          </div>
-                        </div>
+                        <MessageEditor
+                          initialText={m.text}
+                          rows={3}
+                          className="rounded-2xl border border-primary/40 bg-card p-3"
+                          onSave={(t) => editMsg(i, t)}
+                          onCancel={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x)))}
+                        />
                       ) : (
                         <>
                           <div className="rounded-2xl rounded-br-md px-4 py-2.5 text-sm whitespace-pre-wrap break-words bg-primary text-primary-foreground leading-relaxed">
@@ -619,13 +652,14 @@ export default function AgentChat() {
                         </div>
                       )}
                       {m.editing && (
-                        <div className="mt-2 rounded-lg border border-primary/40 bg-card p-3">
-                          <textarea autoFocus defaultValue={m.text} rows={6} className="w-full text-sm bg-transparent outline-none resize-none font-mono" onKeyDown={(e) => { if (e.key === 'Escape') setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x))); }} />
-                          <div className="flex gap-1.5 justify-end mt-1">
-                            <Button variant="outline" size="sm" className="text-xs" onClick={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x)))}>取消</Button>
-                            <Button size="sm" className="text-xs" onClick={(e) => editMsg(i, (e.target as HTMLElement).parentElement?.previousElementSibling?.textContent || '')}>保存</Button>
-                          </div>
-                        </div>
+                        <MessageEditor
+                          initialText={m.text}
+                          rows={6}
+                          mono
+                          className="mt-2 rounded-lg border border-primary/40 bg-card p-3"
+                          onSave={(t) => editMsg(i, t)}
+                          onCancel={() => setMsgs((ms) => ms.map((x, j) => (j === i ? { ...x, editing: false } : x)))}
+                        />
                       )}
                     </div>
                   )}

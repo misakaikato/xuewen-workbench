@@ -392,7 +392,33 @@ export default function Read() {
     return () => {
       dead = true;
     };
-  }, [dsId, relPath, config?.status.scannedAt]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dsId, relPath]);
+
+  // 监听重扫（scannedAt 变化）：当前文档被外部改动时原地刷新内容，不整页重载、不显示加载态。
+  // 判定：后端扫描快照里的 mtime 必须「新于」当前已加载的 mtime 才拉取——快照滞后于已加载内容时不动，
+  // 因此首次挂载不误拉；保存自身触发的重扫 mtime 已同步，此处为空操作。
+  const fileMtimeRef = useRef(0);
+  useEffect(() => { fileMtimeRef.current = file?.mtimeMs ?? 0; }, [file]);
+  useEffect(() => {
+    if (!dsId || !relPath || !fileMtimeRef.current) return;
+    if (editingRef.current) return;
+    api.fileStat(relPath)
+      .then((st) => {
+        if (st.dsId !== dsId || editingRef.current) return;
+        if (st.mtimeMs <= fileMtimeRef.current) return;
+        api.file(relPath)
+          .then((nf) => {
+            if (nf.dsId !== dsId || editingRef.current) return;
+            fileMtimeRef.current = nf.mtimeMs;
+            setFile(nf);
+            setLineSep(detectLineSeparator(nf.content || ''));
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config?.status.scannedAt, dsId, relPath]);
 
   // 渲染后：markdown 走只读 CM（TOC 从源文扫，?h= 由组件内部装饰）；Word/JSON 沿用 DOM 标题/高亮
   useEffect(() => {
@@ -411,8 +437,8 @@ export default function Read() {
     });
     setToc(headings);
 
-    // 划线笔记标记（纯文本/JSON/Word 走 DOM；markdown 由 livePreview 装饰处理）
-    if (noteMarks.length) {
+    // 划线笔记标记（JSON/Word/HTML 走 DOM；markdown 由 livePreview、TXT 由 TxtReadBody 处理）
+    if (noteMarks.length && file.type !== 'text') {
       for (const mk of noteMarks) {
         // 候选定位串：引文的每个非空行（≥6 字），长的优先——多行引用总有某行能命中；
         // 只取首行会在「首行是空行/短标题」时漏标或标错位置。
@@ -457,8 +483,8 @@ export default function Read() {
       }
     }
 
-    // 搜索命中高亮（Word/JSON）
-    if (highlightTerm) {
+    // 搜索命中高亮（Word/JSON/HTML；TXT 由 TxtReadBody 处理）
+    if (highlightTerm && file.type !== 'text') {
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
       const nodes: Text[] = [];
       let n: Node | null;
@@ -794,6 +820,8 @@ export default function Read() {
       setNoteOpen(false); setNoteText(''); setSel(null); window.getSelection()?.removeAllRanges();
       try { localStorage.removeItem('wb:note-draft:' + relPath); } catch { /* 忽略 */ }
       setNoteDraftSaved(false);
+      // 重新拉取本文笔记，下划线与计数立即更新（不再等切换文档）
+      api.notesFor(relPath).then((x) => setDocNotes(x.notes || [])).catch(() => {});
       setResumeHint(`已写入阅读笔记：${r.path}`);
       window.setTimeout(() => setResumeHint(null), 5000);
     } catch (err) {
@@ -842,25 +870,6 @@ export default function Read() {
     [file, enterEdit]
   );
 
-  if (error) {
-    return (
-      <PageError
-        title="无法打开文件"
-        detail={<><p className="mono">{relPath}</p><p>{error.message}</p></>}
-      >
-        <Button onClick={() => navigate(-1)}>返回上一页</Button>
-        <Button variant="outline" asChild><Link to="/browse">浏览目录</Link></Button>
-        <Button asChild>
-          <Link to={'/search?q=' + encodeURIComponent(relPath.split('/').pop() || '')}>搜索同名文件</Link>
-        </Button>
-      </PageError>
-    );
-  }
-
-  if (!file) {
-    return <PageLoading />;
-  }
-
   const crumbs = relPath.split('/');
 
   return (
@@ -879,7 +888,7 @@ export default function Read() {
             onClose={closeTab}
             onCloseMany={closeManyTabs}
           />
-          {editing ? (
+          {file && (editing ? (
             <div
               className="bg-card border border-border rounded-lg shadow-sm p-1 flex items-center gap-2"
               data-wb-inplace-bar
@@ -1031,7 +1040,7 @@ export default function Read() {
               </Button>
             )}
           </div>
-          )}
+          ))}
 
           {/* 文内查找条（随 sticky 顶栏区） */}
           {findOpen && (
@@ -1125,11 +1134,13 @@ export default function Read() {
           </div>
 
           {/* 主题标签（人工 tags + AI 标注），点击看同主题文档 */}
-          <div className="mb-2">
-            <TagChips path={relPath} onOpenDoc={(p2) => navigate('/read/' + p2.split('/').map(encodeURIComponent).join('/'))} onOpenConcept={(n) => setConceptName(n)} />
-          </div>
+          {file && (
+            <div className="mb-2">
+              <TagChips path={relPath} onOpenDoc={(p2) => navigate('/read/' + p2.split('/').map(encodeURIComponent).join('/'))} onOpenConcept={(n) => setConceptName(n)} />
+            </div>
+          )}
 
-          {/* 正文 */}
+          {/* 正文：加载/错误只替换这张卡片，标签栏、工具栏、AI 面板、目录侧栏保持挂载 */}
           <div
             ref={contentRef}
             data-wb-content-card
@@ -1137,7 +1148,22 @@ export default function Read() {
             onDoubleClick={onContentDoubleClick}
             title={!editing && file && !file.readonly && (file.type === 'markdown' || file.type === 'text' || file.type === 'html') ? '双击进入编辑' : undefined}
           >
-            {file.type === 'markdown' && (
+            {error ? (
+              <PageError
+                title="无法打开文件"
+                detail={<><p className="mono">{relPath}</p><p>{error.message}</p></>}
+              >
+                <Button onClick={() => navigate(-1)}>返回上一页</Button>
+                <Button variant="outline" asChild><Link to="/browse">浏览目录</Link></Button>
+                <Button asChild>
+                  <Link to={'/search?q=' + encodeURIComponent(relPath.split('/').pop() || '')}>搜索同名文件</Link>
+                </Button>
+              </PageError>
+            ) : !file ? (
+              <PageLoading />
+            ) : (
+              <>
+              {file.type === 'markdown' && (
               <ReadOnlyDoc
                 key={relPath}
                 noteMarks={noteMarks}
@@ -1180,6 +1206,9 @@ export default function Read() {
                   content={file.content || ''}
                   links={docLinks}
                   style={txtReaderStyle}
+                  noteMarks={noteMarks}
+                  highlightTerm={highlightTerm}
+                  onOpenNote={(href) => navigate(href)}
                   onOpenTarget={(t) => {
                     if (t.path.startsWith('concept:')) {
                       setConceptName(t.path.slice('concept:'.length));
@@ -1213,18 +1242,22 @@ export default function Read() {
             {file.type === 'word' && (
               <WordReader key={relPath} onContentReady={onWordReady} path={relPath} name={file.name} html={file.html || ''} text={file.text || ''} warning={file.warning} engine={file.engine} />
             )}
+              </>
+            )}
           </div>
 
+          {file && (
           <div className="text-xs text-muted-foreground mt-3 flex gap-4 flex-wrap">
             <span>修改时间：{new Date(file.mtimeMs).toLocaleString('zh-CN')}</span>
             <span>大小：{(file.size / 1024).toFixed(1)} KB</span>
             {file.bom && <span>UTF-8 BOM</span>}
           </div>
+          )}
         </div>
       </div>
 
-      {/* 右侧：AI 助手（优先） */}
-      {aiOpen && file && (
+      {/* 右侧：AI 助手（优先）——切换文档时保持挂载 */}
+      {aiOpen && (
         <aside data-wb-overlay className="hidden lg:flex shrink-0 relative" style={{ width: aiWidth }}>
           <div
             className="absolute left-0 top-0 bottom-0 w-1 -ml-0.5 cursor-col-resize hover:bg-primary/30 z-10"
@@ -1233,7 +1266,7 @@ export default function Read() {
           />
           <ReadAgentPanel
             docPath={relPath}
-            docName={file.name}
+            docName={file?.name || ''}
             pendingQuote={aiQuote}
             onQuoteConsumed={() => setAiQuote(null)}
             onClose={() => setAiOpen(false)}

@@ -87,10 +87,12 @@ export class RagStore {
   /** 与扫描快照对账：返回需要(重)做与需要删除的文件路径 */
   planIncremental(snapshotFiles) {
     // snapshotFiles: [{ path, contentHash }]
-    const known = new Map(this.db.prepare('SELECT path, content_hash FROM files').all().map((r) => [r.path, r.content_hash]));
+    const known = new Map(this.db.prepare('SELECT path, content_hash, done FROM files').all().map((r) => [r.path, r]));
     const toAdd = [];
     for (const f of snapshotFiles) {
-      if (known.get(f.path) !== f.contentHash) toAdd.push(f);
+      const k = known.get(f.path);
+      // 内容变化，或上次构建在该文件上中断（done=0，向量未写完）都重做
+      if (!k || k.content_hash !== f.contentHash || k.done === 0) toAdd.push(f);
     }
     const snapSet = new Set(snapshotFiles.map((f) => f.path));
     const toDel = [...known.keys()].filter((p) => !snapSet.has(p));
@@ -114,8 +116,9 @@ export class RagStore {
         const r = insChunk.run(filePath, c.headingPath || '', i, kind, c.text, textS, prefixHash(c.text));
         insFts.run(Number(r.lastInsertRowid), textS);
       });
-      this.db.prepare('INSERT INTO files(path, content_hash, chunk_count, done, updated_at) VALUES(?,?,?,1,?)')
-        .run(filePath, contentHash, chs.length, Date.now());
+      // 向量由 writeVecs 补完后经 markFileDone 置 done=1；无块（空文本）直接完成
+      this.db.prepare('INSERT INTO files(path, content_hash, chunk_count, done, updated_at) VALUES(?,?,?,?,?)')
+        .run(filePath, contentHash, chs.length, chs.length ? 0 : 1, Date.now());
     });
     txn(chunks);
     this._bump();

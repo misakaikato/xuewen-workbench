@@ -12,7 +12,7 @@ import {
 import { loadConcepts } from './derived.js';
 import { setActivity } from './lagWatch.js';
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2; // +1：索引文本改走 toEditorText（换行归一口径变化），旧缓存偏移失效
 // HTML 链接图只跟踪这些文档扩展名的 href 目标（与 scanner.SUPPORTED_EXTS 对齐）
 const HTML_DOC_EXTS = ['.md', '.json', '.txt', '.doc', '.docx', '.html', '.htm'];
 const LINKS_DIR = () => path.join(dataDir(), 'links');

@@ -12,7 +12,7 @@ import type { DecorationSet } from '@codemirror/view';
 import type { DocLink } from '@/lib/api';
 import type { CorpusRefNameEntry } from '@/lib/corpusRefMatch';
 import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
-import { livePreview } from '@/components/editor/livePreview';
+import { livePreview, pushNoteMarks } from '@/components/editor/livePreview';
 import { editorBaseExtensions } from '@/components/editor/setup';
 import { corpusRefsExtension, pushCorpusNames } from '@/components/editor/corpusRefs';
 import { linksExtensionFor, pushDocLinks } from '@/components/editor/autoLinks';
@@ -22,10 +22,23 @@ import { CorpusRefPopover, PathListPopover, type CorpusRefRequest, type PathList
 import { ExternalLinkDialog } from '@/components/ExternalLinkDialog';
 import { resolveDocTarget } from '@/lib/docLink';
 import { useApp } from '@/store/app';
+import { findHlField } from '@/lib/readFindHighlight';
 
 const encPath = (p: string) => p.split('/').map(encodeURIComponent).join('/');
 
-import { findHlField } from '@/lib/readFindHighlight';
+// 内容变化时按差异范围 dispatch：找公共前后缀，只替换中间变化段。
+// 未变化区域的内链/装饰保留，滚动位置也不动（外部改动刷新与预览更新共用）。
+function diffReplace(view: EditorView, next: string): void {
+  const cur = view.state.sliceDoc(0);
+  if (cur === next) return;
+  const n = cur.length;
+  const m = next.length;
+  let start = 0;
+  while (start < n && start < m && cur.charCodeAt(start) === next.charCodeAt(start)) start++;
+  let end = 0;
+  while (end < n - start && end < m - start && cur.charCodeAt(n - 1 - end) === next.charCodeAt(m - 1 - end)) end++;
+  view.dispatch({ changes: { from: start, to: n - end, insert: next.slice(start, m - end) } });
+}
 
 // ?h= 高亮词：mark 装饰（行内命中，不跨行）
 export const setHlTerm = StateEffect.define<string>();
@@ -148,7 +161,7 @@ export function ReadOnlyDoc({
       EditorState.lineSeparator.of(lineSep),
       EditorView.lineWrapping,
       drawSelection(),
-      ...livePreview({ docPath, openLink, openNote: onOpenNote, openDocLink: openLinkTarget, onCandidates, readOnly: !editing, geometry: 'card', noteMarks }),
+      ...livePreview({ docPath, openLink, openNote: onOpenNote, openDocLink: openLinkTarget, onCandidates, readOnly: !editing, geometry: 'card' }),
       ...corpusRefsExtension({
         names: [],
         collections: [],
@@ -168,14 +181,13 @@ export function ReadOnlyDoc({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docPath, editing, lineSep]);
 
-  // content 外部变化（换文档 / 保存后刷新）：编辑态绝不回写（缓冲区是唯一事实）
+  // content 外部变化（换文档 / 保存后刷新 / 外部改动）：编辑态绝不回写（缓冲区是唯一事实）
   useEffect(() => {
     const v = viewRef.current;
     if (!v || editing) return;
-    if (v.state.sliceDoc(0) !== content) {
-      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: content } });
-    }
-  }, [content, editing, onReady]);
+    diffReplace(v, content);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, editing]);
 
   // 数据注入：名称清单 / 词条链接 / 高亮词（reconfigure 不重建 StateField，注入跨态存活）
   useEffect(() => {
@@ -184,6 +196,9 @@ export function ReadOnlyDoc({
   useEffect(() => {
     pushDocLinks(viewRef.current, links || [], 0);
   }, [links]);
+  useEffect(() => {
+    pushNoteMarks(viewRef.current, noteMarks || []);
+  }, [noteMarks]);
   useEffect(() => {
     viewRef.current?.dispatch({ effects: setHlTerm.of(highlightTerm || '') });
   }, [highlightTerm]);

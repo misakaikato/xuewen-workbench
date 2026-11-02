@@ -1,6 +1,6 @@
 // 整体布局：顶栏（logo、概览、知识库切换、全局搜索、重扫、设置）+ 可折叠侧栏（目录树）+ 内容区
 // 小屏幕侧栏变为抽屉；Escape 关闭抽屉。多知识库：切换器列出全部已打开库，可添加/移除。
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/store/app';
 import { UpdateBanner } from './UpdateBanner';
@@ -65,7 +65,7 @@ export function Layout() {
 
   // 登记条目操作（重命名/移动/删除）的应用上下文：刷新树与跟随导航
   const locRef = useRef(location);
-  locRef.current = location;
+  useLayoutEffect(() => { locRef.current = location; }, [location]);
   useEffect(() => {
     setEntryContext({
       dsId,
@@ -89,7 +89,7 @@ export function Layout() {
     return Number.isFinite(n) && n >= 200 && n <= 480 ? n : 256;
   });
   const sideWRef = useRef(sideW);
-  sideWRef.current = sideW;
+  useLayoutEffect(() => { sideWRef.current = sideW; }, [sideW]);
   const [dragging, setDragging] = useState(false);
   const onResizeDown = (e: React.MouseEvent) => {
     e.preventDefault();

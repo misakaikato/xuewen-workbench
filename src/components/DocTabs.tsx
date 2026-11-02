@@ -1,5 +1,5 @@
 // 文档标签栏：浏览器式多标签，激活态跟随 URL，右键提供批量关闭
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X, FileText } from 'lucide-react';
 import { tabTitle } from '@/lib/tabs';
 
@@ -19,6 +19,15 @@ export function DocTabs({
   onCloseMany: (paths: string[]) => void;
 }) {
   const [menu, setMenu] = useState<MenuAt | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // 激活标签变化时滚入可见区（保持横向滚动位置，不让当前标签跑到视口外）
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || !active) return;
+    const el = [...list.children].find((c) => c.getAttribute('data-tab-path') === active) as HTMLElement | undefined;
+    el?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  }, [active, tabs]);
 
   // 点击任意处关闭菜单
   useEffect(() => {
@@ -46,13 +55,14 @@ export function DocTabs({
     : [];
 
   return (
-    <div className="flex items-end gap-0.5 overflow-x-auto shrink-0 px-1 pt-1 select-none bg-background border-b border-border" role="tablist">
+    <div ref={listRef} className="flex items-end gap-0.5 overflow-x-auto shrink-0 px-1 pt-1 select-none bg-background border-b border-border" role="tablist">
       {tabs.map((p) => {
         const isActive = p === active;
         return (
           <div
             key={p}
             role="tab"
+            data-tab-path={p}
             aria-selected={isActive}
             title={p}
             className={

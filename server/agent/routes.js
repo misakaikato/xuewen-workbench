@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import AdmZip from 'adm-zip';
+import { isWithin } from '../paths.js';
 
 // skill 名称白名单：只允许字母数字下划线/中文/连字符，1-64 字符
 const SKILL_NAME_RE = /^[\w\u4e00-\u9fff-]{1,64}$/;
@@ -250,7 +251,7 @@ export function mountAgent(hub, resolveLib) {
             throw Object.assign(new Error('zip 含越界路径'), { status: 400 });
           }
           const fp = path.resolve(tmpDest, rel);
-          if (fp !== tmpDest && !fp.startsWith(tmpDest + path.sep)) {
+          if (!isWithin(fp, tmpDest)) {
             throw Object.assign(new Error('zip 含越界路径'), { status: 400 });
           }
           if (entry.isDirectory) {
@@ -288,7 +289,7 @@ export function mountAgent(hub, resolveLib) {
     if (!SKILL_NAME_RE.test(name)) return res.status(400).json({ error: 'skill 名称不合法' });
     const skillsDir = path.resolve(path.join(hub.agentDir, 'skills'));
     const dir = path.resolve(skillsDir, name);
-    if (dir !== skillsDir && !dir.startsWith(skillsDir + path.sep)) return res.status(400).json({ error: '路径越界' });
+    if (!isWithin(dir, skillsDir)) return res.status(400).json({ error: '路径越界' });
     let st;
     try { st = fs.statSync(dir); } catch { return res.status(404).json({ error: 'skill 不存在' }); }
     if (!st.isDirectory()) return res.status(400).json({ error: '目标不是目录' });

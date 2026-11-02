@@ -78,6 +78,7 @@ export default function Search() {
   const navigate = useNavigate();
   const seqRef = useRef(0);
   const hydratedRef = useRef(false);
+  const [composing, setComposing] = useState(false); // 输入法组字中：组字期间不发请求
   // 最新状态镜像：供卸载时保存会话读取（cleanup 闭包捕获的是旧渲染值）
   const latestRef = useRef({ input, types, dir, mode, smartLimit, results, smart, terms, total, scroll: 0 });
   latestRef.current = { input, types, dir, mode, smartLimit, results, smart, terms, total, scroll: latestRef.current.scroll };
@@ -179,7 +180,7 @@ export default function Search() {
     [smartLimit]
   );
 
-  // 输入防抖
+  // 输入防抖（组字期间不发请求，组字结束后再按防抖发）
   useEffect(() => {
     const p: Record<string, string> = input.trim() ? { q: input.trim() } : {};
     if (mode === 'exact') p.mode = 'exact';
@@ -187,15 +188,17 @@ export default function Search() {
       hydratedRef.current = false; // 会话已恢复：本轮跳过重查，闪退即无
       return;
     }
+    if (composing) return;
     const t = setTimeout(() => {
       setParams(p, { replace: true });
       doSearch(input, types, dir, mode);
     }, mode === 'smart' ? 500 : 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, types, dir, dsId, mode, smartLimit]);
+  }, [input, types, dir, dsId, mode, smartLimit, composing]);
 
-  useEffect(() => setInput(q), [q]);
+  // 仅当 URL 的 q 与当前输入（trim 后）不同时才回写输入框，避免清掉用户键入的尾随空格
+  useEffect(() => { setInput((prev) => (q !== prev.trim() ? q : prev)); }, [q]);
 
   return (
     <div className="max-w-3xl mx-auto py-6 px-4">
@@ -221,6 +224,8 @@ export default function Search() {
         autoFocus
         value={input}
         onChange={(e) => setInput(e.target.value)}
+        onCompositionStart={() => setComposing(true)}
+        onCompositionEnd={(e) => { setComposing(false); setInput(e.currentTarget.value); }}
         placeholder={mode === 'smart' ? '用自然语言提问，如：孔子怎么看礼' : '多个关键词用空格分隔；精确短语用 "双引号"'}
         className="w-full px-3 py-2.5 rounded-lg border border-input bg-card text-sm mb-3"
       />

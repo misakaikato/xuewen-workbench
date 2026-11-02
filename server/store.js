@@ -119,11 +119,39 @@ export function readJson(file, fallback) {
   }
 }
 
+// Windows 上目标文件被占用时 renameSync 会抛 EPERM/EACCES/EBUSY：按退避重试，
+// 最终仍失败则调用方负责删除临时文件再抛错。写盘路径本身即同步阻塞，退避同步等。
+const RENAME_RETRY_BACKOFF = [50, 100, 200, 400, 800];
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+export function renameWithRetry(from, to) {
+  let lastErr;
+  for (let attempt = 0; attempt <= RENAME_RETRY_BACKOFF.length; attempt++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (e) {
+      if (!RENAME_RETRY_CODES.has(e.code)) throw e;
+      lastErr = e;
+      if (attempt < RENAME_RETRY_BACKOFF.length) {
+        const end = Date.now() + RENAME_RETRY_BACKOFF[attempt];
+        while (Date.now() < end) { /* 同步退避 */ }
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export function writeJsonAtomic(file, obj) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp-' + process.pid;
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
-  fs.renameSync(tmp, file);
+  try {
+    renameWithRetry(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* 忽略 */ }
+    throw e;
+  }
 }
 
 // 配置文件 v2：{ version: 2, libraries: [{ id, baseDir, name, addedAt }], activeId }

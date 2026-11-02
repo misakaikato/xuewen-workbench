@@ -40,6 +40,9 @@ export function ReadAgentPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // 卸载时中断流式 fetch（切换文档/关面板不残留连接与补丁）
+  useEffect(() => () => abortRef.current?.abort(), []);
+
   // 打开面板：取当前库最近一次对话（没有就新建），保证与主界面上下文连续
   useEffect(() => {
     let dead = false;

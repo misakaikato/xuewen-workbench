@@ -32,7 +32,8 @@ class RagIndex {
     this.error = null;
     this._pauseFlag = false;
     this._buildSeq = 0;
-    this._autoQueued = false;
+    // 构建期间收到 onScanComplete 时置位：当前构建结束后立即再跑一次增量
+    this.pendingRescan = false;
   }
 
   _ensureStore() {
@@ -51,8 +52,17 @@ class RagIndex {
     try {
       configChanged = !!store.metaGet('index_cfg') && store.metaGet('index_cfg') !== indexConfigFingerprint(this.cfg);
     } catch { /* 忽略 */ }
-    // 重启恢复：库里有完成的文件即为就绪（内存态丢失时从数据推导）
-    if (this.state === 'none' && st.files > 0 && st.filesDone === st.files) this.state = 'ready';
+    // 重启恢复：库里有完成的文件且与当前快照完全对账一致才是就绪；
+    // 有文件但有待加/待删则视为 stale（前端显示「待更新」）
+    if (this.state === 'none' && st.files > 0) {
+      const snap = this.getSnapshot();
+      const plan = store.planIncremental((snap?.files || []).map((f) => ({ ...f, contentHash: f.mtimeMs + ':' + f.size })));
+      if (st.filesDone === st.files && plan.toAdd.length === 0 && plan.toDel.length === 0) {
+        this.state = 'ready';
+      } else {
+        this.state = 'stale';
+      }
+    }
     let dbBytes = 0;
     try {
       dbBytes = fs.statSync(this.dbPath).size;
@@ -88,7 +98,12 @@ class RagIndex {
     const t0 = Date.now();
     try {
       if (rebuild || (store.metaGet('index_cfg') && store.metaGet('index_cfg') !== indexConfigFingerprint(this.cfg))) {
-        store.db.exec('DELETE FROM files; DELETE FROM chunks_fts; DELETE FROM chunks; DELETE FROM vecs;');
+        // 清库与写入新指纹在同一事务：中途暂停/失败/退出后再续建不会再次清库
+        const txn = store.db.transaction(() => {
+          store.db.exec('DELETE FROM files; DELETE FROM chunks_fts; DELETE FROM chunks; DELETE FROM vecs;');
+          store.metaSet('index_cfg', indexConfigFingerprint(this.cfg));
+        });
+        txn();
         store._bump();
       }
       const plan = store.planIncremental(snap.files.map((f) => ({ ...f, contentHash: f.mtimeMs + ':' + f.size })));
@@ -147,6 +162,12 @@ class RagIndex {
       this.error = String(e.message || e);
       console.error('[rag] 索引构建失败: ' + this.error);
       return { ok: false, error: this.error };
+    } finally {
+      // 构建期间扫描完成：结束后立即再跑一次增量（暂停则不续，等用户手动继续）
+      if (this.pendingRescan && this.state !== 'paused') {
+        this.pendingRescan = false;
+        this.build({}).catch((e2) => console.error('[rag] 增量续建失败: ' + (e2?.message || e2)));
+      }
     }
   }
 
@@ -242,7 +263,11 @@ export class RagManager {
   /** 扫描完成钩子：已有索引（files>0）则自动增量；从未建过不自动 */
   onScanComplete(dsId) {
     const ix = this.indices.get(dsId);
-    if (!ix || ix.state === 'building') return;
+    if (!ix) return;
+    if (ix.state === 'building') {
+      ix.pendingRescan = true; // 构建中：记一笔，结束后由 build 续跑增量
+      return;
+    }
     try {
       const st = ix._ensureStore().stats();
       if (st.files > 0 && ix.state !== 'paused') {

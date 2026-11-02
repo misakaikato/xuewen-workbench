@@ -260,7 +260,6 @@ interface RowCtx {
 }
 
 function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
-  const navigate = useNavigate();
   const cut = ctx.cutPath === row.path;
   const focusCls = 'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring';
 
@@ -338,7 +337,13 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
     );
   }
 
-  // 目录行（物理树）与分组头（集合视图）
+  return <DirRow row={row} idx={idx} ctx={ctx} />;
+}
+
+// 目录行（物理树）与分组头（集合视图）：独立组件，hooks 在其顶层
+function DirRow({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
+  const navigate = useNavigate();
+  const focusCls = 'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring';
   const isHead = row.kind === 'head';
   const active = !isHead && ctx.activeDir === row.path;
   const sel = !isHead && ctx.selected.has(row.path);

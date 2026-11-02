@@ -6,7 +6,9 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir } from './store.js';
+import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir, renameWithRetry } from './store.js';
+import { isWithin } from './paths.js';
+import { caseRenameAction } from './renamePlan.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
 import { hostOpenPath, revealInFolder } from './hostOpen.js';
 import { logsDir, createLogWriter } from './logger.js';
@@ -215,7 +217,7 @@ function requireLib(res, req) {
 function resolveWithin(lib, rel) {
   const abs = path.resolve(lib.scanner.baseDir, rel);
   const baseNorm = path.resolve(lib.scanner.baseDir);
-  if (abs !== baseNorm && !abs.startsWith(baseNorm + path.sep)) {
+  if (!isWithin(abs, baseNorm)) {
     throw Object.assign(new Error('路径越界'), { status: 403 });
   }
   try {
@@ -229,7 +231,7 @@ function resolveWithin(lib, rel) {
       probe = parent;
     }
     const real = fs.realpathSync(probe);
-    if (real !== realBase && !real.startsWith(realBase + path.sep)) {
+    if (!isWithin(real, realBase)) {
       throw Object.assign(new Error('符号链接指向数据源之外'), { status: 403 });
     }
   } catch (e) {
@@ -251,7 +253,12 @@ function readTextPreserve(abs) {
 async function writeTextAtomic(abs, content, bom) {
   const tmp = abs + '.wb-tmp-' + process.pid;
   fs.writeFileSync(tmp, (bom ? '﻿' : '') + content, 'utf8');
-  fs.renameSync(tmp, abs);
+  try {
+    renameWithRetry(tmp, abs);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* 忽略 */ }
+    throw e;
+  }
 }
 
 // 保存后同步旁注 content_hash：仅当旁注存在且为 JSON 对象时更新哈希字段，
@@ -316,10 +323,21 @@ async function addOrActivateLibrary(baseDir) {
     } catch (e) {
       console.error('[' + lib.name + '] 首扫失败:', e.message);
     }
-  } else if (activeId !== lib.id) {
-    activeId = lib.id;
-    libVersion++;
-    agentHub.onLibSwitch();
+  } else {
+    const runtime = libs.get(lib.id);
+    // 启动时不可达、目录已恢复：重新扫描并开监听（此时目录可访问性已在上方校验过）
+    if (!runtime.scanner.snapshot) {
+      try {
+        await runtime.start();
+      } catch (e) {
+        console.error('[' + lib.name + '] 恢复扫描失败:', e.message);
+      }
+    }
+    if (activeId !== lib.id) {
+      activeId = lib.id;
+      libVersion++;
+      agentHub.onLibSwitch();
+    }
   }
   return { ok: true, dsId: lib.id, name: lib.name, baseDir: lib.baseDir };
 }
@@ -397,8 +415,23 @@ app.post('/api/config/test', async (req, res) => {
 });
 
 app.post('/api/rescan', async (req, res) => {
-  const lib = requireLib(res, req);
-  if (!lib) return;
+  let lib = null;
+  try {
+    lib = resolveLib(req);
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message });
+  }
+  if (!lib) return res.status(409).json({ error: '尚未打开资料库' });
+  // 启动时不可达（无快照）的库：目录已恢复则 start（扫描 + 开监听）；仍不可达返回 409
+  if (!lib.scanner.snapshot) {
+    try {
+      fs.accessSync(lib.baseDir, fs.constants.R_OK);
+      await lib.start();
+    } catch (e) {
+      return res.status(409).json({ error: '目录不可访问或扫描失败: ' + e.message });
+    }
+    return res.json({ ok: true, status: lib.scanner.status() });
+  }
   // 用户点「重新扫描」= 期望彻底重建：先让链接索引失效，别按签名/mtime 复用旧结果
   try { lib.linkIndex.invalidate(); } catch { /* 索引未初始化 */ }
   await lib.scanner.rescan();
@@ -592,6 +625,16 @@ app.get('/api/file/raw', (req, res) => {
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
+});
+
+// 轻量文件元信息（mtime/size）：阅读页监听重扫后据此判断当前文档是否被外部改动
+app.get('/api/file/stat', (req, res) => {
+  const lib = requireLib(res, req);
+  if (!lib) return;
+  const rel = String(req.query.path || '');
+  const f = findFile(lib, rel);
+  if (!f) return res.status(404).json({ error: '文件不在当前扫描结果中（可能已被移动或删除）', missing: true });
+  res.json({ dsId: lib.id, path: rel, mtimeMs: f.mtimeMs, size: f.size });
 });
 
 // 在系统文件管理器中定位显示（Finder / 资源管理器 / xdg-open）；路径必须在当前资料库内且存在
@@ -1057,16 +1100,34 @@ function relocate(lib, entry, newRel) {
   const newAbs = resolveWithin(lib, newRel);
   const caseOnly = sameCaseInsensitive(entry.rel, newRel);
   const newMeta = newAbs + SIDECAR_SUFFIX;
-  if (!caseOnly && pathTaken(newAbs)) {
-    throw Object.assign(new Error('目标位置已存在同名' + (entry.isDir ? '条目' : '文档') + ': ' + newRel), { status: 409, extra: { exists: true } });
-  }
-  if (!entry.isDir && !caseOnly && pathTaken(newMeta)) {
-    throw Object.assign(new Error('目标位置已存在同名元数据文件: ' + newRel + SIDECAR_SUFFIX), { status: 409, extra: { exists: true } });
+  if (caseOnly) {
+    // 仅大小写变化：目标存在且与源不是同一文件（大小写敏感卷上真有两个文件）→ 409；
+    // 同一文件（不敏感卷）则走下方两步改名；目标不存在（敏感卷）也照常两步改名。
+    let targetExists = false;
+    let sameInode = false;
+    try {
+      const s1 = fs.statSync(entry.abs);
+      const s2 = fs.statSync(newAbs);
+      targetExists = true;
+      sameInode = s1.ino === s2.ino && s1.dev === s2.dev;
+    } catch {
+      // 目标不存在：继续两步改名
+    }
+    if (caseRenameAction({ caseOnly: true, targetExists, sameInode }) === 'conflict') {
+      throw Object.assign(new Error('目标已存在'), { status: 409, extra: { exists: true } });
+    }
+  } else {
+    if (pathTaken(newAbs)) {
+      throw Object.assign(new Error('目标位置已存在同名' + (entry.isDir ? '条目' : '文档') + ': ' + newRel), { status: 409, extra: { exists: true } });
+    }
+    if (!entry.isDir && pathTaken(newMeta)) {
+      throw Object.assign(new Error('目标位置已存在同名元数据文件: ' + newRel + SIDECAR_SUFFIX), { status: 409, extra: { exists: true } });
+    }
   }
   const steps = [];
   const pushStep = (from, to) => {
     if (sameCaseInsensitive(from, to)) {
-      const tmp = from + '.wb-case-' + process.pid;
+      const tmp = from + '.wb-case-' + crypto.randomBytes(6).toString('hex');
       steps.push([from, tmp], [tmp, to]);
     } else steps.push([from, to]);
   };
@@ -1452,7 +1513,7 @@ app.post('/api/links/ignore', async (req, res) => {
   try {
     if (b.clearAll) {
       lib.linkIndex.clearIgnores();
-      await lib.linkIndex.rebuild(lib.scanner.snapshot, indexer);
+      await lib.linkIndex.rebuild(lib.scanner.snapshot, lib.indexer);
       return res.json({ ok: true, ignoredCount: 0 });
     }
     const p = String(b.path || '');
@@ -1939,6 +2000,21 @@ async function boot() {
       console.error('[' + lib.name + '] 目录不可访问:', e.message);
     }
   }));
+  // 启动续建：对已打开且已有 RAG 索引（rag.db 存在且 files>0）的库触发一次增量构建，
+  // 把上次退出前未完成的进度补上（从未建过索引的库不自动建）。
+  for (const lib of libs.values()) {
+    if (!lib.scanner.snapshot) continue;
+    try {
+      const ragDb = path.join(dataDir(), 'knowledge', lib.id, 'rag.db');
+      if (!fs.existsSync(ragDb)) continue;
+      const ix = ragManager.index(lib.id);
+      if (ix._ensureStore().stats().files > 0) {
+        ix.build({}).catch((e) => console.error('[boot] RAG 增量续建失败:', e?.message || e));
+      }
+    } catch (e) {
+      console.error('[boot] RAG 续建检查失败:', e?.message || e);
+    }
+  }
   activeId = libs.has(savedActive) ? savedActive : (libraries[0]?.id ?? null);
   if (activeId) setActiveLibInStore(activeId);
   app.listen(PORT, HOST, () => {

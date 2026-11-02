@@ -175,7 +175,7 @@ export default function RagManage() {
         </h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs mb-3">
           <div><div className="text-muted-foreground">状态</div><div className="font-medium">
-            {ix?.state === 'building' ? `构建中（${ix.phase}）` : ix?.state === 'ready' ? '就绪' : ix?.state === 'paused' ? '已暂停' : ix?.state === 'error' ? '失败' : '未构建'}
+            {ix?.state === 'building' ? `构建中（${ix.phase}）` : ix?.state === 'ready' ? '就绪' : ix?.state === 'paused' ? '已暂停' : ix?.state === 'error' ? '失败' : ix?.state === 'stale' ? '待更新' : '未构建'}
           </div></div>
           <div><div className="text-muted-foreground">文件 / 块</div><div className="font-medium stat-num">{ix?.filesDone ?? 0}/{ix?.files ?? 0} · {ix?.chunks ?? 0} 块</div></div>
           <div><div className="text-muted-foreground">向量覆盖</div><div className="font-medium stat-num">{ix?.vecs ?? 0}/{ix?.chunks ?? 0}</div></div>
@@ -194,6 +194,13 @@ export default function RagManage() {
           <div className="text-xs border border-destructive/40 bg-destructive/10 text-destructive rounded p-2 mb-3 flex items-center gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             关键词索引查询失败（检索退化为仅语义路）：{ix.ftsError}
+          </div>
+        )}
+        {ix?.state === 'stale' && (
+          <div className="text-xs border border-warning/40 bg-warning-soft text-warning-foreground rounded p-2 mb-3 flex items-center gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            索引与当前文件不完全一致，有待更新。
+            <button className="underline" disabled={busy !== null} onClick={() => run('build', () => api.ragIndexBuild(false))}>立即更新</button>
           </div>
         )}
         {ix?.configChanged && (

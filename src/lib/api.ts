@@ -175,6 +175,7 @@ export const api = {
   tree: () => req<{ dsId: string; tree: TreeNode }>('/api/tree'),
   stats: () => req<StatsResponse>('/api/stats'),
   file: (path: string) => req<FilePayload>('/api/file?path=' + encodeURIComponent(path)),
+  fileStat: (path: string) => req<{ dsId: string; path: string; mtimeMs: number; size: number }>('/api/file/stat?path=' + encodeURIComponent(path)),
   saveFile: (path: string, content: string, baseMtimeMs: number, dsId: string) =>
     req<{ ok: boolean; mtimeMs: number }>('/api/file', json('PUT', { path, content, baseMtimeMs, dsId })),
   saveAs: (path: string, content: string, dsId: string) =>
@@ -387,7 +388,7 @@ export interface RagModelStatus {
 }
 
 export interface RagIndexStatus {
-  state: 'none' | 'building' | 'paused' | 'ready' | 'error';
+  state: 'none' | 'building' | 'paused' | 'ready' | 'error' | 'stale';
   phase: string;
   done: number;
   total: number;
