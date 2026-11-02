@@ -5,8 +5,8 @@ import { useNavigate } from 'react-router-dom';
 import {
   CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator,
 } from '@/components/ui/command';
-import { useApp } from '@/store/app';
-import { useTheme, type Theme } from '@/lib/theme';
+import { useApp } from '@/store/app-context';
+import { useTheme, type Theme } from '@/lib/theme-context';
 import { api } from '@/lib/api';
 import { extIcon } from '@/lib/extIcon';
 import type { FileEntry, TreeNode } from '@/lib/types';
@@ -34,9 +34,15 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const [recents, setRecents] = useState<string[]>([]);
   const [pins, setPins] = useState<string[]>([]);
 
+  // 打开时清空上次检索词：渲染期对账 prop 变化，避免 effect 内同步 setState 级联渲染
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (prevOpen !== open) {
+    setPrevOpen(open);
+    if (open) setQ('');
+  }
+
   useEffect(() => {
     if (!open) return;
-    setQ('');
     api.recents().then((r) => setRecents(r.recents.filter((x) => x.exists).map((x) => x.path))).catch(() => {});
     api.pins().then((r) => setPins(r.pins.filter((x) => x.exists).map((x) => x.path))).catch(() => {});
   }, [open]);

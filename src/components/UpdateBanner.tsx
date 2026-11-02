@@ -3,7 +3,7 @@
 // 忽略（×）只隐藏当次发现的版本，不持久化。
 import { useState } from 'react';
 import { api } from '@/lib/api';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { X, RotateCw, ExternalLink, RefreshCw } from 'lucide-react';

@@ -8,7 +8,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import DOMPurify from 'dompurify';
 import { rawFileUrl } from '@/lib/api';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import type { TreeNode } from '@/lib/types';
 import { ExternalLinkDialog } from '@/components/ExternalLinkDialog';
 import { resolveDocTarget } from '@/lib/docLink';

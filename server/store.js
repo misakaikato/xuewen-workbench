@@ -251,8 +251,13 @@ export function saveUiSettings(patch) {
   return next;
 }
 
+/** 库数据目录路径（knowledge/<dsId>）：验收脚本等外部读取用，不建目录 */
+export function knowledgeDir(dsId) {
+  return path.join(DATA_DIR, 'knowledge', dsId);
+}
+
 function dsDir(dsId) {
-  const d = path.join(DATA_DIR, 'knowledge', dsId);
+  const d = knowledgeDir(dsId);
   fs.mkdirSync(d, { recursive: true });
   return d;
 }

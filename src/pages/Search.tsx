@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { RagSearchResponse } from '@/lib/api';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import type { SearchResult } from '@/lib/types';
 import { extIcon } from '@/lib/extIcon';
 import { SearchX, Loader2, Sparkles } from 'lucide-react';

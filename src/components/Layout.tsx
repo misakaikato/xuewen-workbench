@@ -2,7 +2,7 @@
 // 小屏幕侧栏变为抽屉；Escape 关闭抽屉。多知识库：切换器列出全部已打开库，可添加/移除。
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, Link, useLocation } from 'react-router-dom';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import { UpdateBanner } from './UpdateBanner';
 import { DiagnosticsBanner } from './DiagnosticsBanner';
 import { FileTree } from './FileTree';
@@ -61,7 +61,12 @@ export function Layout() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  useEffect(() => setDrawer(false), [location.pathname]);
+  // 路由变化即收起抽屉：渲染期对账，避免 effect 内同步 setState
+  const [prevPath, setPrevPath] = useState(location.pathname);
+  if (prevPath !== location.pathname) {
+    setPrevPath(location.pathname);
+    setDrawer(false);
+  }
 
   // 登记条目操作（重命名/移动/删除）的应用上下文：刷新树与跟随导航
   const locRef = useRef(location);

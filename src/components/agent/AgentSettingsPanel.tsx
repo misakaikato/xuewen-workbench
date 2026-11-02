@@ -1,5 +1,5 @@
 // 智能助手设置面板（多 tab）：模型端点 / Skills / MCP
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
 import type { AgentStatus, AgentSettingsPatch } from '@/lib/api';
@@ -56,7 +56,10 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
     }
   }, [baseUrl, apiKey, model]);
 
-  useEffect(() => { loadModels(baseUrl); }, []); // 首次打开即拉
+  // 首次打开即拉：只探测一次，取挂塔时的 baseUrl（输入变动由失焦/按钮重新触发）
+  const probeOnceRef = useRef(() => {});
+  probeOnceRef.current = () => loadModels(baseUrl);
+  useEffect(() => { probeOnceRef.current(); }, []);
   useEffect(() => {
     if (tab !== 'agents') return;
     api.agentsMdGet().then((r) => { setAgentsMd(r.content); setAgentsMdPath(r.path); }).catch(() => {});

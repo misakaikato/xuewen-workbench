@@ -8,19 +8,20 @@ import { findSearchLocation, searchLocationRange, findAllRanges } from '@/lib/se
 import { markDomFind, unmarkDomFind } from '@/lib/domFind';
 import { setFindHl } from '@/lib/readFindHighlight';
 import { perfInc } from '@/lib/perf';
-import { useApp } from '@/store/app';
-import { useReadingPrefs } from '@/lib/prefs';
+import { useApp } from '@/store/app-context';
+import { useReadingPrefs } from '@/lib/reading-prefs';
 import { loadReadPos, saveReadPos, loadDraft, saveDraft, clearDraft } from '@/lib/drafts';
 import { registerOpenDoc } from '@/lib/openEditor';
 import { detectLineSeparator } from '@/components/editor/lineSeparator';
 import { FormatToolbar } from '@/components/editor/FormatToolbar';
 import { pushDocLinks } from '@/components/editor/autoLinks';
 import type { FilePayload, FileEntry } from '@/lib/types';
-import { ReadOnlyDoc, docHeadings, scrollDocToPos } from '@/components/ReadOnlyDoc';
+import { ReadOnlyDoc } from '@/components/ReadOnlyDoc';
+import { docHeadings, scrollDocToPos } from '@/components/editor/readDocHelpers';
 import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
 import { editorBaseExtensions, editorBaseThemeSpec } from '@/components/editor/setup';
 import { EditorState, type Extension } from '@codemirror/state';
-import { html as htmlLang } from '@codemirror/lang-html';
+import { htmlLangAsync } from '@/components/editor/htmlLang';
 import { EditorView } from '@codemirror/view';
 import { JsonViewer } from '@/components/JsonViewer';
 import { WordReader } from '@/components/WordReader';
@@ -732,7 +733,7 @@ export default function Read() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [file, enterEdit, finishEdit, doSave]);
+  }, [file, enterEdit, finishEdit, doSave, navigate]);
 
   // 原位编辑：草稿写入由 onEditDocChanged 的防抖计时器负责（scheduleDraft）；关页保护 + 目录树操作前 flush
   useEffect(() => {
@@ -907,15 +908,23 @@ export default function Read() {
     [lineSep]
   );
 
-  // HTML 原位编辑：与 TXT 同排版主题，加 HTML 语法高亮
+  // HTML 原位编辑：与 TXT 同排版主题，HTML 语法高亮按需加载（加载完成前无高亮，不影响编辑）
+  const [htmlExt, setHtmlExt] = useState<Extension | null>(null);
+  const isHtmlDoc = file?.type === 'html';
+  useEffect(() => {
+    if (!isHtmlDoc || htmlExt) return;
+    let alive = true;
+    htmlLangAsync().then((e) => { if (alive) setHtmlExt(e); });
+    return () => { alive = false; };
+  }, [isHtmlDoc, htmlExt]);
   const htmlExtensions = useMemo<Extension[]>(
     () => [
       EditorState.lineSeparator.of(lineSep),
-      htmlLang(),
+      ...(htmlExt ? [htmlExt] : []),
       ...editorBaseExtensions({ lineNumbers: false, foldGutter: false }),
       txtInPlaceTheme,
     ],
-    [lineSep]
+    [lineSep, htmlExt]
   );
 
   // 阅读态双击正文进入原位编辑（可写文本类格式：md / txt / html）

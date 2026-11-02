@@ -15,7 +15,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { EntryActionDialogs, type EntryAction } from './EntryActionDialogs';
 import { MetaIssuesBadge } from './MetaIssuesBadge';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import { CreateEntryDialog, type CreateKind, type CreateTarget } from './CreateEntryDialog';
 import { extIcon } from '@/lib/extIcon';
 import { api, type MetaIssue } from '@/lib/api';

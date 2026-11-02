@@ -1,6 +1,21 @@
 // 统一页面状态组件（DESIGN.md §8）：加载 / 空 / 错误三态，替代裸文字"加载中…""暂无数据"
 import type { ReactNode } from 'react';
 import { Loader2, Inbox, AlertCircle } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
+
+/** 页面骨架：懒加载 chunk 就位前的 Suspense fallback（无文字，纯骨架） */
+export function PageSkeleton() {
+  return (
+    <div className="max-w-5xl mx-auto px-4 py-6 space-y-6" role="status" aria-label="加载中">
+      <Skeleton className="h-7 w-44" />
+      <div className="space-y-3">
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-2/3" />
+      </div>
+    </div>
+  );
+}
 
 /** 页面级加载态：spin + 一句人话 */
 export function PageLoading({ text = '加载中…' }: { text?: string }) {

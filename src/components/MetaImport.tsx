@@ -12,7 +12,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 
 const ACTION_LABEL: Record<MetaImportItem['action'], string> = { create: '新建', update: '更新', skip: '跳过' };
 

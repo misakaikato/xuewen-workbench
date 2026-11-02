@@ -1,8 +1,8 @@
 // 设置页：阅读与外观（与阅读页快捷面板共用配置）、逻辑集合映射、元数据来源映射
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
-import { useApp } from '@/store/app';
-import { useReadingPrefs, DEFAULT_PREFS } from '@/lib/prefs';
+import { useApp } from '@/store/app-context';
+import { useReadingPrefs, DEFAULT_PREFS } from '@/lib/reading-prefs';
 import type { Collection, MetadataMapping, TreeNode } from '@/lib/types';
 import { Plus, Trash2, Eye, ShieldBan, RefreshCw, Download } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
@@ -13,7 +13,7 @@ import { Label } from '@/components/ui/label';
 import {
   Select as UISelect, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { useTheme, type Theme } from '@/lib/theme';
+import { useTheme, type Theme } from '@/lib/theme-context';
 import RagManage from './RagManage';
 
 function collectDirs(node: TreeNode, out: string[]) {

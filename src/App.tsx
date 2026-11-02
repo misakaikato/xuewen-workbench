@@ -1,16 +1,20 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import { Layout } from '@/components/Layout';
-import Setup from '@/pages/Setup';
 import Dashboard from '@/pages/Dashboard';
-import Browse from '@/pages/Browse';
-import Read from '@/pages/Read';
-import Edit from '@/pages/Edit';
-import Search from '@/pages/Search';
-import Settings from '@/pages/Settings';
-import RagManage from './pages/RagManage';
-import AgentChat from './pages/AgentChat';
-import { PageLoading } from '@/components/ui-states';
+import { PageLoading, PageSkeleton } from '@/components/ui-states';
+
+// 概览是落地页保持同步加载；其余页面懒加载，首包只留路由骨架。
+// Read 与 Edit 共用的编辑器模块由 Rollup 自动落进两者共享的 chunk。
+const Setup = lazy(() => import('@/pages/Setup'));
+const Browse = lazy(() => import('@/pages/Browse'));
+const Read = lazy(() => import('@/pages/Read'));
+const Edit = lazy(() => import('@/pages/Edit'));
+const Search = lazy(() => import('@/pages/Search'));
+const RagManage = lazy(() => import('@/pages/RagManage'));
+const AgentChat = lazy(() => import('@/pages/AgentChat'));
+const Settings = lazy(() => import('@/pages/Settings'));
 
 function RequireSource({ children }: { children: React.ReactNode }) {
   const { config, loading } = useApp();
@@ -26,14 +30,14 @@ export default function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/setup" element={<Setup />} />
-          <Route path="/browse" element={<Browse />} />
-          <Route path="/read/*" element={<Read />} />
-          <Route path="/edit/*" element={<Edit />} />
-          <Route path="/search" element={<Search />} />
-          <Route path="/rag" element={<RagManage />} />
-          <Route path="/agent" element={<AgentChat />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route path="setup" element={<Suspense fallback={<PageSkeleton />}><Setup /></Suspense>} />
+          <Route path="browse" element={<Suspense fallback={<PageSkeleton />}><Browse /></Suspense>} />
+          <Route path="read/*" element={<Suspense fallback={<PageSkeleton />}><Read /></Suspense>} />
+          <Route path="edit/*" element={<Suspense fallback={<PageSkeleton />}><Edit /></Suspense>} />
+          <Route path="search" element={<Suspense fallback={<PageSkeleton />}><Search /></Suspense>} />
+          <Route path="rag" element={<Suspense fallback={<PageSkeleton />}><RagManage /></Suspense>} />
+          <Route path="agent" element={<Suspense fallback={<PageSkeleton />}><AgentChat /></Suspense>} />
+          <Route path="settings" element={<Suspense fallback={<PageSkeleton />}><Settings /></Suspense>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

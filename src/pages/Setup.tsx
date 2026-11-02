@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import { Database, CheckCircle2, XCircle, Loader2, FolderMinus, Plus, FolderOpen } from 'lucide-react';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,

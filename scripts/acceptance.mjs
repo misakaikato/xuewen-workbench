@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validateMeta } from '../server/meta.js';
-import { dataDir } from '../server/store.js';
+import { dataDir, knowledgeDir } from '../server/store.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const A = path.join(ROOT, 'test-data', 'ds-a');
@@ -108,7 +108,7 @@ check('冲突响应含磁盘当前内容', (r.body.current || '').includes('外�
 r = await put('/api/file', { path: target, content: newContent + '\n我的覆盖。\n', baseMtimeMs: r.body.currentMtimeMs, dsId: dsA });
 check('冲突后显式覆盖成功', r.body.ok === true);
 // 无效 JSON 不允许写入由前端校验；后端原子写检查备份存在
-const bakDir = path.join(dataDir(), 'sources', dsA, 'backups', '笔记');
+const bakDir = path.join(knowledgeDir(dsA), 'backups', '笔记');
 check('备份文件已生成', fs.existsSync(bakDir) && fs.readdirSync(bakDir).some(f => f.includes('第2章')), '');
 
 console.log('== 7. 数据源切换隔离 ==');
@@ -604,7 +604,7 @@ const listMd = (dir) => {
   return out.sort();
 };
 const tempDsIds = [];
-const sourcesDir15 = path.join(dataDir(), 'sources'); // 随 WORKBENCH_DATA_DIR，可在临时数据目录上验收
+// 库数据随 WORKBENCH_DATA_DIR，布局由 store.knowledgeDir 决定，可在临时数据目录上验收
 try {
   // (a) ds-fmt：GET→PUT 全量往返，字节一致（含 BOM / CRLF / 混行尾 / 无末尾换行）
   r = await post('/api/config', { baseDir: T15('ds-fmt') });
@@ -687,7 +687,7 @@ try {
   r = await post('/api/config', { baseDir: T15('ds-a') });
   tempDsIds.push(r.body.dsId);
   const dsA15 = r.body.dsId;
-  const bdir15 = path.join(sourcesDir15, dsA15, 'backups');
+  const bdir15 = path.join(knowledgeDir(dsA15), 'backups');
   fs.rmSync(bdir15, { recursive: true, force: true });
   const t1 = '笔记/第1章 入门.md';
   const g1 = await j('/api/file?path=' + encodeURIComponent(t1));
@@ -704,7 +704,7 @@ try {
   check('备份随移动迁移到新目录', fs.readdirSync(path.join(bdir15, '资料库')).includes('第1章 改名.md' + stampSuffix) && !fs.existsSync(path.join(bdir15, '笔记', '第1章 改名.md' + stampSuffix)));
   check('旧备份目录随空清理', !fs.existsSync(path.join(bdir15, '笔记')));
 } finally {
-  for (const id of tempDsIds) fs.rmSync(path.join(sourcesDir15, id), { recursive: true, force: true });
+  for (const id of tempDsIds) fs.rmSync(knowledgeDir(id), { recursive: true, force: true });
   await post('/api/config', { baseDir: A });
   fs.rmSync(tmp15, { recursive: true, force: true });
 }
@@ -968,7 +968,7 @@ console.log('== 16. 自动内链与反向链接 ==');
       const after = (await backOf16('孔子.md')).backlinks.find((b) => b.path === '论语讲稿.md').count;
       // 忽略按（本篇, 词条, 目标）三者定位：孔子 的 1 处 auto + 2 处 [[孔子]] wiki 一并忽略
       check('忽略后反向链接计数减少（同词同目标共 3 处）', after === before - 3, `${before} -> ${after}`);
-      const igFile = path.join(dataDir16, 'sources', ds16, 'linkIgnores.json');
+      const igFile = path.join(knowledgeDir(ds16), 'linkIgnores.json');
       check('忽略状态存在数据源之外', fs.existsSync(igFile) && JSON.parse(fs.readFileSync(igFile, 'utf8')).length === 1, igFile);
       r16 = await post16('/api/links/ignore', { path: '论语讲稿.md', term: '孔子', targetPath: '孔子.md', ignore: false });
       check('取消忽略后恢复', (await linksOf16('论语讲稿.md')).links.every((l) => !l.ignored) && (await backOf16('孔子.md')).backlinks.find((b) => b.path === '论语讲稿.md').count === before);
@@ -983,7 +983,7 @@ console.log('== 16. 自动内链与反向链接 ==');
       const d = await linksOf16('论语讲稿.md');
       check('屏蔽词条不再自动链（wikilink 不受影响）',
         !d.links.some((l) => l.term === '仲尼' && l.kind === 'auto') && d.links.some((l) => l.kind === 'wiki'));
-      check('屏蔽词状态存数据源之外', fs.existsSync(path.join(dataDir16, 'sources', ds16, 'linkBlocklist.json')));
+      check('屏蔽词状态存数据源之外', fs.existsSync(path.join(knowledgeDir(ds16), 'linkBlocklist.json')));
       await put16('/api/links/blocklist', { terms: [] });
       check('清空屏蔽词表后恢复', (await linksOf16('论语讲稿.md')).links.some((l) => l.term === '仲尼' && l.kind === 'auto'));
       // 屏蔽长词同样整体消费：屏蔽 孔子家语 后，其内部的 孔子 不得回退成链
@@ -1239,7 +1239,7 @@ console.log('== 17. 多资料库工作区 ==');
     check('移除后 ?ds=A 404', r17.status === 404);
     r17 = await j17('/api/config');
     check('配置清单只剩 B', r17.body.libraries.length === 1 && r17.body.dsId === dsB17);
-    check('A 的派生数据仍在磁盘', fs.existsSync(path.join(dataDir17, 'sources', dsA17, 'recents.json')));
+    check('A 的派生数据仍在磁盘', fs.existsSync(path.join(knowledgeDir(dsA17), 'recents.json')));
     r17 = await post17('/api/config', { baseDir: DSA });
     check('重新添加 A 成功（同 id）', r17.body.ok === true && r17.body.dsId === dsA17 && r17.body.libraries.length === 2);
     r17 = await j17('/api/recents?ds=' + dsA17);

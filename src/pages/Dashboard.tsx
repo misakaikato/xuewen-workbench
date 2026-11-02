@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { TagEntry, ConceptItem } from '@/lib/api';
 import { ConceptCard } from '@/components/ConceptCard';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import type { StatsResponse, TopicEntry, ConceptEntry, FileEntry } from '@/lib/types';
 import { extIcon } from '@/lib/extIcon';
 import { Pin, PinOff, AlertTriangle, RefreshCw } from 'lucide-react';

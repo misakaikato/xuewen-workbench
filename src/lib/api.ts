@@ -3,7 +3,7 @@ import type {
   ConfigResponse, FilePayload, ScanStatus, TreeNode, StatsResponse, UpdateState,
   SearchResult, RefResolution, Collection, MetadataMapping, TopicEntry, ConceptEntry, FileEntry, LibraryInfo,
 } from './types';
-import type { Theme } from './theme';
+import type { Theme } from './theme-context';
 
 export type DocType = '文章' | '讲稿' | '知乎';
 

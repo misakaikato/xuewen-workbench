@@ -1,7 +1,7 @@
 // 文件列表浏览：按目录/类型筛选，面包屑，路径可辨认同名文件；右键与目录树共享同一套条目操作
 import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import type { TreeNode, FileEntry } from '@/lib/types';
 import { extIcon } from '@/lib/extIcon';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';

@@ -113,10 +113,8 @@ export function toggleLinePrefix(view: EditorView, kind: PrefixKind): void {
     const line = state.doc.line(n);
     // 先剥掉任意已知前缀（同类互斥，近似论坛行为），再按目标状态统一加
     let text = line.text;
-    let cut = 0;
     let m: RegExpExecArray | null;
     while ((m = /^(>\s?|-\s\[( |x|X)\]\s|-\s(?!\[)|\d+\.\s)/.exec(text))) {
-      cut += m[0].length;
       text = text.slice(m[0].length);
     }
     const next = anyOn ? '' : add;

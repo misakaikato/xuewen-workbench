@@ -4,7 +4,7 @@
 import { memo, useEffect, useMemo, useState } from 'react';
 import { api, rawFileUrl } from '@/lib/api';
 import { sanitizeWordHtml } from '@/lib/wordSanitize';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import { Download, FilePlus2, AlertCircle, ZoomIn, ZoomOut } from 'lucide-react';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';

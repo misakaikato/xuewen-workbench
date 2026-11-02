@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { RagStatus, RagConfig } from '@/lib/api';
-import { useApp } from '@/store/app';
+import { useApp } from '@/store/app-context';
 import { usePolling } from '@/hooks/usePolling';
 import { extIcon } from '@/lib/extIcon';
 import { Download, FolderInput, Play, Pause, RotateCcw, Cpu, Zap, FlaskConical, CheckCircle2, AlertTriangle, SlidersHorizontal } from 'lucide-react';

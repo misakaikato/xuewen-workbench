@@ -1,33 +1,10 @@
-// 应用级上下文：知识库配置、扫描状态、目录树。支持多知识库并行，
+// 应用级 Provider：知识库配置、扫描状态、目录树（上下文定义与 useApp 在 app-context.ts）。
 // 当前库由 activeId 决定；所有请求经 api 作用域携带 ds，切库后统一重取并丢弃旧库响应。
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, setApiScope } from '@/lib/api';
 import { usePolling } from '@/hooks/usePolling';
-import type { ConfigResponse, LibraryInfo, TreeNode, UpdateState } from '@/lib/types';
-
-interface AppState {
-  config: ConfigResponse | null;
-  libraries: LibraryInfo[];
-  tree: TreeNode | null;
-  loading: boolean;
-  dsId: string | null;
-  update: UpdateState | null;
-  /** 手动重扫进行中（所有入口共享：顶栏图标 / ⌘K 命令同一反馈） */
-  scanning: boolean;
-  applyUpdate: (s: UpdateState) => void;
-  refreshConfig: () => Promise<void>;
-  refreshTree: () => Promise<void>;
-  rescan: () => Promise<void>;
-  activateLib: (id: string) => Promise<void>;
-  removeLib: (id: string) => Promise<void>;
-}
-
-const Ctx = createContext<AppState>({
-  config: null, libraries: [], tree: null, loading: true, dsId: null, update: null, scanning: false,
-  applyUpdate: () => {},
-  refreshConfig: async () => {}, refreshTree: async () => {}, rescan: async () => {},
-  activateLib: async () => {}, removeLib: async () => {},
-});
+import { AppCtx, type AppState } from './app-context';
+import type { ConfigResponse, TreeNode, UpdateState } from '@/lib/types';
 
 // 更新状态内容相同则视为未变（服务端每次返回新对象，身份相同但字段不变不应触发整树重渲）
 function sameUpdate(a: UpdateState | null, b: UpdateState | null): boolean {
@@ -142,9 +119,5 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [config, libraries, tree, loading, dsId, update, scanning, refreshConfig, refreshTree, rescan, activateLib, removeLib]
   );
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
-}
-
-export function useApp() {
-  return useContext(Ctx);
+  return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
 }
