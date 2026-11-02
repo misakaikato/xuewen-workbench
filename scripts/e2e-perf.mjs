@@ -474,6 +474,47 @@ async function main() {
     check('E7', '回到可见后立即补拉（请求恢复）', String(n), n >= 1);
   }
 
+  // ---------- E9：折叠/展开侧栏，主区容器 ResizeObserver 回调次数 ----------
+  console.log('== E9 侧栏折叠的主区重排 ==');
+  await open('/read/blocks.txt');
+  await until(`!!document.querySelector('[data-wb-content-card]') && document.querySelector('[data-wb-content-card]').innerText.length > 1000`, 15000);
+  await sleep(800);
+  await exec(`(() => {
+    const m = document.querySelector('main');
+    window.__ro = { n: 0 };
+    new ResizeObserver(() => { window.__ro.n++; }).observe(m);
+    return true;
+  })()`);
+  await sleep(500); // 观察器初始回调落定
+  await exec('window.__ro.n = 0, true');
+  await exec(`document.querySelector('button[aria-label="折叠侧栏"]').click(); true`);
+  await sleep(600);
+  await exec(`document.querySelector('button[aria-label="折叠侧栏"]').click(); true`);
+  await sleep(600);
+  {
+    const n = await exec('window.__ro.n');
+    check('E9', '折叠+展开侧栏主区 ResizeObserver 回调 ≤ 2', String(n), n <= 2);
+  }
+
+  // ---------- E10：查找条/阅读偏好面板开阖不推挤正文 ----------
+  console.log('== E10 浮层不推挤正文 ==');
+  {
+    const topOf = `(() => {
+      const card = document.querySelector('[data-wb-content-card]');
+      const el = card && card.firstElementChild;
+      return el ? Math.round(el.getBoundingClientRect().top) : null;
+    })()`;
+    const t0 = await exec(topOf);
+    await exec(`[...document.querySelectorAll('button')].find((b) => (b.title || '').startsWith('文内查找')).click(); true`);
+    await sleep(500);
+    const t1 = await exec(topOf);
+    check('E10', '打开查找条后正文第一行 top 不变', `${t0} → ${t1}`, t0 != null && t0 === t1);
+    await exec(`[...document.querySelectorAll('button')].find((b) => b.title === '阅读设置').click(); true`);
+    await sleep(500);
+    const t2 = await exec(topOf);
+    check('E10', '打开阅读偏好面板后正文第一行 top 不变', `${t0} → ${t2}`, t0 === t2);
+  }
+
   }
 
   // ---------- E8：约 5000 文件冷启动，建索引 [lag] 行数为 0 ----------

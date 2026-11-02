@@ -29,6 +29,11 @@ function loadProcessor(): Promise<MdProcessor> {
       .use(stringify.default);
     processor = p;
     return p;
+  }).catch((e) => {
+    // 动态 import 失败（如 chunk 未取到）：置回 null 允许下次重试，并吞掉 rejection——
+    // 复制会退回纯文本，行为不变
+    processorPromise = null;
+    throw e;
   });
   return processorPromise;
 }
@@ -36,7 +41,7 @@ function loadProcessor(): Promise<MdProcessor> {
 // 挂载后空闲预热（requestIdleCallback 不可用时退 1.5s 定时）
 export function scheduleCopyRenderWarmup(): void {
   if (processorPromise) return;
-  const start = () => { void loadProcessor(); };
+  const start = () => { loadProcessor().catch(() => {}); };
   if (typeof requestIdleCallback === 'function') requestIdleCallback(start, { timeout: 3000 });
   else setTimeout(start, 1500);
 }

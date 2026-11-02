@@ -56,7 +56,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
     }
   }, [baseUrl, apiKey, model]);
 
-  // 首次打开即拉：只探测一次，取挂塔时的 baseUrl（输入变动由失焦/按钮重新触发）
+  // 首次打开即拉：只探测一次，取挂载时的 baseUrl（输入变动由失焦/按钮重新触发）
   const probeOnceRef = useRef(() => {});
   probeOnceRef.current = () => loadModels(baseUrl);
   useEffect(() => { probeOnceRef.current(); }, []);

@@ -16,7 +16,7 @@ npm run electron:dev # 在 Electron 壳里运行
 
 应用数据（配置、索引、备份、模型、对话）存放在用户目录下的 `.xuewen-workbench/`（macOS 为 `~/.xuewen-workbench/`，Windows 为 `%USERPROFILE%\.xuewen-workbench\`），开发与打包版共用；设环境变量 `WORKBENCH_DATA_DIR` 可改到别处。下文的 `<数据目录>` 都指这里。
 
-注意：`npm run dev` / `dev:server` 默认监听所有网络地址，局域网内可访问全部接口；只想本机访问时设 `WORKBENCH_HOST=127.0.0.1`。打包版只绑 `127.0.0.1`。
+注意：后端默认只监听本机 `127.0.0.1`（开发模式与打包版一致）；确需局域网访问时显式设 `WORKBENCH_HOST=0.0.0.0`。接口另校验 Host/Origin 头，拒绝非本机来源（防 DNS rebinding 与跨站请求）。
 
 ## 资料库：打开、切换、移除
 
@@ -58,7 +58,7 @@ npm run electron:dev # 在 Electron 壳里运行
 
 检索页新增「智能」模式（与「精确」并列）：语义 + 关键词混合检索，段落级结果卡带出处（文件 + 标题路径）、命中高亮与融合分数，点击跳回原文；繁简互通（查询与切块均经繁→简归一化参与检索，展示原文）；无关查询诚实显示「没有找到」。顶栏「RAG 管理」页四区：
 
-- **嵌入模型**：bge-m3（1024 维）。首次点「下载」（约 1.1GB，Hugging Face → hf-mirror 自动回退；下载后计算并显示权重 sha256，不对照预置值校验），或手动导入模型目录；macOS 走 MLX（Apple GPU；Python 环境优先用 uv 在线置备，没有 uv 时用安装包内捆绑的离线环境），Windows 走 ONNX runtime（目前只用 CPU）；开发/测试可用 `WORKBENCH_RAG_EMBED=mock`。
+- **嵌入模型**：bge-m3（1024 维）。首次点「下载」（约 1.1GB，Hugging Face → hf-mirror 自动回退；下载后计算并显示权重 sha256，不对照预置值校验），或手动导入模型目录；macOS 走 MLX（Apple GPU；Python 环境优先用 uv 在线置备，没有 uv 时用安装包内捆绑的离线环境），Windows 走 ONNX runtime（先试 DirectML，加载失败自动降级 CPU，可用 `WORKBENCH_RAG_ONNX_EP` 覆盖）；开发/测试可用 `WORKBENCH_RAG_EMBED=mock`。
 - **语义索引**：按库隔离（`<数据目录>/knowledge/<dsId>/rag.db`，better-sqlite3 + FTS5 中文 bigram + 向量 BLOB）；结构化切块（md 按标题层级、txt/docx 按段落、json 按条目，超长节按段落边界二次分组）；构建有进度、可暂停续建；文件改动后经 chokidar 自动增量（mtime+size 对账）；索引是可重建缓存，删除即全量重建。
 - **检索测试台**：与检索页智能 tab 同链路，附 bm25/语义/融合分便于调参。
 - **参数配置**（按库）：目标块上限 / JSON 单值截断 / 标题路径语境 / 文件名语境 / 超长单元硬切（切块）；嵌入截断 token（嵌入）；每路 Top-N / RRF k / 最低融合分 / 余弦下限 / 余弦 σ 倍数 / 语义路权重（检索）。默认值见 `server/rag/config.js`。切块与嵌入参数改动后状态页提示「建议重建」并一键重建；检索参数即时生效。越界值自动钳制，可一键恢复默认。
@@ -71,7 +71,7 @@ npm run electron:dev # 在 Electron 壳里运行
 
 - **模型端点**：任意 OpenAI 兼容服务（Ollama、LM Studio 或远端 API）。在聊天页设置面板（或输入 `/model`）的「模型端点」页填 baseUrl / 模型 / apiKey。端点在远端时，检索到的语料片段会随对话发出。
 - **工具**：检索、读文档、列目录、改名与移动、读写设置、记忆、生图，以及在当前资料库根目录执行命令的 `bash`。生图走 UniAPI，凭据取 `~/.config/uniapi/config.json` 或环境变量 `UNIAPI_API_KEY`。
-- **运行模式**（聊天页顶部切换）：自动 / 确认（改名、移动、命令等操作需点确认）/ 只读（只能检索阅读）。模式不保存，每次启动回到「自动」。
+- **运行模式**（聊天页顶部切换）：自动 / 确认（改名、移动、命令等操作需点确认）/ 只读（只能检索阅读）。缺省为「确认」，切换后持久化，重启保持。
 - **Skills 与 MCP**：在设置面板的 Skills / MCP 页管理，文件位于 `<数据目录>/agents/default/`（`skills/<名称>/SKILL.md`、`mcp.json`）。
 - **记忆**：全局 / 助手 / 资料库三层；对话按资料库隔离保存。
 
@@ -110,12 +110,16 @@ npm run electron:dev # 在 Electron 壳里运行
 
 保存前的旧版本在 `<数据目录>/knowledge/<dsId>/backups/<相对路径>.<时间戳>.bak`，直接复制回原路径即可恢复。
 
+## 运行日志与诊断
+
+三个进程（主进程 / 后端 / 渲染）各写一份日志：`<数据目录>/logs/` 下的 `main.log` / `backend.log` / `renderer.log`（各 5MB×3 轮转）；事件循环卡顿 ≥1 秒由看门狗记录；异常退出、后端崩溃、渲染进程崩溃记入 `incidents.jsonl`，下次启动顶部横幅提示。设置页、启动失败页与横幅均可一键导出诊断 zip（不含语料正文、对话内容、API Key 与端点地址）；桌面不可写时落到 `<数据目录>/diagnostics/`。
+
 ## 验收结果（2026-10-17，Windows 11 + Node 24）
 
 - `node scripts/acceptance.mjs`：43/43 通过（配置/扫描/树/读取/引用解析/检索/保存/冲突/隔离/元数据/性能/路径安全）。
 - 性能实测：1000 个 MD 文件（约 2 MB）扫描+索引 176 ms，单次全文搜索 20 ms。
 - 浏览器端实测：Dashboard 统计与主题/概念聚合正确；文件名/集合/候选/缺失引用跳转正常；搜索定位后默认阅读模式；编辑保存写回磁盘且自动生成链接未混入源码；草稿恢复提示与未保存拦截生效；`.doc`/`.docx` 阅读与检索可用；阅读偏好即时生效并持久化。
-- 目录树 Electron 冒烟（`./node_modules/.bin/electron scripts/e2e-filetree.mjs`，先 `npm run build`）：53/53 通过——reveal/持久化/键盘（含 F2/首字母/End 跨窗口聚焦）、右键复制到剪贴板、`/api/reveal` 越界拒绝、平铺过滤与 Esc、虚拟滚动（总行数摊铺与窗口化）、集合视图、被引用数徽标与开关、拖入编辑器插引用、创建副本与剪切/粘贴移动、Browse 共享菜单、侧栏宽度拖拽与持久化、`>` 前缀转全文检索、新建模板。注：`acceptance.mjs` 第 6 段「备份文件已生成」仍到旧的 `<数据目录>/sources/` 下找备份，数据目录改为 `knowledge/` 后这一项会误报失败。
+- 目录树 Electron 冒烟（`./node_modules/.bin/electron scripts/e2e-filetree.mjs`，先 `npm run build`）：60/60 通过——reveal/持久化/键盘（含 F2/首字母/End 跨窗口聚焦）、右键复制到剪贴板、`/api/reveal` 越界拒绝、平铺过滤与 Esc、虚拟滚动（总行数摊铺与窗口化）、集合视图、被引用数徽标与开关、拖入编辑器插引用、创建副本与剪切/粘贴移动、Browse 共享菜单、侧栏宽度拖拽与持久化、`>` 前缀转全文检索、新建模板。
 - 未验证项：LibreOffice 完整排版转换（本机未安装，已验证回退路径与诊断提示）；真实用户语料。
 
 ## 应用更新与发布（GitHub Releases）

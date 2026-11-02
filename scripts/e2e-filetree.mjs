@@ -186,7 +186,8 @@ async function main() {
   check('Enter 打开文件', await until(`location.pathname.includes('/read/top.md')`));
   // 滚回顶部让 notes 行进入渲染窗口（虚拟滚动：未渲染的行不在 DOM 里）
   await exec(`(() => { const c = document.querySelector('aside .overflow-auto'); if (c) c.scrollTop = 0; return true; })()`);
-  await sleep(250);
+  // 等行真正渲染出来：打开阅读页时首次加载编辑器 chunk 会占住主线程，固定延时不够
+  await until(`!!document.querySelector('[data-tpath="notes"]')`);
   await exec(`document.querySelector('[data-tpath="notes"]').focus(); true`);
   await exec(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true })); true`);
   check('F2 弹出重命名对话框', await until(`!!document.querySelector('[role="dialog"]') && document.querySelector('[role="dialog"]').textContent.includes('重命名')`));

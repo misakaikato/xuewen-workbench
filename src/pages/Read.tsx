@@ -34,6 +34,7 @@ import { ConceptCard } from '@/components/ConceptCard';
 import { TagChips } from '@/components/TagChips';
 import { DocTabs } from '@/components/DocTabs';
 import { loadTabs, saveTabs, ensureTab, removeTab } from '@/lib/tabs';
+import { usePresence } from '@/lib/presence';
 import { extIcon } from '@/lib/extIcon';
 import { Button } from '@/components/ui/button';
 import { PageLoading, PageError } from '@/components/ui-states';
@@ -207,14 +208,30 @@ export default function Read() {
     return Number.isFinite(n) && n >= 260 && n <= 720 ? n : 380;
   });
   const aiDragRef = useRef(false);
+  const aiAsideRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
+    let raf = 0;
+    let pending = -1;
     const onMove = (e: MouseEvent) => {
       if (!aiDragRef.current) return;
-      // 从右边拖：宽度 = 视口宽 - 鼠标 x
-      const w = Math.max(260, Math.min(720, window.innerWidth - e.clientX));
-      setAiWidth(w);
+      // 从右边拖：宽度 = 视口宽 - 鼠标 x。拖动中不 setState：rAF 节流后直接写 CSS 变量
+      pending = Math.max(260, Math.min(720, window.innerWidth - e.clientX));
+      if (!raf) {
+        raf = requestAnimationFrame(() => {
+          raf = 0;
+          aiAsideRef.current?.style.setProperty('--wb-ai-w', pending + 'px');
+        });
+      }
     };
-    const onUp = () => { if (aiDragRef.current) { aiDragRef.current = false; document.body.style.cursor = ''; } };
+    const onUp = () => {
+      if (!aiDragRef.current) return;
+      aiDragRef.current = false;
+      document.body.style.cursor = '';
+      if (raf) cancelAnimationFrame(raf);
+      // 松手才提交 state；localStorage 由下方 effect 随之落盘一次
+      if (pending > 0) setAiWidth(pending);
+      pending = -1;
+    };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
@@ -252,6 +269,11 @@ export default function Read() {
   const editingRef = useRef(false);
   editingRef.current = editing;
   const dirty = saveState === 'dirty' || saveState === 'error';
+  // 面板挂载/卸载过渡（统一做法，见 src/lib/presence.ts）：data-state 驱动进/离场动画
+  const findPresence = usePresence(findOpen);
+  const prefsPresence = usePresence(!editing && showPrefs);
+  const aiPresence = usePresence(aiOpen);
+  const sidePresence = usePresence(!aiOpen && ((showToc && toc.length > 0) || showBacklinks));
   // saveState 镜像：按键路径上只做同值判断，避免无变化也走一遍 setState
   const saveStateRef = useRef<EditSaveState>('clean');
   useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
@@ -1112,9 +1134,11 @@ export default function Read() {
           </div>
           ))}
 
-          {/* 文内查找条（随 sticky 顶栏区） */}
-          {findOpen && (
-            <div className="bg-card border border-border rounded-lg shadow-sm p-2 flex items-center gap-2">
+          {/* 查找条与偏好面板：浮层（绝对定位不占文档流，开阖不推挤正文）；挂载/卸载走统一过渡 */}
+          {(findPresence.mounted || prefsPresence.mounted) && (
+          <div className="absolute inset-x-0 top-full -mt-2 z-30 space-y-2">
+          {findPresence.mounted && (
+            <div data-state={findPresence.state} className="bg-card border border-border rounded-lg shadow-sm p-2 flex items-center gap-2 duration-med ease-signature fill-mode-both data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2">
               <Search className="w-4 h-4 text-muted-foreground" />
               <input
                 autoFocus
@@ -1142,9 +1166,9 @@ export default function Read() {
             </div>
           )}
 
-          {/* 阅读偏好快捷面板（随 sticky 顶栏区，仅阅读态） */}
-          {!editing && showPrefs && (
-            <div className="bg-card border border-border rounded-lg shadow-sm p-3 text-xs space-y-2">
+          {/* 阅读偏好快捷面板（浮层，仅阅读态） */}
+          {prefsPresence.mounted && (
+            <div data-state={prefsPresence.state} className="bg-card border border-border rounded-lg shadow-sm p-3 text-xs space-y-2 duration-med ease-signature fill-mode-both data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-muted-foreground w-14">字体</span>
                 {(['serif', 'sans', 'mono'] as const).map((f) => (
@@ -1200,6 +1224,8 @@ export default function Read() {
               </div>
               <div className="text-muted-foreground">阅读偏好即时生效，仅影响界面呈现，不会修改源文件。切换文档与重启后保留。</div>
             </div>
+          )}
+          </div>
           )}
           </div>
 
@@ -1315,8 +1341,14 @@ export default function Read() {
       </div>
 
       {/* 右侧：AI 助手（优先）——切换文档时保持挂载 */}
-      {aiOpen && (
-        <aside data-wb-overlay className="hidden lg:flex shrink-0 relative" style={{ width: aiWidth }}>
+      {aiPresence.mounted && (
+        <aside
+          ref={aiAsideRef}
+          data-wb-overlay
+          data-state={aiPresence.state}
+          className="hidden lg:flex shrink-0 relative duration-med ease-signature fill-mode-both data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-2"
+          style={{ width: 'var(--wb-ai-w)', '--wb-ai-w': aiWidth + 'px' } as React.CSSProperties}
+        >
           <div
             className="absolute left-0 top-0 bottom-0 w-1 -ml-0.5 cursor-col-resize hover:bg-primary/30 z-10"
             title="拖动调整宽度"
@@ -1334,8 +1366,11 @@ export default function Read() {
       )}
 
       {/* 右侧：目录 + 反链 */}
-      {!aiOpen && ((showToc && toc.length > 0) || showBacklinks) && (
-        <aside className="hidden lg:block w-64 shrink-0 border-l border-border overflow-auto p-3">
+      {sidePresence.mounted && (
+        <aside
+          data-state={sidePresence.state}
+          className="hidden lg:block w-64 shrink-0 border-l border-border overflow-auto p-3 duration-med ease-signature fill-mode-both data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-2"
+        >
           {showToc && toc.length > 0 && (
             <div className="mb-4">
               <div className="flex items-center gap-1 text-xs font-semibold text-muted-foreground mb-2">

@@ -95,30 +95,37 @@ export function Layout() {
   });
   const sideWRef = useRef(sideW);
   useLayoutEffect(() => { sideWRef.current = sideW; }, [sideW]);
+  const asideRef = useRef<HTMLElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const onResizeDown = (e: React.MouseEvent) => {
     e.preventDefault();
     setDragging(true);
     const start = e.clientX;
     const w0 = sideWRef.current;
+    let pending = w0;
+    let raf = 0;
     const move = (ev: MouseEvent) => {
-      setSideW(Math.max(200, Math.min(480, w0 + (ev.clientX - start))));
+      pending = Math.max(200, Math.min(480, w0 + (ev.clientX - start)));
+      // 拖动中不 setState：rAF 节流后直接写 CSS 变量，松手才提交 state 与持久化
+      if (!raf) {
+        raf = requestAnimationFrame(() => {
+          raf = 0;
+          asideRef.current?.style.setProperty('--wb-side-w', pending + 'px');
+        });
+      }
     };
     const up = () => {
       setDragging(false);
+      if (raf) cancelAnimationFrame(raf);
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
+      sideWRef.current = pending;
+      setSideW(pending);
+      try { localStorage.setItem('wb.sidebar.w', String(Math.round(pending))); } catch { /* 忽略 */ }
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
   };
-  // 宽度防抖持久化：拖完 200ms 无变化后落盘，避免依赖 up 回调的渲染时序
-  useEffect(() => {
-    const t = setTimeout(() => {
-      try { localStorage.setItem('wb.sidebar.w', String(Math.round(sideW))); } catch { /* 忽略 */ }
-    }, 200);
-    return () => clearTimeout(t);
-  }, [sideW]);
 
   const sidebarContent = (
     <div className="flex flex-col h-full">
@@ -276,16 +283,23 @@ export function Layout() {
       </header>
 
       <div className="flex-1 flex min-h-0">
-        {/* 侧栏常驻渲染，折叠用宽度动画（med 档 + 签名缓动）；拖拽期间关掉过渡避免跟手延迟 */}
+        {/* 侧栏常驻渲染：折叠时主区宽度一次到位（不动画 width，避免每帧重排），
+            只对内层做 translateX + opacity 的 med 档过渡 */}
         <aside
+          ref={asideRef}
           className={`hidden md:block shrink-0 bg-sidebar overflow-hidden relative ${
             collapsed ? '' : 'border-r border-sidebar-border'
-          } ${dragging ? '' : 'transition-[width] duration-med ease-signature'}`}
-          style={{ width: collapsed ? 0 : sideW }}
+          }`}
+          style={{ width: collapsed ? 0 : 'var(--wb-side-w)', '--wb-side-w': sideW + 'px' } as React.CSSProperties}
           aria-hidden={collapsed}
         >
-          {/* 内层固定宽度：折叠动画期间内容不回流、不挤压 */}
-          <div className="h-full" style={{ width: sideW }}>
+          {/* 内层固定宽度：折叠时主区宽度一次到位，内容不回流、不挤压 */}
+          <div
+            className={`h-full transition-[transform,opacity] duration-med ease-signature ${
+              collapsed ? '-translate-x-2 opacity-0' : 'translate-x-0 opacity-100'
+            }`}
+            style={{ width: 'var(--wb-side-w)' }}
+          >
             {sidebarContent}
           </div>
           {!collapsed && (

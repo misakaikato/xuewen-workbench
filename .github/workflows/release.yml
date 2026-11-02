@@ -47,6 +47,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # mac 包需内置 MLX 离线环境：resources-mlx/ 下入库的只有 requirements.txt，
+      # python.tar.gz 与 wheels/ 由构建期脚本拉取（见 scripts/fetch-mlx-env.mjs）
+      - uses: astral-sh/setup-uv@v6
+        if: matrix.os == 'macos-latest'
+      - uses: actions/setup-python@v5
+        if: matrix.os == 'macos-latest'
+        with:
+          python-version: '3.12'
+      - name: 拉取 MLX 离线环境（mac）
+        if: matrix.os == 'macos-latest'
+        run: node scripts/fetch-mlx-env.mjs
+      - name: 校验 MLX 离线环境（mac）
+        if: matrix.os == 'macos-latest'
+        run: |
+          test -f resources-mlx/python.tar.gz
+          test -d resources-mlx/wheels
       - run: npm run ${{ matrix.script }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
