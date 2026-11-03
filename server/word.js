@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import mammoth from 'mammoth';
 import WordExtractor from 'word-extractor';
-import { cacheDir, readJson, writeJsonAtomic } from './store.js';
+import { cacheDirAsync, readJsonAsync, writeJsonAtomicAsync } from './store.js';
 import { withActivity } from './lagWatch.js';
 
 const extractor = new WordExtractor();
@@ -63,26 +63,27 @@ function escapeHtml(s) {
 // SVG 例外：直接打开 SVG 文件可执行其中的脚本，不从应用源站提供，保持 data URI 内嵌。
 const IMG_EXT_BY_TYPE = { 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' };
 
-function makeImageSink(dsId, dirKey, mtimeMs) {
-  const base = path.join(cacheDir(dsId), 'word-assets');
+function makeImageSink(dsId, cacheRoot, dirKey, mtimeMs) {
+  const base = path.join(cacheRoot, 'word-assets');
   const dir = path.join(base, `${dirKey}-${mtimeMs}`);
   let n = 0;
-  let cleaned = false;
+  let prepared = null; // 首张图片时清理旧资产目录并建目录，只做一次
+  const prepare = async () => {
+    try {
+      await fs.promises.mkdir(base, { recursive: true });
+      // 同一路径哈希只保留最新 mtime 的资产目录
+      for (const d of await fs.promises.readdir(base)) {
+        if (d.startsWith(dirKey + '-') && d !== path.basename(dir)) {
+          await fs.promises.rm(path.join(base, d), { recursive: true, force: true });
+        }
+      }
+      await fs.promises.mkdir(dir, { recursive: true });
+    } catch { /* 资产目录不可写时退回 data URI */ }
+  };
   return {
     convertImage: mammoth.images.imgElement(async (image) => {
-      if (!cleaned) {
-        cleaned = true;
-        try {
-          fs.mkdirSync(base, { recursive: true });
-          // 同一路径哈希只保留最新 mtime 的资产目录
-          for (const d of fs.readdirSync(base)) {
-            if (d.startsWith(dirKey + '-') && d !== path.basename(dir)) {
-              fs.rmSync(path.join(base, d), { recursive: true, force: true });
-            }
-          }
-          fs.mkdirSync(dir, { recursive: true });
-        } catch { /* 资产目录不可写时退回 data URI */ }
-      }
+      if (!prepared) prepared = prepare();
+      await prepared;
       const b64 = await image.readAsBase64String();
       if (image.contentType === 'image/svg+xml') {
         return { src: `data:${image.contentType};base64,${b64}` };
@@ -90,7 +91,7 @@ function makeImageSink(dsId, dirKey, mtimeMs) {
       const ext = IMG_EXT_BY_TYPE[image.contentType] || 'png';
       const name = `img-${++n}.${ext}`;
       try {
-        fs.writeFileSync(path.join(dir, name), Buffer.from(b64, 'base64'));
+        await fs.promises.writeFile(path.join(dir, name), Buffer.from(b64, 'base64'));
         return {
           src: `/api/word/asset?ds=${encodeURIComponent(dsId)}&key=${encodeURIComponent(path.basename(dir))}&name=${encodeURIComponent(name)}`,
           loading: 'lazy',
@@ -118,9 +119,9 @@ async function docxToHtml(absPath, sink = null) {
   return { html: htmlRes.value, text: textRes.value, engine: 'mammoth' };
 }
 
-async function docViaSoffice(absPath, cacheDir, sink = null) {
+async function docViaSoffice(absPath, cacheRoot, sink = null) {
   // 每次转换独立临时目录：并发同名文件互不串扰，只读本次新产生的 docx，用完即删。
-  const workDir = fs.mkdtempSync(path.join(cacheDir, 'convert-'));
+  const workDir = await fs.promises.mkdtemp(path.join(cacheRoot, 'convert-'));
   try {
     await new Promise((resolve, reject) => {
       execFile(
@@ -135,10 +136,14 @@ async function docViaSoffice(absPath, cacheDir, sink = null) {
       path.basename(absPath, path.extname(absPath)) + '.docx'
     );
     // 正常退出但没有产物 → 视为失败（由 parseWord 回退 word-extractor）
-    if (!fs.existsSync(converted)) throw new Error('LibreOffice 转换未产生输出文件');
+    try {
+      await fs.promises.access(converted);
+    } catch {
+      throw new Error('LibreOffice 转换未产生输出文件');
+    }
     return await docxToHtml(converted, sink);
   } finally {
-    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* 清理失败不影响结果 */ }
+    await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => { /* 清理失败不影响结果 */ });
   }
 }
 
@@ -149,25 +154,27 @@ async function docViaExtractor(absPath) {
 }
 
 // 解析 Word 文件，带缓存（格式版本 + mtime 失效；旧版内嵌 data URI 的缓存不命中）。
+// 缓存写不进去（如 Windows 上缓存文件被占用）只记 WARN，解析结果照常返回，下次再解析。
 // 返回 { html, text, engine, warning? }
 const WORD_CACHE_VERSION = 2;
 
 export async function parseWord(dsId, absPath, relPath, mtimeMs) {
   const ext = path.extname(absPath).toLowerCase();
   const key = crypto.createHash('sha1').update(relPath).digest('hex');
-  const cacheFile = path.join(cacheDir(dsId), 'word-' + key + '.json');
-  const cached = readJson(cacheFile, null);
+  const cacheRoot = await cacheDirAsync(dsId);
+  const cacheFile = path.join(cacheRoot, 'word-' + key + '.json');
+  const cached = await readJsonAsync(cacheFile, null);
   if (cached && cached.v === WORD_CACHE_VERSION && cached.mtimeMs === mtimeMs) return cached.result;
 
   let result;
-  const sink = makeImageSink(dsId, key, mtimeMs);
+  const sink = makeImageSink(dsId, cacheRoot, key, mtimeMs);
   if (ext === '.docx') {
     result = await docxToHtml(absPath, sink);
   } else if (ext === '.doc') {
     const soffice = await findSoffice();
     if (soffice) {
       try {
-        result = await docViaSoffice(absPath, cacheDir(dsId), sink);
+        result = await docViaSoffice(absPath, cacheRoot, sink);
         result.engine = 'libreoffice+mammoth';
       } catch (e) {
         result = await docViaExtractor(absPath);
@@ -181,7 +188,11 @@ export async function parseWord(dsId, absPath, relPath, mtimeMs) {
   } else {
     throw new Error('不支持的 Word 格式: ' + ext);
   }
-  writeJsonAtomic(cacheFile, { v: WORD_CACHE_VERSION, mtimeMs, result });
+  try {
+    await writeJsonAtomicAsync(cacheFile, { v: WORD_CACHE_VERSION, mtimeMs, result });
+  } catch (e) {
+    console.warn(`[word] 缓存写入失败（本次解析结果照常使用）：${relPath}：${e.code || e.message}`);
+  }
   return result;
 }
 

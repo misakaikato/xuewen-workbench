@@ -243,6 +243,7 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 - 编辑器：内链字段带 version，选区变化不再重建装饰与重扫引用；按键不进页面 state，updateListener 合一，格式工具栏自订阅。
 - Word 图片外置为 `/api/word/asset` 按需取（不再内嵌 data URI）；TXT 阅读按 200 行一个 `content-visibility` 块；检索结果每批 50 组续载；JSON 节点 memo + 分页。
 - 后端建文本索引与算内链每 30ms 让出事件循环（阈值 `WORKBENCH_LAG_THRESHOLD_MS` 可调，供 e2e 验证），单个大文件也不例外：内链全文扫描写成生成器（`server/linkMatch.js` 的 `extractLinksSteps`，同步的 `extractLinks` 跑同一个生成器），服务端在步骤之间按时间片让出。
+- 慢磁盘（单次文件操作可达数百毫秒，如安全软件逐个拦截检查）：扫描、建文本索引、Word 缓存与图片、内链缓存、保存改名的文件读写一律走异步 API，扫描同一目录内的 stat 最多 16 个并发、按 readdir 顺序合并；同步 fs 只留给启动期迁移与低频配置读写。改名遇占用（EPERM / EACCES / EBUSY）由 `server/store.js` 退避重试：异步版用定时器等待，同步版立即重试、目标已存在时退回覆盖写入；缓存写不进去只记 WARN，结果照用。单次 stat/readdir、单个文件读取或解析超过 500ms 记 WARN（`SLOW_FS_OP_MS`）。
 - 前端除概览外按页面 `React.lazy` 拆分；复制渲染管线（unified/remark）与 `@codemirror/lang-html` 按需加载。
 - 动效遵守 `DESIGN.md` §7：侧栏折叠不动画 width（主区宽度一次到位，侧栏内层 transform + opacity 过渡）；面板挂载/卸载统一走 `src/lib/presence.ts`（med 档，离场播完再移除）；阅读页查找条与阅读偏好面板为浮层，不推挤正文；拖拽调宽期间只写 CSS 变量（rAF 节流），松手才提交 state 与持久化。
 
@@ -301,6 +302,7 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 | `npm run test:e2e` | 编辑器端到端 |
 | `./node_modules/.bin/electron scripts/e2e-filetree.mjs` | 目录树端到端（先 `npm run build`） |
 | `node scripts/test-scan-async.mjs` / `node scripts/test-index-status.mjs` | 异步扫描与旧同步扫描逐项一致、不阻塞事件循环；`/api/status` 索引阶段字段 |
+| `node scripts/test-slow-fs.mjs [--rev <版本>]` | 注入慢文件操作与缓存改名 EPERM：扫描与建索引期间 `/api/status` 单次 ≤ 400ms、索引按时完成、Word 正文可检索、慢操作与改名失败有 WARN；`--rev` 用指定版本的 `server/` 跑同一套断言作对照 |
 | `./node_modules/.bin/electron scripts/e2e-index-visibility.mjs` / `e2e-files-feedback.mjs` | 后台指示与「结果可能不完整」；文件操作与其余入口的忙碌态、慢提示、失败提示 |
 | `node scripts/test-agent-toggle.mjs` | 助手总开关：缺省关闭、409 语义、非法值 400、关闭时不探测模型端点、关闭时中止生成与待确认的工具调用 |
 | `./node_modules/.bin/electron scripts/e2e-agent-toggle.mjs` | 助手总开关的全部界面入口：关闭时隐藏、设置页切换即时生效（先 `npm run build`）；既有助手 e2e 在准备阶段先打开开关 |

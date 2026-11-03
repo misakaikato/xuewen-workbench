@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { extractWordText } from './word.js';
 import { SUPPORTED_EXTS } from './scanner.js';
-import { withActivity } from './lagWatch.js';
+import { withActivity, SLOW_FS_OP_MS } from './lagWatch.js';
 import { decodeText } from './textDecode.js';
 import { toEditorText } from './editorText.js';
 
@@ -24,9 +24,12 @@ export class Indexer {
 
   // 扫描完成后重建索引文本（md/json 直接读；word 走缓存提取）
   // onProgress(done, total) 每处理完一个文件回调一次（供 /api/status 暴露索引进度）
+  // 单个文件读取或解析超过 SLOW_FS_OP_MS 记 WARN，每次构建最多逐条记 SLOW_LOG_LIMIT 条，其余汇总一行
   async build(snapshot, onProgress) {
     const t0 = Date.now();
     const label = '建文本索引 ' + (this.baseDir ? path.basename(this.baseDir) : '');
+    const SLOW_LOG_LIMIT = 20;
+    let slowCount = 0;
     await withActivity(label, async () => {
       this.files = snapshot.files;
       this.texts = new Map();
@@ -38,11 +41,12 @@ export class Indexer {
         let sliceStart = Date.now();
         while (queue.length) {
           const f = queue.shift();
+          const fileStart = Date.now();
           try {
             if (f.ext === '.md' || f.ext === '.json' || f.ext === '.txt' || f.ext === '.html' || f.ext === '.htm') {
               // 与前端 CodeMirror 的文档表示逐字符对齐：剥 BOM、纯 CRLF 归一为 LF、
               // 孤立 \r 与混用文档里的 \r 保留；非 UTF-8 经 decodeText 正确解码。
-              const { content } = decodeText(fs.readFileSync(path.join(this.baseDir, f.path)));
+              const { content } = decodeText(await fs.promises.readFile(path.join(this.baseDir, f.path)));
               this.texts.set(f.path, toEditorText(content));
             } else {
               const t = await extractWordText(this.dsId, path.join(this.baseDir, f.path), f.path, f.mtimeMs);
@@ -50,6 +54,10 @@ export class Indexer {
             }
           } catch {
             // 单个文件读取失败不阻塞整体索引
+          }
+          const ms = Date.now() - fileStart;
+          if (ms > SLOW_FS_OP_MS && ++slowCount <= SLOW_LOG_LIMIT) {
+            console.warn(`[index] 慢文件：${f.path} 读取或解析耗时 ${ms}ms`);
           }
           done++;
           if (onProgress) onProgress(done, total);
@@ -62,6 +70,9 @@ export class Indexer {
       });
       await Promise.all(workers);
     });
+    if (slowCount > SLOW_LOG_LIMIT) {
+      console.warn(`[index] 慢文件：另有 ${slowCount - SLOW_LOG_LIMIT} 个文件读取或解析超过 ${SLOW_FS_OP_MS}ms 未逐条记录（本次共 ${slowCount} 个）`);
+    }
     console.log('[index] 文本索引构建完成: ' + this.files.length + ' 个文件，耗时 ' + (Date.now() - t0) + 'ms');
   }
 

@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { dataDir, getState, setState, writeJsonAtomic } from './store.js';
+import { dataDir, getState, setState, readJsonAsync, writeJsonAtomicAsync } from './store.js';
 import { SIDECAR_SUFFIX } from './scanner.js';
 import {
   normalizeText, isTermLike, buildAutoIndex, extractLinksSteps, extractWikilinks, MATCH_ENGINE_VERSION,
@@ -140,7 +140,7 @@ export class LinkIndex {
     for (const sc of snapshot.sidecars || []) {
       const target = sc.slice(0, sc.length - SIDECAR_SUFFIX.length);
       try {
-        const meta = JSON.parse(fs.readFileSync(path.join(this.baseDir, sc), 'utf8'));
+        const meta = JSON.parse(await fs.promises.readFile(path.join(this.baseDir, sc), 'utf8'));
         if (meta && typeof meta === 'object') sidecarData.set(target, meta);
       } catch { /* 非法旁注跳过 */ }
     }
@@ -399,7 +399,7 @@ export class LinkIndex {
       // 缓存：词表未变且 mtime/size 一致的文件复用旧结果
       let cache = this._cache;
       if (!cache || cache.dsId !== this.dsId || cache.vocabSig !== sig) {
-        cache = this._readCache();
+        cache = await this._readCache();
         this._cache = cache;
       }
       const old = vocabChanged ? null : cache;
@@ -449,8 +449,9 @@ export class LinkIndex {
       this.stats.files = this.files.size;
       this.stats.terms = this.vocab.filter((v) => !v.ambiguous).length;
       this.stats.links = [...this.files.values()].reduce((s, d) => s + d.links.length, 0);
-      if (changed || this._dirty) this.writeCache();
+      const needWrite = changed || this._dirty;
       this._dirty = false;
+      if (needWrite && !(await this.writeCache())) this._dirty = true; // 没写成：下次构建再写
       console.log('[links] 内链索引构建完成: ' + this.files.size + ' 个文件，耗时 ' + (Date.now() - t0) + 'ms');
     } finally {
       restoreActivity();
@@ -479,24 +480,30 @@ export class LinkIndex {
 
   // ---------- 缓存 ----------
 
-  _readCache() {
-    try {
-      const c = JSON.parse(fs.readFileSync(cacheFileOf(this.dsId), 'utf8'));
-      if (c && c.version === CACHE_VERSION && c.dsId === this.dsId && c.baseDir === this.baseDir) return c;
-    } catch { /* 无缓存或损坏：重建 */ }
+  // 无缓存或损坏返回 null（重建）
+  async _readCache() {
+    const c = await readJsonAsync(cacheFileOf(this.dsId), null);
+    if (c && c.version === CACHE_VERSION && c.dsId === this.dsId && c.baseDir === this.baseDir) return c;
     return null;
   }
 
-  writeCache() {
-    if (!this.dsId) return;
+  // 写缓存：失败只记 WARN（缓存可随时重建），返回是否写成
+  async writeCache() {
+    if (!this.dsId) return true;
     const files = {};
     for (const [p, d] of this.files) {
       files[p] = { mtimeMs: d.mtimeMs, size: d.size, links: d.links, title: d.title, excerpt: d.excerpt, headings: d.headings };
     }
-    writeJsonAtomic(cacheFileOf(this.dsId), {
-      version: CACHE_VERSION, dsId: this.dsId, baseDir: this.baseDir,
-      vocabSig: this._vocabSig, writtenAt: new Date().toISOString(), files,
-    });
+    try {
+      await writeJsonAtomicAsync(cacheFileOf(this.dsId), {
+        version: CACHE_VERSION, dsId: this.dsId, baseDir: this.baseDir,
+        vocabSig: this._vocabSig, writtenAt: new Date().toISOString(), files,
+      });
+      return true;
+    } catch (e) {
+      console.warn(`[links] 内链缓存写入失败：${cacheFileOf(this.dsId)}：${e.code || e.message}`);
+      return false;
+    }
   }
 
   cacheExists() {

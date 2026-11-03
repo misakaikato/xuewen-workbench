@@ -7,6 +7,9 @@ let recent = new Set(); // 自上次 tick 以来登记过的标签（去重，�
 let prevActive = []; // 上次 tick 时 active 的标签快照（去重）
 let timer = null;
 
+// 慢文件操作诊断阈值：扫描的单次 stat/readdir、建索引的单个文件读取或解析超过它记 WARN
+export const SLOW_FS_OP_MS = 500;
+
 export function startLagWatch({ tag, intervalMs = 250, thresholdMs }) {
   if (timer) return; // 同一进程只启动一个看门狗
   const threshold = (thresholdMs ?? Number(process.env.WORKBENCH_LAG_THRESHOLD_MS)) || 1000;

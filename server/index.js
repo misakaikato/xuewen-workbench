@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir, renameWithRetry, cacheDir } from './store.js';
+import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir, renameWithRetryAsync, tmpPathFor, cacheDir } from './store.js';
 import { isWithin } from './paths.js';
 import { caseRenameAction } from './renamePlan.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
@@ -147,7 +147,7 @@ class Lib {
 
   // 重扫并等待索引完成（若监听触发的扫描正在进行，先等它结束，避免拿到旧快照）
   async rescanAndIndex() {
-    while (this.scanner.scanning) await new Promise((r) => setTimeout(r, 50));
+    while (this.scanner.running) await new Promise((r) => setTimeout(r, 50));
     await this.scanner.rescan();
     await this.indexing;
   }
@@ -274,11 +274,13 @@ function readTextPreserve(abs) {
   return decodeText(fs.readFileSync(abs));
 }
 
+// 原子写回：目标被占用时改名异步退避重试，最终失败删临时文件并抛错（原文件不动）。
+// 临时文件名带序号：同一文件的并发保存在重试等待期间互不覆盖临时文件。
 async function writeTextAtomic(abs, content, bom) {
-  const tmp = abs + '.wb-tmp-' + process.pid;
+  const tmp = tmpPathFor(abs, '.wb-tmp-');
   fs.writeFileSync(tmp, (bom ? '﻿' : '') + content, 'utf8');
   try {
-    renameWithRetry(tmp, abs);
+    await renameWithRetryAsync(tmp, abs);
   } catch (e) {
     try { fs.unlinkSync(tmp); } catch { /* 忽略 */ }
     throw e;
@@ -287,7 +289,7 @@ async function writeTextAtomic(abs, content, bom) {
 
 // 保存后同步旁注 content_hash：仅当旁注存在且为 JSON 对象时更新哈希字段，
 // 其余键与顺序保持不变；从不新建旁注；非法旁注不动。失败不影响保存结果。
-function syncSidecarHash(abs, wroteBuf) {
+async function syncSidecarHash(abs, wroteBuf) {
   const metaAbs = abs + SIDECAR_SUFFIX;
   let raw;
   try {
@@ -309,7 +311,7 @@ function syncSidecarHash(abs, wroteBuf) {
       meta.content_hash = hash;
       text = JSON.stringify(meta, null, 2) + '\n';
     }
-    writeTextAtomic(metaAbs, text, false);
+    await writeTextAtomic(metaAbs, text, false);
   } catch (e) {
     if (e instanceof SyntaxError) return; // 非法 JSON：保持原样
     console.error('旁注 content_hash 更新失败:', e.message);
@@ -789,7 +791,7 @@ app.put('/api/file', async (req, res) => {
       const text = String(content ?? '');
       await writeTextAtomic(abs, text, bom);
       // 与实际写入字节（含 BOM）一致地更新旁注 content_hash
-      syncSidecarHash(abs, Buffer.from((bom ? '﻿' : '') + text, 'utf8'));
+      await syncSidecarHash(abs, Buffer.from((bom ? '﻿' : '') + text, 'utf8'));
     } else {
       if (f) return res.status(409).json({ error: '文件状态不一致，请重新扫描' });
       return res.status(404).json({ error: '文件已被外部删除，未重新创建。可将内容另存为新文件。', missing: true });
