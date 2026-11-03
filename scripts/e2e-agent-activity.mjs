@@ -159,6 +159,8 @@ async function main() {
   fs.mkdirSync(corpus);
   fs.writeFileSync(path.join(corpus, '孔子家语.md'), '# 孔子家语\n\n活动指示测试用正文。');
   await fetch(base + '/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseDir: corpus }) });
+  // 助手默认关闭：准备阶段打开总开关
+  await fetch(base + '/api/ui-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentEnabled: true }) });
   await app.whenReady();
   win = new BrowserWindow({ width: 1280, height: 900, show: false, webPreferences: { sandbox: true, contextIsolation: true } });
 

@@ -1,4 +1,4 @@
-// 设置页：阅读与外观（与阅读页快捷面板共用配置）、逻辑集合映射、元数据来源映射。
+// 设置页：阅读与外观（与阅读页快捷面板共用配置）、逻辑集合映射、元数据来源映射、智能助手总开关。
 // 各项保存：按钮转圈（Button loading），失败经 notify 提示；成功沿用页内的一行提示。
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
@@ -9,7 +9,7 @@ import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { useApp } from '@/store/app-context';
 import { useReadingPrefs, DEFAULT_PREFS } from '@/lib/reading-prefs';
 import type { Collection, MetadataMapping, TreeNode } from '@/lib/types';
-import { Plus, Trash2, Eye, ShieldBan, RefreshCw, Download } from 'lucide-react';
+import { Plus, Trash2, Eye, ShieldBan, RefreshCw, Download, Loader2 } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import MetaImport from '@/components/MetaImport';
@@ -48,7 +48,21 @@ export default function Settings() {
   const [checking, setChecking] = useState(false);
   const [checkMsg, setCheckMsg] = useState('');
 
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, agentEnabled, setAgentEnabled } = useTheme();
+  // 智能助手开关：保存期间开关先显示目标值并禁用（忙碌态），慢了才出现转圈；
+  // 失败时提示，开关回到服务端实际值（由 setAgentEnabled 对账）
+  const [agentPending, setAgentPending] = useState<boolean | null>(null);
+  const agentSlow = useDelayedFlag(agentPending !== null);
+  const onToggleAgent = async (v: boolean) => {
+    setAgentPending(v);
+    try {
+      await setAgentEnabled(v);
+    } catch (e) {
+      notify('智能助手开关保存失败：' + errorMessage(e), { kind: 'error' });
+    } finally {
+      setAgentPending(null);
+    }
+  };
 
   // 界面设置：自动更新、阅读笔记目录（默认「阅读笔记」）、元数据文件开关
   useEffect(() => {
@@ -173,7 +187,7 @@ export default function Settings() {
   return (
     <div className="max-w-3xl mx-auto py-6 px-4 space-y-6">
       <div className="flex items-center gap-1 mb-4 border-b border-border pb-2 flex-wrap">
-        {[['appearance','外观'],['reading','阅读'],['collections','集合'],['metadata','元数据'],['rag','RAG 检索'],['about','关于']].map(([id,label]) => (
+        {[['appearance','外观'],['reading','阅读'],['collections','集合'],['metadata','元数据'],['rag','RAG 检索'],['agent','智能助手'],['about','关于']].map(([id,label]) => (
           <button key={id} className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${tab === id ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`} onClick={() => setTab(id)}>
             {label}
           </button>
@@ -230,6 +244,25 @@ export default function Settings() {
       )}
 
       {tab === 'rag' && <RagManage />}
+
+      {tab === 'agent' && (
+      <section className="bg-card border border-border rounded-lg p-4" data-agent-toggle-section>
+        <h2 className="text-sm font-semibold mb-1">智能助手</h2>
+        <p className="text-xs text-muted-foreground mb-3">
+          关闭后隐藏所有助手入口（顶栏、⌘J、阅读页 AI 面板与「问 AI」）。已有对话和设置会保留。
+        </p>
+        <label className="flex items-center gap-2 text-sm">
+          <Switch
+            checked={agentPending ?? agentEnabled === true}
+            disabled={agentPending !== null || agentEnabled === null}
+            aria-busy={agentPending !== null || undefined}
+            onCheckedChange={(v) => { void onToggleAgent(v); }}
+          />
+          启用智能助手
+          {agentSlow && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" aria-label="正在保存" />}
+        </label>
+      </section>
+      )}
 
       {tab === 'about' && (
       <section className="bg-card border border-border rounded-lg p-4">

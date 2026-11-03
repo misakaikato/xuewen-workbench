@@ -9,6 +9,7 @@ import { markDomFind, unmarkDomFind } from '@/lib/domFind';
 import { setFindHl } from '@/lib/readFindHighlight';
 import { perfInc } from '@/lib/perf';
 import { useApp } from '@/store/app-context';
+import { useAgentEnabled } from '@/lib/theme-context';
 import { useReadingPrefs } from '@/lib/reading-prefs';
 import { loadReadPos, saveReadPos, loadDraft, saveDraft, clearDraft } from '@/lib/drafts';
 import { registerOpenDoc } from '@/lib/openEditor';
@@ -246,6 +247,13 @@ export default function Read() {
   }, []);
   useEffect(() => { try { localStorage.setItem('wb.read.aiWidth', String(Math.round(aiWidth))); } catch { /* 隐私模式/配额：宽度只在本次会话生效 */ } }, [aiWidth]);
   const [aiQuote, setAiQuote] = useState<string | null>(null);
+  // 智能助手总开关：关闭时不渲染 AI 按钮与「问 AI」；面板若开着则收起（presence 播完离场再卸载），
+  // 未消费的引用一并丢弃。渲染期对账，再打开开关也不会自己弹出来
+  const agentEnabled = useAgentEnabled();
+  if (!agentEnabled && (aiOpen || aiQuote !== null)) {
+    setAiOpen(false);
+    setAiQuote(null);
+  }
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [noteSaving, setNoteSaving] = useState(false);
@@ -1117,13 +1125,15 @@ export default function Read() {
                 <span className="text-xs stat-num ml-0.5">{docNotes.reduce((n, x) => n + x.count, 0)}</span>
               </button>
             )}
-            <button
-              className={`p-1.5 rounded hover:bg-accent transition-colors ${aiOpen ? 'text-primary' : 'text-muted-foreground'}`}
-              title="AI 助手（就当前文档提问）"
-              onClick={() => setAiOpen((v) => !v)}
-            >
-              <Sparkles className="w-4 h-4" />
-            </button>
+            {agentEnabled && (
+              <button
+                className={`p-1.5 rounded hover:bg-accent transition-colors ${aiOpen ? 'text-primary' : 'text-muted-foreground'}`}
+                title="AI 助手（就当前文档提问）"
+                onClick={() => setAiOpen((v) => !v)}
+              >
+                <Sparkles className="w-4 h-4" />
+              </button>
+            )}
             <button
               className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground"
               title="反向引用"
@@ -1445,7 +1455,7 @@ export default function Read() {
         </div>
       )}
 
-      {/* 选区旁的浮动操作：记笔记 / 问 AI */}
+      {/* 选区旁的浮动操作：记笔记 / 问 AI（助手关闭时只有记笔记） */}
       {sel && !noteOpen && (
         <div
           data-wb-selbar
@@ -1462,18 +1472,20 @@ export default function Read() {
           >
             <NotebookPen className="w-3.5 h-3.5" /> 记笔记
           </button>
-          <button
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-card border border-border text-xs shadow-lg transition-colors hover:border-primary/50 hover:text-primary"
-            title="把选中内容引用到智能助手"
-            onClick={() => {
-              setAiQuote(sel.text);
-              setAiOpen(true);
-              window.getSelection()?.removeAllRanges();
-              setSel(null);
-            }}
-          >
-            <Sparkles className="w-3.5 h-3.5" /> 问 AI
-          </button>
+          {agentEnabled && (
+            <button
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-card border border-border text-xs shadow-lg transition-colors hover:border-primary/50 hover:text-primary"
+              title="把选中内容引用到智能助手"
+              onClick={() => {
+                setAiQuote(sel.text);
+                setAiOpen(true);
+                window.getSelection()?.removeAllRanges();
+                setSel(null);
+              }}
+            >
+              <Sparkles className="w-3.5 h-3.5" /> 问 AI
+            </button>
+          )}
         </div>
       )}
 

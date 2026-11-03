@@ -9,8 +9,28 @@ import { isWithin } from '../paths.js';
 // skill 名称白名单：只允许字母数字下划线/中文/连字符，1-64 字符
 const SKILL_NAME_RE = /^[\w\u4e00-\u9fff-]{1,64}$/;
 
-export function mountAgent(hub, resolveLib) {
+// 助手关闭时仍放行的接口：只读查看（状态与会话列表、单个会话、生成的图片、记忆、AGENTS.md）与中止生成。
+// 其余一律 409 agent-disabled：发起生成（chat）、确认、导入导出、会话/记忆/skill/MCP/设置的写操作，
+// 以及会访问外部端点的模型列表。新增路由默认受拦，关闭时也要可用的才加进这里。
+const ALLOWED_WHEN_DISABLED = [
+  ['GET', /^\/status$/],
+  ['GET', /^\/session\/[^/]+$/],
+  ['GET', /^\/generated\/[^/]+$/],
+  ['GET', /^\/memory$/],
+  ['GET', /^\/agents-md$/],
+  ['POST', /^\/abort$/],
+];
+
+// isEnabled：读 ui-settings.agentEnabled（唯一来源），每个请求现读，开关切换即时生效
+export function mountAgent(hub, resolveLib, { isEnabled }) {
   const r = Router();
+
+  r.use((req, res, next) => {
+    if (isEnabled()) return next();
+    const method = req.method === 'HEAD' ? 'GET' : req.method;
+    if (ALLOWED_WHEN_DISABLED.some(([m, re]) => m === method && re.test(req.path))) return next();
+    res.status(409).json({ error: 'agent-disabled' });
+  });
 
   r.get('/status', (_req, res) => {
     res.json(hub.status());

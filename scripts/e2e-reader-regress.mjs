@@ -67,6 +67,8 @@ async function main() {
   for (let i = 0; i < 150; i++) { try { await api('/api/config'); ready = true; break; } catch { /* */ } await pause(100); }
   assert.ok(ready, 'server ready');
   await api('/api/config', { baseDir: corpus });
+  // 助手默认关闭：准备阶段打开总开关（R3 阅读页 AI 侧栏、R6 助手消息编辑要用）
+  await fetch(base + '/api/ui-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentEnabled: true }) });
   await pause(1500); // 等扫描 + 内链索引就绪
 
   await app.whenReady();

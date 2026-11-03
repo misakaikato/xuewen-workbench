@@ -181,7 +181,9 @@ const agentHub = new AgentHub({
   removeLibrary: (dsId) => (dsId ? removeLibraryById(dsId) : { ok: false, error: '需要 dsId' }),
 });
 ragManager.onLlmChanged = () => agentHub._syncModelsJson();
-app.use('/api/agent', mountAgent(agentHub, resolveLib));
+// 总开关 ui-settings.agentEnabled：关闭时不做模型探测等外部初始化，路由拒绝生成与写操作（409）
+agentHub.setEnabled(getUiSettings().agentEnabled);
+app.use('/api/agent', mountAgent(agentHub, resolveLib, { isEnabled: () => getUiSettings().agentEnabled }));
 let activeId = null;
 let libVersion = 0; // 增/删/激活变化计数，进入 config.generation 复合值
 
@@ -472,7 +474,7 @@ app.get('/api/ui-settings', (req, res) => {
 });
 
 app.put('/api/ui-settings', async (req, res) => {
-  const { theme, autoUpdate, notesDir, showMetaFiles } = req.body || {};
+  const { theme, autoUpdate, notesDir, showMetaFiles, agentEnabled } = req.body || {};
   const patch = {};
   if (theme !== undefined) {
     if (!['A', 'B', 'C'].includes(theme)) {
@@ -486,6 +488,12 @@ app.put('/api/ui-settings', async (req, res) => {
     }
     patch.autoUpdate = autoUpdate;
   }
+  if (agentEnabled !== undefined) {
+    if (typeof agentEnabled !== 'boolean') {
+      return res.status(400).json({ error: 'agentEnabled 必须是布尔值' });
+    }
+    patch.agentEnabled = agentEnabled;
+  }
   if (showMetaFiles !== undefined) {
     patch.showMetaFiles = !!showMetaFiles;
   }
@@ -497,9 +505,12 @@ app.put('/api/ui-settings', async (req, res) => {
     patch.notesDir = dir;
   }
   if (Object.keys(patch).length === 0) {
-    return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate / notesDir）' });
+    return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate / notesDir / showMetaFiles / agentEnabled）' });
   }
   const next = saveUiSettings(patch);
+  // 助手开关：先落盘（此后新的生成请求即被拒），关闭时再中止进行中的生成，中止完成才返回，
+  // 前端据此先停生成、后隐藏入口；打开时按需做启动期推迟的初始化
+  if (agentEnabled !== undefined) await agentHub.setEnabled(next.agentEnabled);
   // showMetaFiles 变化：同步到各库 scanner 并重扫，与其他写操作一样等到重扫与索引完成才返回，
   // 前端据此提示「已显示」；重扫失败如实返回（设置本身已保存）
   if (showMetaFiles !== undefined) {

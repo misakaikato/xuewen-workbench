@@ -132,12 +132,21 @@ const json = (method: string, body?: unknown): RequestInit => ({
   body: body === undefined ? undefined : JSON.stringify(body),
 });
 
+/** 界面设置（/api/ui-settings，服务端持久化）；agentEnabled 是智能助手总开关，缺省 false */
+export interface UiSettings {
+  theme: Theme;
+  autoUpdate: boolean;
+  notesDir: string;
+  showMetaFiles: boolean;
+  agentEnabled: boolean;
+}
+
 export const api = {
-  getUiSettings: () => req<{ theme: Theme; autoUpdate: boolean; notesDir: string; showMetaFiles: boolean }>('/api/ui-settings'),
+  getUiSettings: () => req<UiSettings>('/api/ui-settings'),
   // 用系统默认应用打开知识库外部的本地路径（文档内越库根链接，经用户确认后调用）
   openExternal: (path: string) => req<{ ok: boolean }>('/api/open-external', json('POST', { path })),
-  saveUiSettings: (patch: { theme?: Theme; autoUpdate?: boolean; notesDir?: string; showMetaFiles?: boolean }) =>
-    req<{ ok: boolean; theme: Theme; autoUpdate: boolean; notesDir: string; showMetaFiles: boolean }>('/api/ui-settings', json('PUT', patch)),
+  saveUiSettings: (patch: Partial<UiSettings>) =>
+    req<{ ok: boolean } & UiSettings>('/api/ui-settings', json('PUT', patch)),
   tags: () =>
     req<{ dsId: string; dir: string; tags: TagEntry[]; topicsMissing: boolean; errors: string[]; counts: { manual: number; ai: number } }>('/api/tags'),
   tagsDoc: (path: string) =>

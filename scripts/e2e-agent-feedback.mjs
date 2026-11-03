@@ -31,6 +31,8 @@ async function main() {
   }
   const corpus = path.join(tmp, 'corpus'); fs.mkdirSync(corpus);
   await fetch(base + '/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseDir: corpus }) });
+  // 助手默认关闭：准备阶段打开总开关
+  await fetch(base + '/api/ui-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentEnabled: true }) });
   await app.whenReady();
   win = new BrowserWindow({ width: 1280, height: 860, show: false,
     webPreferences: { sandbox: true, contextIsolation: true } });

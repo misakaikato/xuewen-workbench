@@ -120,7 +120,7 @@ flowchart TB
 | `derived.js` | 读取 `.derived/` 概念、主题、图谱 |
 | `word.js` | Word 只读预览：docx 用 mammoth；doc 优先 LibreOffice，缺失时回退 word-extractor 纯文本 |
 | `rag/` | 切块 `chunk.js`、存储 `store.js`、嵌入 `embed.js`（MLX sidecar `mlx-embed.py`、ONNX 推理线程 `onnxWorker.js`）、模型下载 `download.js`、参数 `config.js`、编排 `manager.js` |
-| `agent/` | `manager.js`（AgentHub：会话、工具、模式）、`memory.js`、`settings.js`（agent 可读写的设置项）、`imagegen.js` |
+| `agent/` | `manager.js`（AgentHub：会话、工具、模式、总开关的启停）、`routes.js`（路由与关闭时的 409 拦截）、`memory.js`、`settings.js`（agent 可读写的设置项）、`imagegen.js` |
 | `update.js` / `trash.js` / `hostOpen.js` | 宿主能力的可插拔桥：更新、回收站、系统打开与定位；独立运行后端时退化 |
 | `host.js` | 托管模式（utilityProcess）下与主进程的 RPC、启动进度与就绪上报；独立运行时为空操作 |
 | `logger.js` / `logInit.js` / `lagWatch.js` | 分进程日志（接管 console 写文件、5MB 轮转）与事件循环卡顿看门狗；`logInit.js` 必须是 `index.js` 的第一条 import |
@@ -158,7 +158,7 @@ flowchart TB
 ```
 ~/.xuewen-workbench/
 ├── config.json             # 多库清单 + 当前库（v2，v1 单库自动迁移）
-├── ui-settings.json        # 主题、自动更新开关、笔记目录名等
+├── ui-settings.json        # 主题、自动更新开关、笔记目录名、智能助手总开关等
 ├── llm-settings.json       # LLM 端点（baseUrl / model / apiKey / 思考强度）与助手运行模式
 ├── links/<dsId>.json       # 内链缓存（JSON，可删）
 ├── logs/                   # main.log / backend.log / renderer.log（各 5MB×3）、incidents.jsonl、session.json
@@ -214,7 +214,11 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 - **工具**：清单见 `server/agent/manager.js` 的 `TOOL_NAMES`，含检索、读文档、改名移动、读写设置、记忆、生图，以及 pi 内置的 `read` 与 `bash`（`bash` 的工作目录是当前资料库根目录）。
 - **运行模式**：auto（全自动）/ confirm（破坏性工具与 `bash` 需用户确认）/ readonly（只给检索阅读类工具）。持久化在 `llm-settings.json`，缺省 confirm；readonly 在会话与工具执行两层生效，权限判断集中在 `tool_call` 钩子，`read` 工具限定资料库与 skills 目录。助手不信任语料库目录下的 `.pi`，MCP 配置只读 `agents/default/mcp.json`；skill 导入校验 zip 条目与名称，删除限定在 skills 目录。
 - **记忆与对话**：全局 / agent / 库三层记忆，对话按库、按 agent 存放，单一数据源是 pi 会话文件。设计见 `specs/2026-10-19-memory-design.md`。
-- **前端入口**：`/agent` 聊天页，另有阅读页侧栏问答与浮窗问答，会注入当前文档上下文。
+- **前端入口**：`/agent` 聊天页，另有阅读页侧栏问答与浮窗问答，会注入当前文档上下文。全部入口受下面的总开关控制。
+- **总开关（默认关闭）**：唯一来源是 `ui-settings.agentEnabled`，缺省 false，旧数据没有该字段即视为关闭。
+  - 前端：界面设置 Provider（`src/lib/theme.tsx`）启动时读一次，入口一律经 `useAgentEnabled()`（`src/lib/theme-context.ts`）读取，不另存、不各自请求。关闭时顶栏入口、⌘J 与浮窗、快捷键清单那一行、命令面板条目、阅读页 AI 按钮与面板、选区「问 AI」都不渲染，访问 `/agent` 回到概览并提示；设置页「智能助手」切换后即时生效，读取失败按关闭处理。
+  - 后端：关闭时 `/api/agent` 只放行只读查看（status、单个会话、生成的图片、记忆、AGENTS.md）与中止生成，其余（chat、确认、导入导出、各类写操作、模型列表）返回 409 `{ error: 'agent-disabled' }`；放行清单在 `server/agent/routes.js`，新增路由默认受拦。
+  - 生命周期：`PUT /api/ui-settings` 关闭时经 `AgentHub.setEnabled(false)` 拒绝待确认的工具调用、中止进行中的生成，全部停下才返回，前端随后才隐藏入口。启动期唯一的外部访问（端点上下文窗口探测）推迟到首次开启时；MCP 连接与模型运行时本就随会话懒建。关闭不删对话、记忆与设置。
 - **事件处理单一真相源（反馈第 3 批）**：三个对话界面（`AgentChat.tsx` / `QuickAgent.tsx` / `ReadAgentPanel.tsx`）的 SSE 事件全部经 `src/lib/agentReducer.ts` 的 `applyAgentEvent` 归约到同一份轮次状态（正文 / thinking / 工具 / usage / compactions / failure / activity / pendingConfirm），React 侧封装在 `src/hooks/useAgentTurn.ts`；各界面只保留自身特有的副作用分支（`open_doc` 跳转、`settings_changed` 应用设置）。
 - **全程活动指示**：activity 取值 connecting / thinking / tool / compacting / confirm / generating，由共用组件 `src/components/agent/AgentActivity.tsx` 渲染（替代各界面的三点动画）；工具卡运行中转圈计时、结束显示耗时、中断有标记（`ToolCard.tsx`）；破坏性工具的确认弹窗共用 `ConfirmToolDialog.tsx`，倒计时与后端 30s 超时一致，超时/关闭弹窗视同拒绝。
 
@@ -258,7 +262,7 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 |---|---|---|
 | huggingface.co / hf-mirror.com（并发探测择一） | 用户点下载嵌入模型 | 无语料 |
 | github.com（DMG 名称取不到时退回 api.github.com） | 打包版检查 / 下载更新，可关闭 | 无语料 |
-| 用户配置的 LLM 端点 | 助手对话 | **检索到的语料片段与对话内容** |
+| 用户配置的 LLM 端点 | 助手对话（助手开启后才访问，含一次上下文窗口探测） | **检索到的语料片段与对话内容** |
 | api.uniapi.io | 助手调用 `generate_image`；凭据取 `~/.config/uniapi/config.json` 或 `UNIAPI_API_KEY` | 生图提示词 |
 | PyPI（经 uv） | 本机装有 uv 时置备 MLX 环境 | 无语料 |
 
@@ -297,6 +301,8 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 | `./node_modules/.bin/electron scripts/e2e-filetree.mjs` | 目录树端到端（先 `npm run build`） |
 | `node scripts/test-scan-async.mjs` / `node scripts/test-index-status.mjs` | 异步扫描与旧同步扫描逐项一致、不阻塞事件循环；`/api/status` 索引阶段字段 |
 | `./node_modules/.bin/electron scripts/e2e-index-visibility.mjs` / `e2e-files-feedback.mjs` | 后台指示与「结果可能不完整」；文件操作与其余入口的忙碌态、慢提示、失败提示 |
+| `node scripts/test-agent-toggle.mjs` | 助手总开关：缺省关闭、409 语义、非法值 400、关闭时不探测模型端点、关闭时中止生成与待确认的工具调用 |
+| `./node_modules/.bin/electron scripts/e2e-agent-toggle.mjs` | 助手总开关的全部界面入口：关闭时隐藏、设置页切换即时生效（先 `npm run build`）；既有助手 e2e 在准备阶段先打开开关 |
 | `node scripts/acceptance.mjs` | 后端整体验收（配置、扫描、读写、冲突、隔离、路径安全等） |
 | `node scripts/retrieval-tests.mjs --url http://127.0.0.1:7410` | 对当前激活库只读跑检索套件，真值由脚本直扫语料自证 |
 

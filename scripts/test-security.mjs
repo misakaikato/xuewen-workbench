@@ -207,6 +207,8 @@ console.log('S2 CSP');
 const addLib = await post('/api/config', { baseDir: corpus });
 check('正常添加资料库成功', addLib.status === 200 && addLib.body.ok === true, JSON.stringify(addLib.body));
 const dsId = addLib.body.dsId;
+// 助手默认关闭：准备阶段打开总开关（S6 skill、S9 助手要用；持久化在 tmpData，重启后仍开）
+await fetch(BASE + '/api/ui-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentEnabled: true }) });
 
 // ---------- S3 Host / Origin ----------
 console.log('S3 Host / Origin');

@@ -47,8 +47,29 @@ export class AgentHub {
     this._confirmCb = new Map(); // confirmId → (ok) => void → { session, sse:Set, busy, seq }
     this._modelRuntime = null;
     this._ctxWindow = 0; // 端点模型的真实上下文窗口（0=未知，回退 128000）
+    this._ctxProbed = false; // 上下文窗口探测是否已做过（推迟到助手开启时，见 setEnabled）
     this._syncModelsJson();
-    this._detectContextWindow().catch(() => {}); // 启动时探测一次，写正 models.json
+  }
+
+  /**
+   * 总开关（ui-settings.agentEnabled）变化时调用，启动时也按持久化值调用一次。
+   * 开启：首次开启时探测端点上下文窗口（访问外部端点，助手关闭时不做）；MCP 与模型运行时本就随会话懒建。
+   * 关闭：拒绝所有待确认的工具调用并中止进行中的生成，全部中止后才 resolve，不留后台生成。
+   */
+  async setEnabled(enabled) {
+    if (enabled) {
+      if (!this._ctxProbed) {
+        this._ctxProbed = true;
+        this._detectContextWindow().catch(() => {}); // 写正 models.json 的 contextWindow
+      }
+      return;
+    }
+    for (const [id, cb] of this._confirmCb) {
+      this._confirmCb.delete(id);
+      cb(false);
+    }
+    const busy = [...this.live].filter(([, entry]) => entry.busy).map(([convId]) => convId);
+    await Promise.all(busy.map((convId) => this.abort(convId)));
   }
 
   /** 默认 AGENTS.md：身份 + 能力 + 回答风格（用户可编辑） */

@@ -6,7 +6,7 @@ import {
   CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator,
 } from '@/components/ui/command';
 import { useApp } from '@/store/app-context';
-import { useTheme, type Theme } from '@/lib/theme-context';
+import { useAgentEnabled, useTheme, type Theme } from '@/lib/theme-context';
 import { api } from '@/lib/api';
 import { extIcon } from '@/lib/extIcon';
 import type { FileEntry, TreeNode } from '@/lib/types';
@@ -29,6 +29,7 @@ const NEXT_THEME: Record<Theme, Theme> = { A: 'B', B: 'C', C: 'A' };
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const { tree, rescan, config } = useApp();
   const { theme, setTheme } = useTheme();
+  const agentEnabled = useAgentEnabled();
   const navigate = useNavigate();
   const [q, setQ] = useState('');
   const [recents, setRecents] = useState<string[]>([]);
@@ -130,7 +131,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
           <CommandItem value="知识库概览 dashboard" onSelect={() => go('/')}><LayoutDashboard />知识库概览</CommandItem>
           <CommandItem value="浏览全部 browse" onSelect={() => go('/browse')}><FolderOpen />浏览全部</CommandItem>
           <CommandItem value="检索 search" onSelect={() => go('/search')}><Search />检索</CommandItem>
-          <CommandItem value="智能助手 agent" onSelect={() => go('/agent')}><Bot />智能助手</CommandItem>
+          {agentEnabled && <CommandItem value="智能助手 agent" onSelect={() => go('/agent')}><Bot />智能助手</CommandItem>}
           <CommandItem value="RAG 管理 rag" onSelect={() => go('/rag')}><DatabaseZap />RAG 管理</CommandItem>
           <CommandItem value="设置 settings" onSelect={() => go('/settings')}><Settings />设置</CommandItem>
           <CommandItem value="知识库管理 setup" onSelect={() => go('/setup')}><Database />知识库管理</CommandItem>

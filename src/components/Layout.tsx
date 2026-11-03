@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/store/app-context';
+import { useAgentEnabled } from '@/lib/theme-context';
 import { UpdateBanner } from './UpdateBanner';
 import { DiagnosticsBanner } from './DiagnosticsBanner';
 import { BackgroundIndicator } from './BackgroundIndicator';
@@ -38,6 +39,9 @@ export function Layout() {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const agentEnabled = useAgentEnabled();
+  // 助手被关闭时浮层随之收起：渲染期对账，再打开开关也不会自己弹出来
+  if (!agentEnabled && quickOpen) setQuickOpen(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -47,8 +51,8 @@ export function Layout() {
         e.preventDefault();
         setPaletteOpen((v) => !v);
       }
-      // ⌘J / Ctrl+J：任意位置唤出浮层智能助手（不离开当前页面）
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+      // ⌘J / Ctrl+J：任意位置唤出浮层智能助手（不离开当前页面）；助手关闭时完全忽略
+      if (agentEnabled && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
         e.preventDefault();
         setQuickOpen((v) => !v);
       }
@@ -61,7 +65,7 @@ export function Layout() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [agentEnabled]);
 
   // 路由变化即收起抽屉：渲染期对账，避免 effect 内同步 setState
   const [prevPath, setPrevPath] = useState(location.pathname);
@@ -196,10 +200,12 @@ export function Layout() {
           <LayoutDashboard className="w-4 h-4" />
           <span className="hidden sm:inline">知识库概览</span>
         </Link>
-        <Link to="/agent" className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors px-1" title="智能助手：多轮对话 · 工具 · skills/MCP">
-          <Bot className="w-4 h-4" />
-          <span className="hidden sm:inline">智能助手</span>
-        </Link>
+        {agentEnabled && (
+          <Link to="/agent" className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors px-1" title="智能助手：多轮对话 · 工具 · skills/MCP">
+            <Bot className="w-4 h-4" />
+            <span className="hidden sm:inline">智能助手</span>
+          </Link>
+        )}
         <span className="text-border">|</span>
         {/* 知识库切换器：列出全部已打开库；添加/移除入口 */}
         <DropdownMenu>
@@ -338,7 +344,7 @@ export function Layout() {
 
       {/* ⌘K 命令面板与快捷键清单 */}
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
-      <QuickAgent open={quickOpen} onClose={() => setQuickOpen(false)} />
+      {agentEnabled && <QuickAgent open={quickOpen} onClose={() => setQuickOpen(false)} />}
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -348,7 +354,7 @@ export function Layout() {
           <div className="text-sm space-y-1.5">
             {[
               ['⌘K / Ctrl+K', '命令面板（全局检索 / 导航 / 动作）'],
-              ['⌘J / Ctrl+J', '浮层智能助手（任意页面，不离开当前页）'],
+              ...(agentEnabled ? [['⌘J / Ctrl+J', '浮层智能助手（任意页面，不离开当前页）']] : []),
               ['?', '本快捷键清单'],
               ['Esc', '关闭浮层 / 清空侧栏过滤'],
               ['Ctrl+F', '阅读页文内查找'],
