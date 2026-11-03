@@ -65,6 +65,7 @@ export class EmbedService {
     this._activeProc = null; // 置备环境期间的可杀子进程（取消用）
     this._taskKind = null; // 'download' | 'import'
     this._bytesDone = 0; // 已完成文件的累计字节数
+    this._curFileCounted = false; // 当前文件是否已计入 _bytesDone（完成后到下一个文件开始前为 true）
     this._totalKnownAll = null; // 全部文件大小是否已知（导入已知，下载逐个揭示）
     this._importCopyHook = null; // 测试钩子：导入复制每个 chunk 后回调
     if (process.env.WORKBENCH_RAG_EMBED === 'mock') {
@@ -112,16 +113,19 @@ export class EmbedService {
   // 总体进度：全部文件大小已知时按字节精确计算；否则按文件数折算并标 estimated（A1）
   _recalcOverall() {
     const p = this.progress;
-    p.overallBytes = this._bytesDone + p.bytes;
-    const allKnown = this._totalKnownAll != null || (p.done + (p.total > 0 ? 1 : 0) >= p.files);
-    p.overallTotal = this._totalKnownAll != null ? this._totalKnownAll : this._bytesDone + p.total;
+    // 当前文件完成后其字节已计入 _bytesDone、done 已加一，不能再叠加（否则总进度先冲高、换文件时回落）
+    const curBytes = this._curFileCounted ? 0 : p.bytes;
+    const curTotal = this._curFileCounted ? 0 : p.total;
+    p.overallBytes = this._bytesDone + curBytes;
+    const allKnown = this._totalKnownAll != null || (p.done + (curTotal > 0 ? 1 : 0) >= p.files);
+    p.overallTotal = this._totalKnownAll != null ? this._totalKnownAll : this._bytesDone + curTotal;
     p.estimated = !allKnown;
     if (allKnown && p.overallTotal > 0) {
       p.percent = Math.min(100, (p.overallBytes / p.overallTotal) * 100);
       p.etaSeconds = p.speedBps > 0 && p.overallBytes < p.overallTotal
         ? Math.round((p.overallTotal - p.overallBytes) / p.speedBps) : null;
     } else {
-      const cur = p.total > 0 ? Math.min(1, p.bytes / p.total) : 0;
+      const cur = curTotal > 0 ? Math.min(1, curBytes / curTotal) : 0;
       p.percent = p.files > 0 ? Math.min(100, ((p.done + cur) / p.files) * 100) : null;
       p.etaSeconds = null;
     }
@@ -129,6 +133,7 @@ export class EmbedService {
 
   _resetProgress(files) {
     this._bytesDone = 0;
+    this._curFileCounted = false;
     this.progress = { ..._emptyProgress(), files, startedAt: Date.now() };
   }
 
@@ -238,6 +243,7 @@ export class EmbedService {
           this.progress.file = f;
           this.progress.bytes = 0;
           this.progress.total = 0;
+          this._curFileCounted = false;
           this.progress.host = '';
           this.progress.attempt = 0;
           this.progress.speedBps = 0;
@@ -265,6 +271,7 @@ export class EmbedService {
           this.progress.bytes = bytes;
           this.progress.total = bytes;
           this._bytesDone += bytes;
+          this._curFileCounted = true;
           this._recalcOverall();
         });
       }
@@ -333,6 +340,7 @@ export class EmbedService {
         this.progress.file = f;
         this.progress.total = sizes.get(f);
         this.progress.bytes = 0;
+        this._curFileCounted = false;
         this._setPhase('copy', '复制 ' + f);
         const same = path.resolve(src) === path.resolve(dst);
         const sha = same ? await sha256File(dst) : await this._copyStream(src, dst + '.part', () => { curPart = dst + '.part'; });
@@ -344,6 +352,7 @@ export class EmbedService {
         this.progress.bytes = sizes.get(f);
         this.progress.done++;
         this._bytesDone += sizes.get(f);
+        this._curFileCounted = true;
         this._recalcOverall();
       }
       for (const e of entries) {

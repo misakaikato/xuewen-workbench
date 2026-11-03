@@ -16,6 +16,19 @@ function check(name, ok, detail) {
 }
 const section = (t) => console.log('\n' + t);
 
+// 记录每一次阶段切换与总体进度重算（只观察，不改被测行为）。
+// 阶段与总体进度只由 _setPhase / _recalcOverall 写入；定时轮询会漏掉几毫秒的短阶段与瞬时值。
+function recordProgress(embed, samples) {
+  const setPhase = embed._setPhase.bind(embed);
+  const recalc = embed._recalcOverall.bind(embed);
+  const push = () => {
+    const p = embed.progress;
+    samples.push({ phase: p.phase, bytes: p.overallBytes, file: p.file });
+  };
+  embed._setPhase = (...a) => { const r = setPhase(...a); push(); return r; };
+  embed._recalcOverall = (...a) => { const r = recalc(...a); push(); return r; };
+}
+
 // ---------- 假下载源（参照 test-download.mjs）：供 probe 与文件 GET ----------
 const ONNX_REPO = 'Xenova/bge-m3';
 const ONNX_FILES = {
@@ -72,28 +85,24 @@ section('导入：立即返回、进度单调、阶段 copy→verify、不阻塞
   }
   const embed = new EmbedService(dataDir);
 
-  const samples = []; // 阶段序列 + status 耗时（外部轮询）
+  const samples = []; // 阶段序列与总体字节（每次写入都记录）
   const inHook = [];  // hook 内的 status 耗时（并发可见性）
   embed._importCopyHook = async () => {
     const t = process.hrtime.bigint();
     embed.status();
     inHook.push(Number(process.hrtime.bigint() - t) / 1e6);
-    await sleep(1); // 略微放慢，保证轮询能观察到中间进度
+    await sleep(1);
   };
+  recordProgress(embed, samples);
   const t0 = Date.now();
   const r = embed.importDir(srcDir);
   check('导入立即返回 started', r.ok === true && r.started === true, r);
   check('导入调用在 200ms 内返回', Date.now() - t0 < 200, Date.now() - t0);
-  const pollTimer = setInterval(() => {
-    const st = embed.status();
-    if (st.progress) samples.push({ phase: st.progress.phase, bytes: st.progress.overallBytes });
-  }, 3);
   await embed._downloadTask;
-  clearInterval(pollTimer);
   const st = embed.status();
   check('导入完成后进入 ready', st.state === 'ready' && st.backend === 'mlx', st.state);
   check('导入期间并发 status() 均在 200ms 内', inHook.length > 0 && inHook.every((ms) => ms < 200), inHook);
-  const phases = [...new Set(samples.map((s) => s.phase))];
+  const phases = [...new Set(samples.map((s) => s.phase).filter(Boolean))];
   check('阶段依次为 copy、verify', phases[0] === 'copy' && phases.includes('verify'), phases);
   const byteSamples = samples.map((s) => s.bytes);
   const monotonic = byteSamples.every((v, i) => i === 0 || v >= byteSamples[i - 1]);
@@ -152,16 +161,12 @@ section('下载：probe→download→verify、总体进度单调、取消删半�
   const dataDir = path.join(tmp, 'd-dl');
   const embed = new EmbedService(dataDir);
   const samples = [];
-  const pollTimer = setInterval(() => {
-    const st = embed.status();
-    if (st.progress) samples.push({ phase: st.progress.phase, bytes: st.progress.overallBytes, file: st.progress.file });
-  }, 3);
+  recordProgress(embed, samples);
   const r = embed.download();
   check('下载立即返回 started', r.ok === true && r.started === true, r);
   const r2 = embed.download();
   check('下载中重复请求返回 already（不会有两个下载）', r2.ok === true && r2.already === true, r2);
   await embed._downloadTask;
-  clearInterval(pollTimer);
   const st = embed.status();
   check('下载完成后 ready（onnx）', st.state === 'ready' && st.backend === 'onnx', { state: st.state, backend: st.backend });
   const phases = [...new Set(samples.map((s) => s.phase).filter(Boolean))];
