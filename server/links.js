@@ -461,10 +461,11 @@ export class LinkIndex {
       if (!m.has(from)) m.set(from, []);
       m.get(from).push(link);
     };
+    const ignores = this.ignores();
     for (const [p, doc] of this.files) {
       for (const l of doc.links) {
         if (l.kind === 'wiki-missing' || !l.target) continue;
-        if (this.isIgnored(p, l)) continue;
+        if (this.isIgnored(p, l, ignores)) continue;
         add(l.target.path, p, l);
       }
     }
@@ -518,11 +519,12 @@ export class LinkIndex {
     return this.sidecarIds.get(p) || p;
   }
 
-  isIgnored(p, link) {
+  // ignores：调用方一次读出的忽略记录（逐条链接判定，不能每条都重新读盘）
+  isIgnored(p, link, ignores) {
     if (!link.target) return false;
     const key = this.docKey(p);
     const norm = link.norm || normalizeText(link.term);
-    return this.ignores().some((e) => e.key === key && e.term === norm && e.targetPath === link.target.path);
+    return ignores.some((e) => e.key === key && e.term === norm && e.targetPath === link.target.path);
   }
 
   ignores() {
@@ -581,7 +583,8 @@ export class LinkIndex {
   linksOf(p) {
     const doc = this.files.get(p);
     if (!doc) return [];
-    return doc.links.map((l) => ({ ...l, ignored: this.isIgnored(p, l) }));
+    const ignores = this.ignores();
+    return doc.links.map((l) => ({ ...l, ignored: this.isIgnored(p, l, ignores) }));
   }
 
   // 反向链接：目标 path -> [{path,title,count,kinds,snippets}]，按提及次数降序
