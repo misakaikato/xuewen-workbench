@@ -3,6 +3,7 @@
 //   wheels/       —— mlx + mlx-embeddings + transformers 及依赖（uv pip download）
 // 打包后的应用首次使用 MLX 时离线置备 venv（见 server/rag/embed.js）。
 // 用法：node scripts/fetch-mlx-env.mjs   （已存在则跳过；--force 重拉）
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -15,15 +16,21 @@ const force = process.argv.includes('--force');
 fs.mkdirSync(path.join(OUT, 'wheels'), { recursive: true });
 
 // ---- 1. python-build-standalone ----
+// 固定版本与校验和：构建可复现，且不走匿名限流的 api.github.com（CI 共享出口 IP 常被限流）
+const PY_RELEASE = '20261013';
+const PY_ASSET = `cpython-3.12.15+${PY_RELEASE}-aarch64-apple-darwin-install_only.tar.gz`;
+const PY_SHA256 = 'ba32036ad8f4c434d97a1ee7feef8b7edc0fac16777639b97e39c74a108e4440';
+
 async function fetchPython() {
   const dest = path.join(OUT, 'python.tar.gz');
   if (fs.existsSync(dest) && !force) return console.log('python.tar.gz 已存在，跳过');
-  const rel = await (await fetch('https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest')).json();
-  const asset = rel.assets.find((a) => /^cpython-3\.12\..*-aarch64-apple-darwin-install_only\.tar\.gz$/.test(a.name));
-  if (!asset) throw new Error('未找到 aarch64-apple-darwin cpython 3.12 资产: ' + rel.tag_name);
-  console.log('下载', asset.name, (asset.size / 1048576).toFixed(1) + 'MB');
-  const r = await fetch(asset.browser_download_url);
-  fs.writeFileSync(dest, Buffer.from(await r.arrayBuffer()));
+  console.log('下载', PY_ASSET);
+  const r = await fetch(`https://github.com/astral-sh/python-build-standalone/releases/download/${PY_RELEASE}/${encodeURIComponent(PY_ASSET)}`);
+  if (!r.ok) throw new Error(`下载 ${PY_ASSET} 失败: HTTP ${r.status}`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  const sha = crypto.createHash('sha256').update(buf).digest('hex');
+  if (sha !== PY_SHA256) throw new Error(`${PY_ASSET} 校验和不符: ${sha}`);
+  fs.writeFileSync(dest, buf);
 }
 
 // ---- 2. wheels（uv pip download，按 macOS arm64 + cp312 解析） ----
