@@ -1,10 +1,11 @@
 # dependencies
 node_modules/
 
-# build outputs
+# build outputs（build/ 同时是 electron-builder 的 buildResources：installer.nsh 要入库）
 dist/
 dist-ssr/
-build/
+build/*
+!build/installer.nsh
 release/
 out/
 *.tsbuildinfo

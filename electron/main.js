@@ -120,7 +120,7 @@ async function start() {
   // 自动更新：仅打包模式创建桥接，经 RPC 暴露给后端（dev / 独立 dev:server 时功能停用）
   if (app.isPackaged) {
     const { createUpdaterBridge } = await import(pathToFileURL(path.join(ROOT, 'electron', 'updater.js')).href);
-    updateBridge = await createUpdaterBridge({ getUiSettings });
+    updateBridge = await createUpdaterBridge({ getUiSettings, logsDir: logsDirFn?.(dataDirValue) });
   }
 
   startBackend();
@@ -222,6 +222,8 @@ async function callRpc(method, args) {
     case 'update.check':
     case 'update.download':
     case 'update.install':
+    case 'update.cancel':
+    case 'update.openInstaller':
     case 'update.openRelease': {
       if (!updateBridge) throw new Error('update-disabled');
       return updateBridge[method.slice('update.'.length)]();

@@ -1,6 +1,7 @@
 import * as React from "react"
 import { Slot } from "@radix-ui/react-slot"
 import { cva, type VariantProps } from "class-variance-authority"
+import { Loader2 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -41,12 +42,25 @@ function Button({
   variant = "default",
   size = "default",
   asChild = false,
+  loading = false,
+  children,
   ...props
 }: React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
+    loading?: boolean
   }) {
   const Comp = asChild ? Slot : "button"
+
+  // 忙碌态：禁用 + 转圈。asChild 时不改 children（Slot 只接受一个子元素）；
+  // 否则在最前面插入转圈——只有「组件类型的前置图标 + 后面还有其他子节点」才替换图标，文字类子节点一律保留
+  let content = children
+  if (loading && !asChild) {
+    const kids = React.Children.toArray(children)
+    const first = kids[0]
+    const replaceIcon = React.isValidElement(first) && typeof first.type !== "string" && kids.length > 1
+    content = [<Loader2 key="__loading" className="animate-spin" />, ...(replaceIcon ? kids.slice(1) : kids)]
+  }
 
   return (
     <Comp
@@ -55,7 +69,11 @@ function Button({
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
-    />
+      disabled={loading || props.disabled}
+      aria-busy={loading || undefined}
+    >
+      {content}
+    </Comp>
   )
 }
 

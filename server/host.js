@@ -61,6 +61,8 @@ export function installHostBridges() {
     check: () => rpc('update.check'),
     download: () => rpc('update.download'),
     install: () => rpc('update.install'),
+    cancel: () => rpc('update.cancel'),
+    openInstaller: () => rpc('update.openInstaller'),
     openRelease: () => rpc('update.openRelease'),
   });
 }

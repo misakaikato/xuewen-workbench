@@ -35,6 +35,7 @@ import { TagChips } from '@/components/TagChips';
 import { DocTabs } from '@/components/DocTabs';
 import { loadTabs, saveTabs, ensureTab, removeTab } from '@/lib/tabs';
 import { usePresence } from '@/lib/presence';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { extIcon } from '@/lib/extIcon';
 import { Button } from '@/components/ui/button';
 import { PageLoading, PageError } from '@/components/ui-states';
@@ -243,8 +244,11 @@ export default function Read() {
   const [noteSaving, setNoteSaving] = useState(false);
   const [noteDraftSaved, setNoteDraftSaved] = useState(false);
   const [resumeHint, setResumeHint] = useState<string | null>(null);
-  // 定位中：从检索结果/锚点进入时，跳转完成前给出提示，避免「先到顶部再猛跳」看起来像卡死
-  const [locating, setLocating] = useState(false);
+  // 定位中：从检索结果/锚点进入时，跳转完成前给出提示，避免「先到顶部再猛跳」看起来像卡死。
+  // locatingActive 由定位流程直接维护；useDelayedFlag 让提示延迟 150ms 才出现：
+  // 定位本身很快时（多数情况）根本不亮，避免一闪而过
+  const [locatingActive, setLocatingActive] = useState(false);
+  const locating = useDelayedFlag(locatingActive, 150);
   const [pinned, setPinned] = useState(false);
   const navType = useNavigationType();
   const [navDepth, setNavDepth] = useState({ idx: 0, max: 0 });
@@ -603,11 +607,7 @@ export default function Read() {
     const sc = scrollRef.current;
     if (!sc) return;
     const hasTarget = !!(hitText || highlightTerm || location.hash);
-    // 提示延迟 150ms 出现：定位本身很快时（多数情况）根本不亮，只有真卡才提示，
-    // 避免提示一闪而过（入场动画还没播完就消失，等于没有）
-    let showTimer: ReturnType<typeof setTimeout> | undefined;
-    if (hasTarget) showTimer = setTimeout(() => setLocating(true), 150);
-    else setLocating(false);
+    setLocatingActive(hasTarget);
     const apply = (allowFallback: boolean): boolean => {
       // 优先定位点击的结果块；查询词只负责高亮，避免总跳到全文第一次命中。
       if (hitText) {
@@ -690,14 +690,12 @@ export default function Read() {
       // 定位落点后再留 180ms：scrollDocToPos 的 rAF 排版校正最多还要跑 8 帧，
       // 提前揭提示会把校正过程露出来
       if (hasTarget) {
-        if (showTimer) clearTimeout(showTimer);
-        timer = setTimeout(() => setLocating(false), 180);
+        timer = setTimeout(() => setLocatingActive(false), 180);
       }
     };
     timer = setTimeout(attempt, 60);
     return () => {
       clearTimeout(timer);
-      if (showTimer) clearTimeout(showTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file, viewReady, location.hash, dsId, relPath, highlightTerm, hitText, hitOccurrence]);

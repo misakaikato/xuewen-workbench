@@ -165,9 +165,11 @@ export const api = {
   rescan: () => req<{ ok: boolean; status: ScanStatus }>('/api/rescan', json('POST')),
   updateCheck: () => req<UpdateState>('/api/update/check', json('POST')),
   updateDownload: () => req<UpdateState>('/api/update/download', json('POST')),
+  updateCancel: () => req<UpdateState>('/api/update/cancel', json('POST')),
   // install 会在安装时杀死应用，请求可能中途断开——调用方需吞错
   updateInstall: () => req<{ ok: boolean }>('/api/update/install', json('POST')),
   openReleasePage: () => req<{ ok: boolean }>('/api/update/open-release', json('POST')),
+  openInstaller: () => req<{ ok: boolean }>('/api/update/open-installer', json('POST')),
   diagnosticsState: () => req<{ pending: DiagnosticsIncident | null; logsDir: string }>('/api/diagnostics/state'),
   diagnosticsAck: () => req<{ ok: boolean }>('/api/diagnostics/ack', json('POST', {})),
   exportDiagnostics: () => req<{ ok: boolean; file: string }>('/api/diagnostics/export', json('POST', {})),

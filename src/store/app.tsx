@@ -15,9 +15,17 @@ function sameUpdate(a: UpdateState | null, b: UpdateState | null): boolean {
     a.status === b.status &&
     a.currentVersion === b.currentVersion &&
     a.error === b.error &&
+    (a.phase ?? null) === (b.phase ?? null) &&
+    (a.canCancel ?? false) === (b.canCancel ?? false) &&
+    (a.installMode ?? null) === (b.installMode ?? null) &&
+    (a.installModeReason ?? null) === (b.installModeReason ?? null) &&
     (a.info?.version ?? null) === (b.info?.version ?? null) &&
     (a.progress?.percent ?? null) === (b.progress?.percent ?? null) &&
-    (a.progress?.transferred ?? null) === (b.progress?.transferred ?? null)
+    (a.progress?.transferred ?? null) === (b.progress?.transferred ?? null) &&
+    (a.progress?.etaSeconds ?? null) === (b.progress?.etaSeconds ?? null) &&
+    (a.lastInstall?.result ?? null) === (b.lastInstall?.result ?? null) &&
+    (a.lastInstall?.toVersion ?? null) === (b.lastInstall?.toVersion ?? null) &&
+    (a.lastInstall?.error ?? null) === (b.lastInstall?.error ?? null)
   );
 }
 

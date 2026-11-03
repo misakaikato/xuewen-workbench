@@ -33,6 +33,17 @@ export interface UpdateProgress {
   transferred: number;
   total: number;
   bytesPerSecond: number;
+  etaSeconds: number | null; // 剩余字节 ÷ 最近速度；速度为 0 时 null
+}
+
+export type UpdatePhase = 'preparing' | 'copying' | 'verifying' | 'restarting' | 'launching-installer';
+
+export interface UpdateLastInstall {
+  result: 'updated' | 'failed';
+  fromVersion: string;
+  toVersion: string;
+  error?: string;
+  dmgPath?: string;
 }
 
 // 应用更新快照（GET /api/update/state；也随 /api/status 返回），镜像 electron/updater.js 的状态机
@@ -43,6 +54,16 @@ export interface UpdateState {
   info: { version: string | null; releaseDate: string | null; notes: string | null } | null;
   progress: UpdateProgress | null;
   error: string | null;
+  /** installing 期间的阶段 */
+  phase: UpdatePhase | null;
+  /** 下载中可取消 */
+  canCancel: boolean;
+  /** mac 预检结果：auto=退出后自动替换重启；Windows 恒为 auto */
+  installMode: 'auto' | 'manual' | null;
+  /** installMode 为 manual 时的原因（枚举：app-translocation / on-dmg-volume / dir-not-writable / bundle-not-writable / prepare-failed） */
+  installModeReason: string | null;
+  /** 本次启动时消费的上次安装结果（提示一次后由前端忽略） */
+  lastInstall: UpdateLastInstall | null;
 }
 
 export interface ConfigResponse {

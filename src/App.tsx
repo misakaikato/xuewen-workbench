@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useApp } from '@/store/app-context';
 import { Layout } from '@/components/Layout';
+import { Toaster } from '@/components/Toaster';
 import Dashboard from '@/pages/Dashboard';
 import { PageLoading, PageSkeleton } from '@/components/ui-states';
 
@@ -41,6 +42,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
+      <Toaster />
     </RequireSource>
   );
 }

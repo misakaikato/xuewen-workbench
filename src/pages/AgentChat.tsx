@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import type { AgentStatus, AgentMessage, AgentFailure } from '@/lib/api';
 import type { TreeNode } from '@/lib/types';
 import { readAgentStream, streamFailure } from '@/lib/agentStream';
+import { notify } from '@/lib/notify';
 import { useApp } from '@/store/app-context';
 import { usePolling } from '@/hooks/usePolling';
 import { useTheme } from '@/lib/theme-context';
@@ -138,13 +139,15 @@ export default function AgentChat() {
   }, []);
   const [conversations, setConversations] = useState<Conv[]>([]);
   const prevBusyRef = useRef<Map<string, boolean>>(new Map());
-  const [toast, setToast] = useState<string | null>(null);
+  // 后台会话完成提示走全局 toast（src/lib/notify.ts 单一真相源）
   const checkBgDone = useCallback((convs: Conv[]) => {
     for (const c of convs) {
       const was = prevBusyRef.current.get(c.id) || false;
       if (was && !c.busy && c.id !== active) {
-        setToast(`「${c.title || '对话'}」已完成生成`);
-        setTimeout(() => setToast(null), 5000);
+        notify(`「${c.title || '对话'}」已完成生成`, {
+          kind: 'success',
+          action: { label: '查看', run: () => setActive(c.id) },
+        });
       }
       prevBusyRef.current.set(c.id, !!c.busy);
     }
@@ -750,19 +753,6 @@ export default function AgentChat() {
           </div>
         )}
       </div>
-
-      {/* 后台完成 toast */}
-      {toast && (
-        <div className="fixed bottom-24 right-4 z-50 bg-card border border-primary/30 rounded-xl shadow-lg px-4 py-2.5 text-sm flex items-center gap-2">
-          <Check className="w-4 h-4 text-success" />
-          {toast}
-          <button className="ml-2 text-xs text-primary underline" onClick={() => {
-            const c = conversations.find((x) => toast.includes(x.title || ''));
-            if (c) setActive(c.id);
-            setToast(null);
-          }}>查看</button>
-        </div>
-      )}
 
       {/* 应用内输入/选择对话框 */}
       {ask?.kind === 'input' && (
