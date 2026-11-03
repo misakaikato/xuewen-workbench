@@ -9,6 +9,11 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
+// 测试窗口被其他窗口完全遮挡时，Chromium 会把它当作不可见并把定时器限流到每秒一次，
+// 帧间隔恒约 1000ms、与应用性能无关；测量期间关掉这类后台化（须在 app ready 之前设置）
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = 7499;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -268,7 +273,7 @@ async function main() {
   await app.whenReady();
   win = new BrowserWindow({
     width: 1360, height: 900, show: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
   win.webContents.focus();
   try { app.focus({ steal: true }); } catch { /* 平台不支持则忽略 */ }
