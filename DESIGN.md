@@ -44,6 +44,9 @@
 ## 4. 组件规格
 
 - **按钮只用 `src/components/ui/button.tsx` 的变体**。禁止在页面里内联拼 `px-? py-? rounded border` 造按钮（Layout/Dashboard/Read 里的存量内联按钮是技术债）。
+- **按钮等待只用 `loading`**（button.tsx）：点击后立即禁用并转圈，状态推进靠数据回流，不由前端假装完成。
+- **全局提示只用 toast**（`src/lib/notify.ts` + `src/components/Toaster.tsx`）：右下角最多 3 条；info/success 5 秒、error 8 秒，`durationMs: 0` 常驻。禁止页面自造临时提示条。
+- **瞬时操作不闪提示**：延迟指示统一走 `src/hooks/useDelayedFlag.ts`（默认 150ms 才出现），快操作完全不亮。
 - 卡片：`bg-card border border-border rounded-lg`；hover 只允许两种反馈：`border-primary/60` 或 `translateY(-1px)` + 投影微变，二选一。
 - 圆角走 `--radius`（A 6px / B·C 8px）派生的 sm/md/lg，不引入第四档。
 

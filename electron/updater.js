@@ -344,10 +344,13 @@ export async function createUpdaterBridge({ getUiSettings, logsDir }) {
       return st;
     },
     install: async () => {
-      if (st.status !== 'ready') throw Object.assign(new Error('安装包未就绪'), { notReady: true });
+      // mac 下载完成（ready）后又遇检查类错误进入 error 时 DMG 仍在盘上：允许直接手动安装
+      const canInstall = st.status === 'ready'
+        || (process.platform === 'darwin' && st.status === 'error' && dmgInfo);
+      if (!canInstall) throw Object.assign(new Error('安装包未就绪'), { notReady: true });
       if (process.platform === 'darwin') {
         if (!dmgInfo) throw Object.assign(new Error('安装包未就绪'), { notReady: true });
-        if (st.installMode === 'auto' && macTarget?.target) {
+        if (st.status === 'ready' && st.installMode === 'auto' && macTarget?.target) {
           // 同步占位：进入任何 await 之前先离开 ready，防止重复点击并发准备两份
           setState({ status: 'installing', phase: 'preparing', error: null });
           return installMacAuto();

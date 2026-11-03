@@ -110,6 +110,16 @@ async function start() {
   winTheme = getUiSettings().theme || 'A';
   winBg = { A: '#f7f1e3', B: '#ffffff', C: '#1b1c20' }[winTheme] || winBg;
 
+  // 跨重启更新提示（启动页首条文案）：读待完成记录判定刚更新成功。
+  // 必须在 createUpdaterBridge 之前读——它会消费并删除这些文件（规格 §五「启动页」）
+  try {
+    const { pendingFile, readJsonIfExists } = await import(pathToFileURL(path.join(ROOT, 'electron', 'updatePending.js')).href);
+    const pending = readJsonIfExists(pendingFile(path.join(app.getPath('userData'), 'updates')));
+    if (pending?.toVersion && pending.toVersion === app.getVersion()) {
+      lastBootPayload = { state: 'starting', step: `已更新到 v${pending.toVersion}，正在启动…` };
+    }
+  } catch { /* 记录缺失或损坏按普通启动处理 */ }
+
   // 立即建窗并加载启动页；首帧与 1500ms 兜底先到者显示（见 createStartupWindow）
   createStartupWindow();
 

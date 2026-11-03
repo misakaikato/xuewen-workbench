@@ -104,6 +104,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // 轮询扫描状态（文件监听触发服务端重扫后同步前端；多库时看各库 scannedAt）。
   // 页面隐藏时暂停（usePolling），回到可见立即补拉。
+  // 更新进行中（checking/downloading/installing）收紧到 1 秒：点击后界面要立即跟上状态机。
+  const updateBusy = !!update && ['checking', 'downloading', 'installing'].includes(update.status);
   usePolling(() => {
     (async () => {
       try {
@@ -115,7 +117,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       } catch { /* 后端未就绪时忽略 */ }
     })();
-  }, 5000);
+  }, updateBusy ? 1000 : 5000);
 
   const libraries = useMemo(() => config?.libraries ?? [], [config]);
   const dsId = config?.dsId ?? null;

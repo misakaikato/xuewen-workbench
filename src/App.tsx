@@ -3,6 +3,8 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useApp } from '@/store/app-context';
 import { Layout } from '@/components/Layout';
 import { Toaster } from '@/components/Toaster';
+import { UpdateInstallOverlay } from '@/components/UpdateInstallOverlay';
+import { UpdateInstallNotice } from '@/components/UpdateInstallNotice';
 import Dashboard from '@/pages/Dashboard';
 import { PageLoading, PageSkeleton } from '@/components/ui-states';
 
@@ -43,6 +45,8 @@ export default function App() {
         </Route>
       </Routes>
       <Toaster />
+      <UpdateInstallOverlay />
+      <UpdateInstallNotice />
     </RequireSource>
   );
 }

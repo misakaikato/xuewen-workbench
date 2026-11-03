@@ -215,8 +215,13 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 - **记忆与对话**：全局 / agent / 库三层记忆，对话按库、按 agent 存放，单一数据源是 pi 会话文件。设计见 `specs/2026-10-19-memory-design.md`。
 - **前端入口**：`/agent` 聊天页，另有阅读页侧栏问答与浮窗问答，会注入当前文档上下文。
 
-### 6.8 自动更新：Windows 全自动，macOS 半自动
-仅打包版启用（开发模式与独立后端下停用），启动 10 秒后首查，之后每 6 小时一次，设置里可关。Windows 用 electron-updater：blockmap 差量下载、安装并重启。macOS 未签名，electron-updater 只负责检查；下载从 `github.com/.../releases/download/` 直接取 DMG（不调限流的 api.github.com），然后打开安装包并退出，由用户拖入 Applications。签名后 mac 可切回 electron-updater。更新桥留在主进程，后端经 RPC 调用。
+### 6.8 自动更新：两端安装过程全程可见
+仅打包版启用（开发模式与独立后端下停用），启动 10 秒后首查，之后每 6 小时一次，设置里可关。更新桥留在主进程（`electron/updater.js`），后端经 RPC 调用；状态机快照（`status` / `phase` / `progress`（含速度与剩余时间）/ `canCancel` / `installMode` / `lastInstall`）随 `/api/status` 下发，前端轮询在 checking / downloading / installing 时收紧到 1 秒。
+
+- **Windows**：electron-updater 检查与差量下载；安装 = 非静默 `quitAndInstall(false, true)`，安装器显示进度窗口，装完自动重开（`build/installer.nsh` 让升级跳过「为谁安装」页与完成页，并直接启动新版本）。
+- **macOS（未签名）**：electron-updater 只负责检查；下载自取发布源的 DMG（github 走资产通道，不调限流的 api.github.com；也支持 generic provider）。下载完成后预检能否自动替换（AppTranslocation / DMG 卷 / 目录或 bundle 不可写 / 不在 .app 结构中 → 状态为 `ready + installMode:'manual'`，界面给出原因与手动步骤）。可自动替换时点「重启并安装」：`electron/macInstall.js` 在应用内准备（挂载 DMG、校验 bundle id 与版本、ditto 到 `updates/staging`、codesign 验证，全程有进度进状态机），成功后派发 `electron/mac-install.sh` 在退出后替换 bundle、去隔离属性并重新打开；准备失败不退出、回退手动拖拽；替换被拦截时脚本还原旧版并打开 DMG。签名后 mac 可切回 electron-updater。
+- **跨重启结果**：`install()` 与下载完成时写 `userData/updates/pending.json`；mac 替换脚本写 `install-result.json`。下次启动早期由 `createUpdaterBridge` 消费并删除：版本已到 toVersion → `lastInstall.result='updated'`；版本未变且 result 为失败 → `'failed'` 带人话原因；版本未变且无 result（用户取消了安装器）→ 保留 pending 不提示。前端 toast 用 sessionStorage 键去重，每会话只提示一次；启动页首条文案（「已更新到 vX，正在启动…」）由主进程在消费删除 pending 之前先读一次。
+- **界面**：`UpdateBanner`（available / downloading / ready / error，点击立即 loading、下载可取消）、`UpdateInstallOverlay`（installing 时全窗口遮罩，按 phase 显示阶段文字与进度，不可关闭）、设置页「关于与更新」状态行；文案统一在 `src/lib/updateText.ts`，平台差异只体现在文案。安装会关闭应用，有未保存改动时先弹确认（`src/lib/unsaved.ts` 登记表，编辑页与阅读页原位编辑在脏时注册）。
 
 ### 6.9 进程结构与诊断：后端重活不许碰窗口所在的线程
 Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其中运行，扫描、解析 Word、ONNX 推理、下载都会让窗口“未响应”。现在主进程只建窗、托管后端进程、实现宿主 RPC；后端的同步重活最多卡后端自己的 HTTP 服务。三个进程各写一份日志；看门狗记下事件循环阻塞 ≥1 秒的时长与当时的活动（`setActivity` / `withActivity` 登记）；异常退出、后端崩溃、渲染进程崩溃记入 `incidents.jsonl`，下次启动顶部横幅提示；设置页与横幅可一键导出诊断 zip（不含正文、对话、API Key、端点地址）。

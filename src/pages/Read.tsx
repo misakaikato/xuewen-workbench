@@ -12,6 +12,7 @@ import { useApp } from '@/store/app-context';
 import { useReadingPrefs } from '@/lib/reading-prefs';
 import { loadReadPos, saveReadPos, loadDraft, saveDraft, clearDraft } from '@/lib/drafts';
 import { registerOpenDoc } from '@/lib/openEditor';
+import { registerUnsaved } from '@/lib/unsaved';
 import { detectLineSeparator } from '@/components/editor/lineSeparator';
 import { FormatToolbar } from '@/components/editor/FormatToolbar';
 import { pushDocLinks } from '@/components/editor/autoLinks';
@@ -763,6 +764,11 @@ export default function Read() {
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [dirty]);
+  // 未保存登记表：安装更新（会关闭应用）前据此弹确认；干净或退出编辑时注销
+  useEffect(() => {
+    if (!editing || !dirty) return;
+    return registerUnsaved(() => editingRef.current && buffer() !== baseTextRef.current);
+  }, [editing, dirty, buffer]);
   useEffect(() => {
     if (!editing || !dsId || !file || file.readonly) return;
     return registerOpenDoc({

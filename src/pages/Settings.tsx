@@ -14,6 +14,7 @@ import {
   Select as UISelect, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { useTheme, type Theme } from '@/lib/theme-context';
+import { updateStatusLine } from '@/lib/updateText';
 import RagManage from './RagManage';
 
 function collectDirs(node: TreeNode, out: string[]) {
@@ -221,6 +222,10 @@ export default function Settings() {
             </label>
             {checkMsg && <span className="text-xs text-muted-foreground">{checkMsg}</span>}
           </div>
+        )}
+        {updateState?.enabled && updateStatusLine(updateState) && (
+          // 与页顶横幅同口径的状态行（src/lib/updateText.ts 唯一出处）
+          <p className="mt-3 text-xs text-muted-foreground">{updateStatusLine(updateState)}</p>
         )}
         <div className="mt-4 pt-4 border-t border-border">
           <h3 className="text-sm font-semibold mb-1">诊断信息</h3>

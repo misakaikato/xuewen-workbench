@@ -18,6 +18,7 @@ import type { FilePayload } from '@/lib/types';
 import type { DocLink } from '@/lib/api';
 import { ReadOnlyDoc } from '@/components/ReadOnlyDoc';
 import { registerOpenDoc } from '@/lib/openEditor';
+import { registerUnsaved } from '@/lib/unsaved';
 import { runEntryAction, type EntryAction } from '@/lib/entryOps';
 import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor';
 import { editorBaseExtensions, editorBaseThemeSpec } from '@/components/editor/setup';
@@ -121,6 +122,12 @@ export default function Edit() {
 
   // 文件被重命名/移动/删除后由目录树带 wbFollow 跳转，不拦截（缓冲区与草稿已随行）
   const blocker = useBlocker(({ nextLocation }) => dirty && !(nextLocation.state as { wbFollow?: boolean } | null)?.wbFollow);
+
+  // 未保存登记表：安装更新（会关闭应用）前据此弹确认；干净或卸载时注销
+  useEffect(() => {
+    if (!dirty) return;
+    return registerUnsaved(() => dirtyRef.current);
+  }, [dirty]);
 
   // 缓冲区当前精确文本（保存与脏检测都以此为准，避免 React 状态滞后）
   const buffer = useCallback(
