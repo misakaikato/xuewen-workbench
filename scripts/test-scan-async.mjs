@@ -1,5 +1,5 @@
 // G2/G3（反馈第 4 批·上）：扫描异步化的一致性与不阻塞验证。
-// - G2：旧同步扫描（git show main:server/scanner.js，落在临时目录，不留仓库）与
+// - G2：旧同步扫描（git show <BASELINE>:server/scanner.js，落在临时目录，不留仓库）与
 //   新 scanTreeAsync 的结果深比较必须完全相等（现有语料 + 临时造 5000 文件语料）。
 // - G3：异步扫描 5000 文件期间，10ms 计时器回调最大延迟 ≤ 100ms（事件循环不再被阻塞）；
 //   scanned 单调递增，最终等于文件总数。
@@ -26,11 +26,13 @@ const check = (name, fn) => {
   }
 };
 
-// ---------- 旧同步版本：从 main 取到临时目录（lagWatch 一并，chokidar 经软链解析） ----------
+// ---------- 旧同步版本：从固定基线取到临时目录（lagWatch 一并，chokidar 经软链解析） ----------
+// 基线固定为 v0.1.7（5250c0f），它是最后一个只有同步 scanTree 的版本；不能用 main，main 已是新实现
+const BASELINE = '5250c0f';
 const oldDir = path.join(tmp, 'old-scanner');
 fs.mkdirSync(oldDir, { recursive: true });
-fs.writeFileSync(path.join(oldDir, 'scanner.js'), execFileSync('git', ['-C', ROOT, 'show', 'main:server/scanner.js']));
-fs.writeFileSync(path.join(oldDir, 'lagWatch.js'), execFileSync('git', ['-C', ROOT, 'show', 'main:server/lagWatch.js']));
+fs.writeFileSync(path.join(oldDir, 'scanner.js'), execFileSync('git', ['-C', ROOT, 'show', `${BASELINE}:server/scanner.js`]));
+fs.writeFileSync(path.join(oldDir, 'lagWatch.js'), execFileSync('git', ['-C', ROOT, 'show', `${BASELINE}:server/lagWatch.js`]));
 fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(oldDir, 'node_modules'), 'dir');
 const oldScanner = await import(pathToFileURL(path.join(oldDir, 'scanner.js')).href);
 const { scanTreeAsync } = await import(pathToFileURL(path.join(ROOT, 'server', 'scanner.js')).href);
