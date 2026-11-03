@@ -8,6 +8,7 @@ import path from 'node:path';
 import express from 'express';
 import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir, renameWithRetryAsync, tmpPathFor, cacheDir } from './store.js';
 import { isWithin } from './paths.js';
+import { preserveCorrupt } from './atomicFile.js';
 import { caseRenameAction } from './renamePlan.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
 import { hostOpenPath, revealInFolder } from './hostOpen.js';
@@ -804,6 +805,25 @@ app.put('/api/file', async (req, res) => {
   }
 });
 
+// 读取划线记录：不存在为空；解析失败或不是数组时把坏文件改名为 .corrupt-<时间戳> 保留后从空开始，
+// 不让下一次写入用只含新条目的数组覆盖掉原有记录
+function readAnnotations(annAbs) {
+  let raw;
+  try {
+    raw = fs.readFileSync(annAbs, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return [];
+    throw e;
+  }
+  try {
+    const ann = JSON.parse(raw);
+    if (Array.isArray(ann)) return ann;
+  } catch { /* 下面按损坏处理 */ }
+  const kept = preserveCorrupt(annAbs);
+  console.warn('[notes] 划线记录无法解析，已另存为 ' + path.basename(kept) + '，从空记录开始');
+  return [];
+}
+
 // 阅读划线笔记：追加到知识库的笔记目录（默认「阅读笔记」），按源文档聚合成一个 md
 app.post('/api/notes/append', async (req, res) => {
   const lib = requireLib(res, req);
@@ -831,26 +851,22 @@ app.post('/api/notes/append', async (req, res) => {
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
     const body = String(note || '').trim();
     const quoted = String(quote || '').trim().split(/\r?\n/).map((line) => '> ' + line).join('\n');
+    // 逐条划线记录（独立 annotations 文件，避免污染 meta schema）；坏文件先改名保留再从空开始
+    const annAbs = path.join(path.dirname(abs), `.${path.basename(abs, '.md')}.annotations.json`);
+    const ann = readAnnotations(annAbs);
     // 锚点：标题文本即锚点（阅读页按标题文本定位），加短随机后缀避免同分钟冲突
-    const annAbsForAnchor = path.join(path.dirname(abs), `.${path.basename(abs, '.md')}.annotations.json`);
-    let existing = [];
-    try { existing = JSON.parse(fs.readFileSync(annAbsForAnchor, 'utf8')); } catch { existing = []; }
-    const anchor = `${stamp} · ${String(existing.length + 1)}`;
+    const anchor = `${stamp} · ${String(ann.length + 1)}`;
     const block = [first ? `# ${stem} 阅读笔记\n` : '', `## ${anchor}`, quoted, body ? `\n${body}` : '', `\n来源：[${source}](${encodeURI(source)})\n`, ''].filter(Boolean).join('\n');
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.appendFileSync(abs, (first ? '' : '\n---\n\n') + block, 'utf8');
-    // 笔记元数据：标准旁注（仅 schema 允许字段）+ 逐条划线记录（独立 annotations 文件，避免污染 meta schema）
+    // 笔记元数据：标准旁注（仅 schema 允许字段）
     const metaAbs = abs + SIDECAR_SUFFIX;
     if (!fs.existsSync(metaAbs)) {
       const meta = { id: 'doc_' + crypto.randomUUID(), title: `${stem} 阅读笔记` };
       fs.writeFileSync(metaAbs, JSON.stringify(meta, null, 2) + '\n', 'utf8');
     }
-    const annAbs = path.join(path.dirname(abs), `.${path.basename(abs, '.md')}.annotations.json`);
-    let ann = [];
-    try { ann = JSON.parse(fs.readFileSync(annAbs, 'utf8')); } catch { /* 首次写入 */ }
-    if (!Array.isArray(ann)) ann = [];
     ann.push({ at: now.toISOString(), source, quote: String(quote || '').trim(), note: body, anchor });
-    fs.writeFileSync(annAbs, JSON.stringify(ann, null, 2) + '\n', 'utf8');
+    await writeTextAtomic(annAbs, JSON.stringify(ann, null, 2) + '\n', false);
     await lib.scanner.rescan();
     res.json({ ok: true, path: rel, meta: rel + SIDECAR_SUFFIX, annotations: ann.length });
   } catch (e) {
@@ -1048,19 +1064,25 @@ function dupName(base, ext, taken) {
   }
 }
 
-// 复制后重生成旁注 id，避免重复 id 问题；非法 JSON 的旁注原样复制（问题会照常提示）
+// 复制后重生成旁注 id，避免重复 id 问题；非法 JSON 的旁注原样复制（问题会照常提示）。
+// 源旁注不存在返回 false；写入失败抛错（由复制流程整体回滚）
 function copySidecarWithNewId(srcAbs, dstAbs) {
+  let raw;
   try {
-    const raw = fs.readFileSync(srcAbs, 'utf8');
-    try {
-      const meta = JSON.parse(raw);
-      if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
-        meta.id = 'doc_' + crypto.randomUUID();
-        return fs.writeFileSync(dstAbs, JSON.stringify(meta, null, 2) + '\n');
-      }
-    } catch { /* 非法 JSON：原样复制 */ }
-    fs.writeFileSync(dstAbs, raw);
-  } catch { /* 源旁注不存在：跳过 */ }
+    raw = fs.readFileSync(srcAbs, 'utf8');
+  } catch {
+    return false;
+  }
+  let out = raw;
+  try {
+    const meta = JSON.parse(raw);
+    if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
+      meta.id = 'doc_' + crypto.randomUUID();
+      out = JSON.stringify(meta, null, 2) + '\n';
+    }
+  } catch { /* 非法 JSON：原样复制 */ }
+  fs.writeFileSync(dstAbs, out);
+  return true;
 }
 
 // 复制文档/文件夹（含旁注；目录递归，内部旁注一并重生成 id）。targetDir 缺省为源所在目录
@@ -1090,24 +1112,43 @@ app.post('/api/file/duplicate', async (req, res) => {
     const newRel = targetDir ? targetDir + '/' + newName : newName;
     const dstAbs = path.join(dstDirAbs, newName);
 
-    if (isDir) {
-      await fs.promises.cp(srcAbs, dstAbs, { recursive: true }); // 异步复制：大目录不阻塞事件循环
-      // 目录内所有旁注重生成 id
-      const walk = (d) => {
-        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-          const f = path.join(d, e.name);
-          if (e.isDirectory()) walk(f);
-          else if (isSidecar(e.name)) {
-            const doc = f.slice(0, -SIDECAR_SUFFIX.length);
-            const tmp = f + '.wb-tmp-' + process.pid;
-            try { fs.renameSync(f, tmp); copySidecarWithNewId(tmp, f); } finally { try { fs.unlinkSync(tmp); } catch { /* ignore */ } }
+    // 先复制到同目录下的隐藏临时名（扫描跳过点开头的条目），旁注 id 在临时副本里重写，
+    // 全部完成才改名为最终名；任何一步失败都删掉临时副本，库里不留残缺的「副本」
+    const stamp = Date.now();
+    const tmpAbs = path.join(dstDirAbs, `.${newName}.wb-copy-${stamp}`);
+    const tmpSidecar = path.join(dstDirAbs, `.${newName}${SIDECAR_SUFFIX}.wb-copy-${stamp}`);
+    try {
+      if (isDir) {
+        await fs.promises.cp(srcAbs, tmpAbs, { recursive: true, errorOnExist: true, force: false }); // 异步复制：大目录不阻塞事件循环
+        // 目录内所有旁注重生成 id
+        const walk = (d) => {
+          for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+            const f = path.join(d, e.name);
+            if (e.isDirectory()) walk(f);
+            else if (isSidecar(e.name)) {
+              const tmp = f + '.wb-tmp-' + process.pid;
+              try { fs.renameSync(f, tmp); copySidecarWithNewId(tmp, f); } finally { try { fs.unlinkSync(tmp); } catch { /* ignore */ } }
+            }
           }
+        };
+        walk(tmpAbs);
+        await renameWithRetryAsync(tmpAbs, dstAbs);
+      } else {
+        await fs.promises.copyFile(srcAbs, tmpAbs);
+        // 旁注先就位、文档最后出现：扫描不会看到缺旁注的副本
+        const hasSidecar = copySidecarWithNewId(srcAbs + SIDECAR_SUFFIX, tmpSidecar);
+        if (hasSidecar) await renameWithRetryAsync(tmpSidecar, dstAbs + SIDECAR_SUFFIX);
+        try {
+          await renameWithRetryAsync(tmpAbs, dstAbs);
+        } catch (e) {
+          if (hasSidecar) await fs.promises.rm(dstAbs + SIDECAR_SUFFIX, { force: true }).catch(() => { /* 忽略 */ });
+          throw e;
         }
-      };
-      walk(dstAbs);
-    } else {
-      fs.copyFileSync(srcAbs, dstAbs);
-      copySidecarWithNewId(srcAbs + SIDECAR_SUFFIX, dstAbs + SIDECAR_SUFFIX);
+      }
+    } catch (e) {
+      await fs.promises.rm(tmpAbs, { recursive: true, force: true }).catch(() => { /* 忽略 */ });
+      await fs.promises.rm(tmpSidecar, { force: true }).catch(() => { /* 忽略 */ });
+      throw e;
     }
     await lib.rescanAndIndex();
     res.json({ ok: true, path: newRel, kind: isDir ? 'folder' : ext.replace('.', '') || 'file' });
@@ -2135,16 +2176,13 @@ async function boot() {
     }
   }));
   // 启动续建：对已打开且已有 RAG 索引（rag.db 存在且 files>0）的库触发一次增量构建，
-  // 把上次退出前未完成的进度补上（从未建过索引的库不自动建）。
+  // 把上次退出前未完成的进度补上（从未建过索引的库不自动建，用户暂停过的保持暂停）。
   for (const lib of libs.values()) {
     if (!lib.scanner.snapshot) continue;
     try {
       const ragDb = path.join(dataDir(), 'knowledge', lib.id, 'rag.db');
       if (!fs.existsSync(ragDb)) continue;
-      const ix = ragManager.index(lib.id);
-      if (ix._ensureStore().stats().files > 0) {
-        ix.build({}).catch((e) => console.error('[boot] RAG 增量续建失败:', e?.message || e));
-      }
+      ragManager.index(lib.id).autoBuild();
     } catch (e) {
       console.error('[boot] RAG 续建检查失败:', e?.message || e);
     }

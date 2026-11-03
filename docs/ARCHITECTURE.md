@@ -112,7 +112,7 @@ flowchart TB
 | 文件 | 职责 |
 |---|---|
 | `index.js` | REST 入口；多库管理（请求带 `?ds=<id>`，缺省当前库）；文件操作与路径安全（`resolveWithin`）；托管构建后的前端 |
-| `store.js` | 数据目录定位与迁移、配置、按库状态、原子写、备份目录 |
+| `store.js` / `atomicFile.js` | 数据目录定位与迁移、配置、按库状态、备份目录 / 原子写（临时文件再改名）与解析失败文件改名为 `.corrupt-<时间戳>` 保留；`atomicFile.js` 无模块级副作用 |
 | `scanner.js` | 扫描资料库，生成文件树；支持格式见 `SUPPORTED_EXTS` |
 | `indexer.js` | 内存精确检索（文件名、路径、正文、JSON 键值、Word 提取文本） |
 | `linkMatch.js` / `links.js` | 内链匹配引擎 / 词条表、外链、反链与缓存 |
@@ -175,7 +175,7 @@ flowchart TB
     ├── rag-config.json     # 检索参数
     ├── collections.json · metadata.json · recents.json
     ├── memory/             # 库记忆
-    └── conversations/<agentId>/   # 该库的助手对话
+    └── conversations/<agentId>/   # 该库的助手对话：<convId>.jsonl 显示记录、pi 会话文件、生成中的 <convId>.partial.json
 ```
 
 `dsId` 由语料目录绝对路径哈希得出：同一目录移出工作区再加回，数据全部恢复。
@@ -203,7 +203,7 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 
 ### 6.6 RAG：关键词与向量两路召回，RRF 融合
 - **切块**：md 按标题层级，txt / docx 按段落，json 按条目，超长节按段落边界二次分组；块上带文档路径、标题路径。
-- **存储**：每库一个 `rag.db`（better-sqlite3），FTS5 中文 bigram + 向量 BLOB；可暂停续建（启动时自动续建未完成索引），删除即全量重建。一致性规则：构建中的扫描结束后补跑、向量写入成功才标完成、未对账完显示“待更新”、改参数需清库——清库按批删除（批间让出事件循环，进度随 status 上报），先写「清理中」标记、清完写新指纹，中断后续建先清余量，不会新旧混杂也不会重复清已清的库。
+- **存储**：每库一个 `rag.db`（better-sqlite3），FTS5 中文 bigram + 向量 BLOB；可暂停续建（启动时自动续建未完成索引；暂停记在 rag.db 的 meta `paused`，重启后仍是暂停、不自动续建，用户开始构建才清除），删除即全量重建。一致性规则：构建中的扫描结束后补跑、向量写入成功才标完成、未对账完显示“待更新”、改参数需清库——清库按批删除（批间让出事件循环，进度随 status 上报），先写「清理中」标记、清完写新指纹，中断后续建先清余量，不会新旧混杂也不会重复清已清的库；首次构建先记「构建中指纹」`building_cfg`，中断后改了参数再续建同样提示 `configChanged` 并先清库；构建进行中改切块/嵌入参数返回 409。
 - **检索**：BM25 与余弦各取 top-N，RRF 融合，语义路加权；低于融合阈值不显示，查不到就明说“没有找到”。查询与切块都经繁→简归一化。全部默认值在 `server/rag/config.js`，可在 RAG 管理页按库调整。
 - **嵌入**：bge-m3（1024 维）。macOS 走 MLX Python sidecar，Python 环境先尝试 uv 在线置备，否则用安装包内捆绑的离线环境（`scripts/fetch-mlx-env.mjs` 构建期拉取）；Windows 走 onnxruntime-node，在 worker 线程里加载与推理，默认先试 DirectML、不可用时降级 CPU（原因写入 backend.log，`WORKBENCH_RAG_ONNX_EP` 可覆盖）。测试可设 `WORKBENCH_RAG_EMBED=mock`。
 - **模型获取**：首次在 RAG 管理页下载。并发探测 huggingface.co 与 hf-mirror.com，按先响应者顺序取；托管模式用 Electron `net.fetch`（Chromium 网络栈，走系统代理）；`.part` 断点续传、30 秒空闲超时、退避重试、连续失败换源；接口立即返回，进度靠轮询。也可手动导入模型目录（流式复制边读边算 sha256，后台任务）。模型不进安装包。
@@ -214,6 +214,7 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 - **工具**：清单见 `server/agent/manager.js` 的 `TOOL_NAMES`，含检索、读文档、改名移动、读写设置、记忆、生图，以及 pi 内置的 `read` 与 `bash`（`bash` 的工作目录是当前资料库根目录）。
 - **运行模式**：auto（全自动）/ confirm（破坏性工具与 `bash` 需用户确认）/ readonly（只给检索阅读类工具）。持久化在 `llm-settings.json`，缺省 confirm；readonly 在会话与工具执行两层生效，权限判断集中在 `tool_call` 钩子，`read` 工具限定资料库与 skills 目录。助手不信任语料库目录下的 `.pi`，MCP 配置只读 `agents/default/mcp.json`；skill 导入校验 zip 条目与名称，删除限定在 skills 目录。
 - **记忆与对话**：全局 / agent / 库三层记忆，对话按库、按 agent 存放，单一数据源是 pi 会话文件。设计见 `specs/2026-10-19-memory-design.md`。
+- **对话的中断恢复**：对话元数据 `piSessionFile` 指向 pi 会话文件，重启后 `SessionManager.open` 接上含工具调用与结果的完整上下文；打不开、文件缺失而显示历史非空、或续上后首轮被端点以消息结构错误（400/422）拒绝时，新建会话并把显示历史的问答文字作为前置上下文（记 WARN）；后一种重发仍失败时保留原会话文件、丢弃回退会话。生成中每约 2 秒或 2000 字原子写 `<convId>.partial.json`，被中断后下次启动或打开对话时作为 `interrupted` 助手消息并入历史（界面显示「（已中断）」）。`conversations.json` 解析失败时改名保留并从各库 `<convId>.jsonl` 重建（文件夹归属无法恢复）。
 - **前端入口**：`/agent` 聊天页，另有阅读页侧栏问答与浮窗问答，会注入当前文档上下文。全部入口受下面的总开关控制。
 - **总开关（默认关闭）**：唯一来源是 `ui-settings.agentEnabled`，缺省 false，旧数据没有该字段即视为关闭。
   - 前端：界面设置 Provider（`src/lib/theme.tsx`）启动时读一次，入口一律经 `useAgentEnabled()`（`src/lib/theme-context.ts`）读取，不另存、不各自请求。关闭时顶栏入口、⌘J 与浮窗、快捷键清单那一行、命令面板条目、阅读页 AI 按钮与面板、选区「问 AI」都不渲染，访问 `/agent` 回到概览并提示；设置页「智能助手」切换后即时生效，读取失败按关闭处理。
@@ -305,6 +306,7 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 | `node scripts/test-scan-async.mjs` / `node scripts/test-index-status.mjs` | 异步扫描与旧同步扫描逐项一致、不阻塞事件循环；`/api/status` 索引阶段字段 |
 | `node scripts/test-slow-fs.mjs [--rev <版本>]` | 注入慢文件操作与缓存改名 EPERM：扫描与建索引期间 `/api/status` 单次 ≤ 400ms、索引按时完成、Word 正文可检索、慢操作与改名失败有 WARN；`--rev` 用指定版本的 `server/` 跑同一套断言作对照 |
 | `./node_modules/.bin/electron scripts/e2e-index-visibility.mjs` / `e2e-files-feedback.mjs` | 后台指示与「结果可能不完整」；文件操作与其余入口的忙碌态、慢提示、失败提示 |
+| `node scripts/test-interrupted-backend.mjs` | 中断恢复（后端）：半截 MLX 运行时重解压与取消清理、复制失败回滚、对话索引重建、助手上下文续接/半截回复/会话损坏与格式错误回退、下载跳过已完成文件、RAG 暂停持久化与切块参数、划线记录与 mcp.json 坏文件保留 |
 | `node scripts/test-agent-toggle.mjs` | 助手总开关：缺省关闭、409 语义、非法值 400、关闭时不探测模型端点、关闭时中止生成与待确认的工具调用 |
 | `./node_modules/.bin/electron scripts/e2e-agent-toggle.mjs` | 助手总开关的全部界面入口：关闭时隐藏、设置页切换即时生效（先 `npm run build`）；既有助手 e2e 在准备阶段先打开开关 |
 | `node scripts/acceptance.mjs` | 后端整体验收（配置、扫描、读写、冲突、隔离、路径安全等） |

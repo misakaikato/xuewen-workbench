@@ -79,6 +79,11 @@ export class RagStore {
     this._bump();
   }
 
+  metaDel(key) {
+    this.db.prepare('DELETE FROM meta WHERE key=?').run(key);
+    this._bump();
+  }
+
   _bump() {
     this._gen++;
     this._vecCache = null;

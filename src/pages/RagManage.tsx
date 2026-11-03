@@ -445,12 +445,11 @@ export default function RagManage() {
                 className="text-xs"
                 loading={busy === 'save'}
                 disabled={busy !== null}
-                onClick={async () => {
+                onClick={() => run('save', async () => {
                   const r = await api.ragConfigSave(cfg);
                   setCfg(r.config);
                   setCfgSaved('已保存' + (ix?.files ? '——切块/嵌入参数变化需重建索引生效' : ''));
-                  await poll();
-                }}
+                })}
               >保存参数</Button>
               <Button
                 variant="outline"
@@ -458,12 +457,11 @@ export default function RagManage() {
                 className="text-xs"
                 loading={busy === 'defaults'}
                 disabled={busy !== null}
-                onClick={async () => {
+                onClick={() => run('defaults', async () => {
                   const r = await api.ragConfigSave({ chunk: { maxChars: 600, jsonValueLimit: 1500, headingContext: true, fileNameContext: true, hardSplitOversize: false }, embed: { maxLength: 1024 }, search: { topN: 30, rrfK: 60, rrfMin: 0.0105, cosFloor: 0.25, cosSigma: 2.0, semanticWeight: 1.2 } });
                   setCfg(r.config);
                   setCfgSaved('已恢复默认');
-                  await poll();
-                }}
+                })}
               >恢复默认</Button>
               {cfgSaved && <span className="text-xs text-muted-foreground">{cfgSaved}</span>}
             </div>

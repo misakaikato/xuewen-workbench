@@ -180,6 +180,7 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
                   {m.thinking && <ThinkingBlock text={m.thinking} streaming={m.streaming && !m.text} />}
                   {(m.tools || []).map((t, j) => <ToolCard key={j} t={t} />)}
                   {m.text && <div className="text-xs"><MarkdownMsg text={m.text} /></div>}
+                  {m.interrupted && <div className="mt-0.5 text-[11px] text-muted-foreground">（已中断）</div>}
                   {m.failure && (
                     <div role={m.failure.kind === 'cancelled' ? 'status' : 'alert'} data-agent-failure
                       className="my-1.5 rounded-lg border border-warning/40 bg-warning-soft p-2.5 text-xs text-warning-foreground">

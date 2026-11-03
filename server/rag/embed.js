@@ -11,7 +11,8 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { T2S_MAP } from '../t2s.js';
 import { withActivity } from '../lagWatch.js';
-import { pickFetch, probeHosts, downloadFile } from './download.js';
+import { pickFetch, probeHosts, downloadFile, remoteSize } from './download.js';
+import { renameWithRetryAsync, writeJsonAtomic } from '../atomicFile.js';
 
 export const MODEL_ID = 'bge-m3';
 export const DIM = 1024;
@@ -248,20 +249,27 @@ export class EmbedService {
           this.progress.attempt = 0;
           this.progress.speedBps = 0;
           this._setPhase('download', `下载 ${f}（第 ${manifest.files.length + 1}/${spec.files.length} 个文件）`);
-          await downloadFile({
-            urls, dest, fetchImpl,
-            isCancelled: () => this._cancelFlag,
-            onProgress: (p) => {
-              this.progress.bytes = p.bytes;
-              this.progress.total = p.total;
-              this.progress.host = p.host;
-              this.progress.attempt = p.attempt;
-              this.progress.speedBps = p.speedBps;
-              this._recalcOverall();
-              if (this._cancelFlag) throw new Error('已取消');
-            },
-            log,
-          });
+          // 上次已下完并改名的文件：大小与远端一致就不重下（sha256 仍在下面统一计算）
+          const have = fs.existsSync(dest) ? fs.statSync(dest).size : -1;
+          const remote = have >= 0 ? await remoteSize(urls, { fetchImpl }) : 0;
+          if (have >= 0 && remote > 0 && have === remote) {
+            log(`跳过 ${f}：本地已有完整文件（${have} 字节）`);
+          } else {
+            await downloadFile({
+              urls, dest, fetchImpl,
+              isCancelled: () => this._cancelFlag,
+              onProgress: (p) => {
+                this.progress.bytes = p.bytes;
+                this.progress.total = p.total;
+                this.progress.host = p.host;
+                this.progress.attempt = p.attempt;
+                this.progress.speedBps = p.speedBps;
+                this._recalcOverall();
+                if (this._cancelFlag) throw new Error('已取消');
+              },
+              log,
+            });
+          }
           curPart = null; // 已 rename 落盘
           this._setPhase('verify', '校验 ' + f);
           const sha = await sha256File(dest);
@@ -275,7 +283,7 @@ export class EmbedService {
           this._recalcOverall();
         });
       }
-      fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
+      writeJsonAtomic(this.manifestPath(kind), manifest);
       this._shaCache = manifest.files.find((x) => x.path.includes('safetensors') || x.path.endsWith('.onnx'))?.sha256 || null;
       this.state = 'ready';
       this.backend = kind;
@@ -363,7 +371,7 @@ export class EmbedService {
         if (again !== e.sha256) throw new Error('导入校验失败：' + e.path + ' 写入内容与源不一致');
       }
       const manifest = { model: MODEL_ID, kind, files: entries };
-      fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
+      writeJsonAtomic(this.manifestPath(kind), manifest);
       this._shaCache = manifest.files.find((x) => x.path.includes('safetensors') || x.path.endsWith('.onnx'))?.sha256 || null;
       this.state = 'ready';
       this.backend = kind;
@@ -478,15 +486,7 @@ export class EmbedService {
         if (!fs.existsSync(tarball) || !fs.existsSync(wheels)) {
           throw new Error('MLX 环境不可用：无 uv 且无捆绑资源（重装应用或安装 uv 后重试）');
         }
-        // 解压可重定位 python 到 dataDir/py/runtime（tar 内顶层为 python/）
-        const runtime = path.join(path.dirname(this.venvDir), 'runtime');
-        if (!fs.existsSync(path.join(runtime, 'python', 'bin', 'python3'))) {
-          fs.mkdirSync(runtime, { recursive: true });
-          onPhase?.('env-extract', '解压 Python 运行时');
-          const r = await run('tar', ['-xzf', tarball, '-C', runtime]);
-          if (!r.ok) throw new Error('解压 Python 运行时失败: ' + r.err);
-        }
-        const basePy = path.join(runtime, 'python', 'bin', 'python3');
+        const basePy = await this._ensurePyRuntime(tarball, onPhase, run);
         onPhase?.('env-install', '创建虚拟环境');
         let r = await run(basePy, ['-m', 'venv', this.venvDir]);
         if (!r.ok) throw new Error('venv 创建失败: ' + r.err);
@@ -498,6 +498,41 @@ export class EmbedService {
       await fs.promises.rm(this.venvDir, { recursive: true, force: true }).catch(() => { /* 删除失败只能报原错 */ });
       throw e;
     }
+  }
+
+  /** 离线路径的可重定位 python：解压到 dataDir/py/runtime（tar 内顶层为 python/），返回解释器路径。
+   * 先解压到同级临时目录 runtime.tmp-<ts>，解释器与标准库都在才改名为 runtime，再写完成标记；
+   * 无标记的 runtime（旧版本留下或解压中断的半截）整个删掉重新解压；失败或被取消时删临时目录 */
+  async _ensurePyRuntime(tarball, onPhase, run) {
+    const pyDir = path.dirname(this.venvDir);
+    const runtime = path.join(pyDir, 'runtime');
+    const mark = path.join(runtime, '.wb-complete');
+    const basePy = path.join(runtime, 'python', 'bin', 'python3');
+    if (fs.existsSync(mark)) return basePy;
+    if (fs.existsSync(runtime)) {
+      console.log('[rag] Python 运行时无完成标记，删除后重新解压');
+      await fs.promises.rm(runtime, { recursive: true, force: true });
+    }
+    // 进程被强退时 catch 不会执行，残留的临时目录在下一次解压前清掉
+    for (const name of await fs.promises.readdir(pyDir).catch(() => [])) {
+      if (name.startsWith('runtime.tmp-')) await fs.promises.rm(path.join(pyDir, name), { recursive: true, force: true });
+    }
+    const tmp = path.join(pyDir, 'runtime.tmp-' + Date.now());
+    try {
+      await fs.promises.mkdir(tmp, { recursive: true });
+      onPhase?.('env-extract', '解压 Python 运行时');
+      const r = await run('tar', ['-xzf', tarball, '-C', tmp]);
+      if (!r.ok) throw new Error('解压 Python 运行时失败: ' + r.err);
+      for (const rel of ['python/bin/python3', 'python/lib/python3.12/os.py']) {
+        if (!fs.existsSync(path.join(tmp, ...rel.split('/')))) throw new Error('Python 运行时不完整：缺少 ' + rel);
+      }
+      await renameWithRetryAsync(tmp, runtime);
+    } catch (e) {
+      await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => { /* 删除失败只能报原错 */ });
+      throw e;
+    }
+    await fs.promises.writeFile(mark, String(Date.now()) + '\n');
+    return basePy;
   }
 
   /** 惰性加载运行时；ready 前置检查模型。加载期间的阶段走 this.runtime（status 可见） */

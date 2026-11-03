@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { writeJsonAtomic } from './atomicFile.js';
+
+// 原子写原语在 atomicFile.js（无模块级副作用），此处再导出供既有调用方使用
+export { renameWithRetry, renameWithRetryAsync, tmpPathFor, writeJsonAtomic, writeJsonAtomicAsync } from './atomicFile.js';
 
 // 数据目录优先级：环境变量 > 用户目录（~/XuewenWorkbenchData）> 开发回退
 // 参考 Claude Code / Codex：数据放用户目录，不跟应用包走
@@ -124,99 +128,6 @@ export async function readJsonAsync(file, fallback) {
     return JSON.parse(await fs.promises.readFile(file, 'utf8'));
   } catch {
     return fallback;
-  }
-}
-
-// Windows 上目标文件被占用时 rename 会抛 EPERM/EACCES/EBUSY，两个版本按同一尝试次数重试：
-// 异步版每次失败后按退避表等待（不占事件循环）；同步版只供低频配置写入，立即重试、不等待。
-// 最终仍失败时由调用方删除临时文件。
-const RENAME_RETRY_BACKOFF = [50, 100, 200, 400, 800];
-const RENAME_ATTEMPTS = RENAME_RETRY_BACKOFF.length + 1;
-const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
-
-// 改名失败 WARN：同一目标路径每分钟最多一条
-const RENAME_WARN_INTERVAL_MS = 60000;
-const renameWarnAt = new Map(); // 目标路径 -> 上次 WARN 时间戳
-function warnRenameFailure(e, to, attempt) {
-  const now = Date.now();
-  if (now - (renameWarnAt.get(to) || 0) < RENAME_WARN_INTERVAL_MS) return;
-  if (renameWarnAt.size >= 1000) {
-    for (const [k, t] of renameWarnAt) if (now - t >= RENAME_WARN_INTERVAL_MS) renameWarnAt.delete(k);
-  }
-  renameWarnAt.set(to, now);
-  console.warn(`[store] 改名失败 ${e.code || e.message}：${to}（第 ${attempt}/${RENAME_ATTEMPTS} 次尝试）`);
-}
-
-export function renameWithRetry(from, to) {
-  let lastErr;
-  for (let attempt = 1; attempt <= RENAME_ATTEMPTS; attempt++) {
-    try {
-      fs.renameSync(from, to);
-      return;
-    } catch (e) {
-      warnRenameFailure(e, to, attempt);
-      if (!RENAME_RETRY_CODES.has(e.code)) throw e;
-      lastErr = e;
-    }
-  }
-  throw lastErr;
-}
-
-export async function renameWithRetryAsync(from, to) {
-  let lastErr;
-  for (let attempt = 1; attempt <= RENAME_ATTEMPTS; attempt++) {
-    try {
-      await fs.promises.rename(from, to);
-      return;
-    } catch (e) {
-      warnRenameFailure(e, to, attempt);
-      if (!RENAME_RETRY_CODES.has(e.code)) throw e;
-      lastErr = e;
-      if (attempt < RENAME_ATTEMPTS) await new Promise((r) => setTimeout(r, RENAME_RETRY_BACKOFF[attempt - 1]));
-    }
-  }
-  throw lastErr;
-}
-
-// 临时文件名带进程内序号：同一目标的并发异步写入各用各的临时文件
-let tmpSeq = 0;
-export function tmpPathFor(file, tag = '.tmp-') {
-  return file + tag + process.pid + '-' + ++tmpSeq;
-}
-
-// 同步原子写（低频配置用）：改名因占用失败且目标已存在时，退回覆盖写入目标（非原子）；
-// 覆盖也失败才抛错。临时文件无论成败都删除。
-export function writeJsonAtomic(file, obj) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = tmpPathFor(file);
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
-  try {
-    renameWithRetry(tmp, file);
-  } catch (e) {
-    let err = e;
-    if (RENAME_RETRY_CODES.has(e.code) && fs.existsSync(file)) {
-      try {
-        fs.copyFileSync(tmp, file);
-        err = null;
-      } catch (ce) {
-        err = ce;
-      }
-    }
-    try { fs.unlinkSync(tmp); } catch { /* 忽略 */ }
-    if (err) throw err;
-  }
-}
-
-// 异步原子写（热路径缓存用）：写临时文件后改名；改名最终失败则删临时文件并抛错
-export async function writeJsonAtomicAsync(file, obj) {
-  await fs.promises.mkdir(path.dirname(file), { recursive: true });
-  const tmp = tmpPathFor(file);
-  await fs.promises.writeFile(tmp, JSON.stringify(obj, null, 2), 'utf8');
-  try {
-    await renameWithRetryAsync(tmp, file);
-  } catch (e) {
-    await fs.promises.unlink(tmp).catch(() => { /* 忽略 */ });
-    throw e;
   }
 }
 

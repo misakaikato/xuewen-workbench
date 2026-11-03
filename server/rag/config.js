@@ -66,9 +66,13 @@ export function loadRagConfig(dsId) {
   return normalizeRagConfig(getState(dsId, 'rag-config', {}));
 }
 
+/** 当前配置合入补丁并归一（不落盘） */
+export function mergeRagConfig(cur, patch) {
+  return normalizeRagConfig({ ...cur, ...patch, chunk: { ...cur.chunk, ...(patch?.chunk || {}) }, embed: { ...cur.embed, ...(patch?.embed || {}) }, search: { ...cur.search, ...(patch?.search || {}) } });
+}
+
 export function saveRagConfig(dsId, patch) {
-  const cur = loadRagConfig(dsId);
-  const next = normalizeRagConfig({ ...cur, ...patch, chunk: { ...cur.chunk, ...(patch?.chunk || {}) }, embed: { ...cur.embed, ...(patch?.embed || {}) }, search: { ...cur.search, ...(patch?.search || {}) } });
+  const next = mergeRagConfig(loadRagConfig(dsId), patch);
   setState(dsId, 'rag-config', next);
   return next;
 }

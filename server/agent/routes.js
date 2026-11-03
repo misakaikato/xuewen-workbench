@@ -5,6 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import AdmZip from 'adm-zip';
 import { isWithin } from '../paths.js';
+import { preserveCorrupt, writeJsonAtomic } from '../atomicFile.js';
 
 // skill 名称白名单：只允许字母数字下划线/中文/连字符，1-64 字符
 const SKILL_NAME_RE = /^[\w\u4e00-\u9fff-]{1,64}$/;
@@ -20,6 +21,28 @@ const ALLOWED_WHEN_DISABLED = [
   ['GET', /^\/agents-md$/],
   ['POST', /^\/abort$/],
 ];
+
+// 新增 MCP 服务器前读取 mcp.json：不存在从空开始；解析失败或结构不对时先把坏文件改名为
+// mcp.json.corrupt-<时间戳> 保留并记 WARN，再从空开始（返回 kept 供响应提示），不静默丢掉原配置
+function readMcpConfigForWrite(file) {
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return { cfg: { mcpServers: {} }, kept: null };
+    throw e;
+  }
+  try {
+    const cfg = JSON.parse(raw);
+    if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
+      if (cfg.mcpServers === undefined) cfg.mcpServers = {};
+      if (cfg.mcpServers && typeof cfg.mcpServers === 'object' && !Array.isArray(cfg.mcpServers)) return { cfg, kept: null };
+    }
+  } catch { /* 下面按损坏处理 */ }
+  const kept = preserveCorrupt(file);
+  console.warn(`[agent] mcp.json 无法解析，已另存为 ${path.basename(kept)}；其中原有的 MCP 服务器配置未迁移，需要从该文件手动找回`);
+  return { cfg: { mcpServers: {} }, kept };
+}
 
 // isEnabled：读 ui-settings.agentEnabled（唯一来源），每个请求现读，开关切换即时生效
 export function mountAgent(hub, resolveLib, { isEnabled }) {
@@ -226,8 +249,7 @@ export function mountAgent(hub, resolveLib, { isEnabled }) {
     const hist = hub.history(id);
     if (idx < 0 || idx >= hist.length) return res.status(404).json({ error: '消息不存在' });
     hist[idx].text = String(text || '');
-    // 重写整个投影文件
-    fs.writeFileSync(hub._convFile(id), hist.map((m) => JSON.stringify(m)).join('\n') + '\n');
+    hub._rewriteHistory(id, hist);
     res.json({ ok: true });
   });
 
@@ -237,7 +259,7 @@ export function mountAgent(hub, resolveLib, { isEnabled }) {
     const hist = hub.history(id);
     if (idx < 0 || idx >= hist.length) return res.status(404).json({ error: '消息不存在' });
     hist.splice(idx, 1);
-    fs.writeFileSync(hub._convFile(id), hist.map((m) => JSON.stringify(m)).join('\n') + '\n');
+    hub._rewriteHistory(id, hist);
     res.json({ ok: true });
   });
 
@@ -260,8 +282,9 @@ export function mountAgent(hub, resolveLib, { isEnabled }) {
         const safe = rootDir.replace(/[^\w\u4e00-\u9fff-]/g, '_');
         if (!SKILL_NAME_RE.test(safe)) return res.status(400).json({ error: 'skill 名称不合法' });
         const dest = path.join(hub.agentDir, 'skills', safe);
-        // 先解压到临时目录，所有条目通过越界校验后再改名为正式目录
-        tmpDest = dest + '.tmp-' + crypto.randomBytes(6).toString('hex');
+        // 先解压到点开头的临时目录（技能列表跳过点开头的目录，中断残留不会出现在列表里），
+        // 所有条目通过越界校验后再改名为正式目录
+        tmpDest = path.join(hub.agentDir, 'skills', '.' + safe + '.tmp-' + crypto.randomBytes(6).toString('hex'));
         fs.mkdirSync(tmpDest, { recursive: true });
         for (const entry of entries) {
           const en = entry.entryName;
@@ -327,12 +350,12 @@ export function mountAgent(hub, resolveLib, { isEnabled }) {
     if (!name || !config) return res.status(400).json({ error: '缺少 name 或 config' });
     const file = path.join(hub.agentDir, 'mcp.json');
     try {
-      let cfg = {};
-      try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* */ }
-      if (!cfg.mcpServers) cfg.mcpServers = {};
+      const { cfg, kept } = readMcpConfigForWrite(file);
       cfg.mcpServers[name] = config;
-      fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
-      res.json({ ok: true });
+      writeJsonAtomic(file, cfg);
+      res.json(kept
+        ? { ok: true, warning: `原 mcp.json 无法解析，已另存为 ${path.basename(kept)}，其中的服务器配置需要重新添加` }
+        : { ok: true });
     } catch (e) {
       res.status(500).json({ error: String(e.message || e) });
     }
@@ -341,9 +364,10 @@ export function mountAgent(hub, resolveLib, { isEnabled }) {
   r.delete('/mcp-server/:name', (req, res) => {
     const file = path.join(hub.agentDir, 'mcp.json');
     try {
+      // 解析失败直接报错，不改动原文件
       const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
       delete (cfg.mcpServers || {})[req.params.name];
-      fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
+      writeJsonAtomic(file, cfg);
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: String(e.message || e) });

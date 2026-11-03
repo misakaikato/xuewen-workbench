@@ -377,6 +377,8 @@ export interface AgentMessage {
   tools?: { name: string; args?: unknown; summary?: string; isError?: boolean; durationMs?: number }[];
   thinking?: string;
   failure?: AgentFailure;
+  /** 生成被中断（退出应用、崩溃）后从进行中记录恢复的半截回复 */
+  interrupted?: boolean;
   usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   compactions?: { reason: string; tokensBefore: number | null; tokensAfter: number | null; aborted: boolean; error: string | null; at: string }[];
   at?: string;

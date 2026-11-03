@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { logsDir } from './logger.js';
 import { writeZip } from './zip.js';
+import { writeFileAtomic } from './atomicFile.js';
 
 const LOG_CAP = 30 * 1024 * 1024; // 日志收录总量上限 30MB
 
@@ -47,7 +48,7 @@ export function ackIncidents(dataDir) {
   try {
     const dir = logsDir(dataDir);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(ackFile(dataDir), JSON.stringify({ at: new Date().toISOString() }), 'utf8');
+    writeFileAtomic(ackFile(dataDir), JSON.stringify({ at: new Date().toISOString() }));
   } catch { /* 静默 */ }
 }
 

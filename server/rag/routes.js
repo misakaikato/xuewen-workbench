@@ -63,8 +63,12 @@ export function mountRag(manager, resolveLib) {
   r.put('/config', (req, res) => {
     const lib = needLib(req, res);
     if (!lib) return;
-    const next = manager.saveConfig(lib.id, req.body || {});
-    res.json({ ok: true, config: next });
+    try {
+      const next = manager.saveConfig(lib.id, req.body || {});
+      res.json({ ok: true, config: next });
+    } catch (e) {
+      res.status(e.status || 500).json({ error: String(e.message || e) });
+    }
   });
 
   r.post('/search', async (req, res) => {

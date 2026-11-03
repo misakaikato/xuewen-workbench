@@ -7,7 +7,7 @@ import { RagStore, tokenizeFts, ftsIndexText } from './store.js';
 import { chunkFile, embedTextOf } from './chunk.js';
 // embedTextOf 统一拼装 [文件名\n标题路径\n\n正文]，FTS 与向量共用
 import { EmbedService, t2s, DIM } from './embed.js';
-import { loadRagConfig, saveRagConfig, indexConfigFingerprint, DEFAULT_RAG_CONFIG } from './config.js';
+import { loadRagConfig, saveRagConfig, mergeRagConfig, indexConfigFingerprint, DEFAULT_RAG_CONFIG } from './config.js';
 import { readJson, writeJsonAtomic } from '../store.js';
 import { setActivity } from '../lagWatch.js';
 
@@ -59,8 +59,12 @@ class RagIndex {
     // 切块/嵌入参数与建库时不同 → 提示重建
     let configChanged = false;
     try {
-      configChanged = !!store.metaGet('index_cfg') && store.metaGet('index_cfg') !== indexConfigFingerprint(this.cfg);
+      // 已建库用 index_cfg；首次构建中途（还没有 index_cfg）用构建中指纹 building_cfg
+      const builtCfg = store.metaGet('index_cfg') || store.metaGet('building_cfg');
+      configChanged = !!builtCfg && builtCfg !== indexConfigFingerprint(this.cfg);
     } catch { /* 忽略 */ }
+    // 重启恢复：用户暂停过的索引仍显示暂停（自动续建也不会启动）
+    if (this.state === 'none' && this._pausedByUser()) this.state = 'paused';
     // 重启恢复：库里有完成的文件且与当前快照完全对账一致才是就绪；
     // 有文件但有待加/待删则视为 stale（前端显示「待更新」）
     if (this.state === 'none' && st.files > 0) {
@@ -142,8 +146,9 @@ class RagIndex {
         if (this._pauseFlag) return this._pauseNow(seq); // 等待期间点了暂停：直接停在 paused
       }
       // 清库分批：先写「清理中」标记，清完写新指纹——中断后续建先清余量，不会新旧混杂、不会重复清已清的库
+      // 首次构建没有 index_cfg：先记「构建中指纹」，中断后改了参数再续建时同样先清库
       const fp = indexConfigFingerprint(this.cfg);
-      const cfgOld = store.metaGet('index_cfg');
+      const cfgOld = store.metaGet('index_cfg') || store.metaGet('building_cfg');
       if (rebuild || store.metaGet('clearing') === '1' || (cfgOld && cfgOld !== fp)) {
         this.phase = '清理旧索引';
         store.metaSet('clearing', '1');
@@ -155,8 +160,11 @@ class RagIndex {
           },
         });
         store.metaSet('index_cfg', fp);
+        store.metaDel('building_cfg');
         store.metaSet('clearing', '0');
         this.clearing = null;
+      } else if (!store.metaGet('index_cfg')) {
+        store.metaSet('building_cfg', fp);
       }
       const plan = store.planIncremental(this.getSnapshot().files.map((f) => ({ ...f, contentHash: f.mtimeMs + ':' + f.size })));
       if (plan.toDel.length) store.deleteFiles(plan.toDel);
@@ -224,7 +232,9 @@ class RagIndex {
       this.phase = '完成';
       this.currentFile = null;
       this._updatedAt = Date.now();
-      store.metaSet('index_cfg', indexConfigFingerprint(this.cfg)); // 重建提示指纹
+      store.metaSet('index_cfg', fp); // 重建提示指纹：本次切块所用参数
+      store.metaDel('building_cfg');
+      store.metaDel('paused'); // 暂停请求落在最后一个文件之后：已建完，不再算暂停
       console.log('[rag] 索引构建完成: ' + this.done + ' 个文件，耗时 ' + (Date.now() - t0) + 'ms');
       return { ok: true };
     } catch (e) {
@@ -234,7 +244,7 @@ class RagIndex {
       return { ok: false, error: this.error };
     } finally {
       // 构建期间扫描完成：结束后立即再跑一次增量（暂停则不续，等用户手动继续）
-      if (this.pendingRescan && this.state !== 'paused') {
+      if (this.pendingRescan && this.state !== 'paused' && !this._pausedByUser()) {
         this.pendingRescan = false;
         this.build({}).catch((e2) => console.error('[rag] 增量续建失败: ' + (e2?.message || e2)));
       }
@@ -258,9 +268,40 @@ class RagIndex {
     if (this.state === 'building' || this.state === 'pausing') {
       this._pauseFlag = true;
       this.state = 'pausing'; // 循环真正停下前给前端可见的过渡态
+      // 暂停持久化：重启后仍是暂停，启动与扫描后的自动续建都不启动
+      try {
+        this._ensureStore().metaSet('paused', '1');
+      } catch (e) {
+        console.warn('[rag] 记录暂停状态失败: ' + (e?.message || e));
+      }
       return { ok: true };
     }
     return { ok: false, error: '未在构建' };
+  }
+
+  _pausedByUser() {
+    try {
+      return this._ensureStore().metaGet('paused') === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  /** 用户主动开始构建：撤销持久化的暂停 */
+  clearPaused() {
+    this._ensureStore().metaDel('paused');
+  }
+
+  /** 自动续建（启动、扫描完成后）：用户暂停过的不续建、状态保持 paused；从未建过（库里无文件）的不自动建 */
+  autoBuild() {
+    if (this.state === 'paused') return;
+    if (this._pausedByUser()) {
+      if (this.state === 'none' || this.state === 'stale' || this.state === 'ready') this.state = 'paused';
+      return;
+    }
+    if (this._ensureStore().stats().files > 0) {
+      this.build({}).catch((e) => console.error('[rag] 自动续建失败: ' + (e?.message || e)));
+    }
   }
 
   /** getText 由 manager 注入（读磁盘 + word 提取缓存） */
@@ -329,18 +370,31 @@ export class RagManager {
     return { model: this.embed.status(), index: this.index(dsId).status(), llm: { ...this.llm, apiKey: undefined } };
   }
 
-  async build(dsId, opts) {
-    return this.index(dsId).build(opts);
-  }
-
-  /** 路由用：前置检查（begin）已由调用方完成，这里只启动后台构建 */
-  startBuild(dsId, rebuild) {
-    return this.index(dsId)._runBuild({ rebuild });
-  }
-
-  saveConfig(dsId, patch) {
-    const next = saveRagConfig(dsId, patch);
+  /** 用户发起的构建（助手工具）：前置检查通过后撤销持久化的暂停 */
+  async build(dsId, { rebuild = false } = {}) {
     const ix = this.index(dsId);
+    const pre = ix.begin();
+    if (!pre.ok || pre.already) return pre;
+    ix.clearPaused();
+    return ix._runBuild({ rebuild });
+  }
+
+  /** 路由用：前置检查（begin）已由调用方完成，这里撤销持久化的暂停并启动后台构建 */
+  startBuild(dsId, rebuild) {
+    const ix = this.index(dsId);
+    ix.clearPaused();
+    return ix._runBuild({ rebuild });
+  }
+
+  /** 保存检索参数；构建进行中改切块/嵌入参数会让新旧切块混在一个索引里，返回 409 */
+  saveConfig(dsId, patch) {
+    const ix = this.index(dsId);
+    if (ix.state === 'building' || ix.state === 'pausing') {
+      if (indexConfigFingerprint(mergeRagConfig(ix.cfg, patch)) !== indexConfigFingerprint(ix.cfg)) {
+        throw Object.assign(new Error('构建进行中，暂停或完成后再修改'), { status: 409 });
+      }
+    }
+    const next = saveRagConfig(dsId, patch);
     ix.cfg = next;
     return next;
   }
@@ -358,10 +412,7 @@ export class RagManager {
       return;
     }
     try {
-      const st = ix._ensureStore().stats();
-      if (st.files > 0 && ix.state !== 'paused') {
-        ix.build({}).catch(() => {}); // 后台增量，不阻塞扫描
-      }
+      ix.autoBuild(); // 后台增量，不阻塞扫描
     } catch { /* 库文件异常时忽略自动增量 */ }
   }
 

@@ -74,6 +74,26 @@ export async function probeHosts(hosts, repoPath, { fetchImpl, timeoutMs = 8000,
   return reached.map((x) => x.host);
 }
 
+// 远端文件大小：按顺序对各源发 HEAD（跟随重定向），取第一个给出大小的；都拿不到返回 0（调用方按未知处理）
+export async function remoteSize(urls, { fetchImpl, timeoutMs = 8000 }) {
+  for (const url of urls) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    let res;
+    try {
+      res = await fetchImpl(url, { method: 'HEAD', redirect: 'follow', headers: { 'Accept-Encoding': 'identity' }, signal: ctrl.signal });
+      if (res.ok) {
+        const n = Number(res.headers.get('content-length')) || Number(res.headers.get('x-linked-size')) || 0;
+        if (n > 0) return n;
+      }
+    } catch { /* 换下一个源 */ } finally {
+      clearTimeout(timer);
+      try { await res?.body?.cancel?.(); } catch { /* 忽略 */ }
+    }
+  }
+  return 0;
+}
+
 const partSize = (p) => { try { return fs.statSync(p).size; } catch { return 0; } };
 
 // 最近 5 秒平均速度采样

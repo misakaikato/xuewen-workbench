@@ -661,6 +661,7 @@ export default function AgentChat() {
                       {m.thinking && <ThinkingBlock text={m.thinking} streaming={m.streaming && !m.text} />}
                       {(m.tools || []).map((t, j) => <ToolCard key={j} t={t as ToolItem} />)}
                       {m.text && <div><MarkdownMsg text={m.text} richRefs={richRefs} /></div>}
+                      {m.interrupted && <div className="mt-1 text-xs text-muted-foreground">（已中断）</div>}
                       {m.failure && (
                         <div role={m.failure.kind === 'cancelled' ? 'status' : 'alert'} data-agent-failure
                           className="my-2 rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm text-warning-foreground">

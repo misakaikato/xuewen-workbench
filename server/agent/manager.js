@@ -13,8 +13,14 @@ import { decodeText } from '../textDecode.js';
 import { applySettings, readSettings, SETTABLE, buildPatch, normalizeCategory } from './settings.js';
 import { generateImage, uniapiKey } from './imagegen.js';
 import { isWithin } from '../paths.js';
+import { preserveCorrupt, writeFileAtomic, writeJsonAtomic } from '../atomicFile.js';
 
 const CONV_META = 'conversations.json';
+// 生成中的回复每约 2 秒或每新增 2000 字写一次「进行中」记录（<convId>.partial.json）
+const PARTIAL_EVERY_MS = 2000;
+const PARTIAL_EVERY_CHARS = 2000;
+// 退回文字历史时交给模型的问答记录上限（字符，保留最近的部分）
+const TRANSCRIPT_MAX_CHARS = 40000;
 // 运行模式：auto=全自动 / confirm=破坏性工具需确认 / readonly=仅检索阅读
 const READONLY_TOOLS = ['search_corpus', 'rag_search', 'read_doc', 'list_files', 'list_collections', 'corpus_status'];
 const DESTRUCTIVE_TOOLS = ['bash', 'save_note', 'word_to_markdown', 'rag_manage', 'rename_entry', 'move_entry', 'settings_set', 'generate_image', 'remember', 'forget'];
@@ -49,6 +55,7 @@ export class AgentHub {
     this._ctxWindow = 0; // 端点模型的真实上下文窗口（0=未知，回退 128000）
     this._ctxProbed = false; // 上下文窗口探测是否已做过（推迟到助手开启时，见 setEnabled）
     this._syncModelsJson();
+    this._recoverInterrupted();
   }
 
   /**
@@ -106,8 +113,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     const file = path.join(this.agentDir, 'AGENTS.md');
     if (fs.existsSync(file)) return file;
     try {
-      fs.mkdirSync(this.agentDir, { recursive: true });
-      fs.writeFileSync(file, AgentHub.DEFAULT_AGENTS_MD);
+      writeFileAtomic(file, AgentHub.DEFAULT_AGENTS_MD);
     } catch (e) {
       console.warn('[agent] 写入默认 AGENTS.md 失败:', e.message);
     }
@@ -134,7 +140,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     })();
     const fm = /^---\n([\s\S]*?)\n---/.exec(existing);
     const head = fm ? `---\n${fm[1]}\n---\n\n` : '';
-    fs.writeFileSync(file, head + body + '\n');
+    writeFileAtomic(file, head + body + '\n');
     return { ok: true };
   }
 
@@ -242,20 +248,82 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
   }
 
   _meta() {
+    const file = this._metaPath();
+    let raw;
     try {
-      const m = JSON.parse(fs.readFileSync(this._metaPath(), 'utf8'));
-      return {
-        conversations: Array.isArray(m.conversations) ? m.conversations : [],
-        folders: Array.isArray(m.folders) ? m.folders : [],
-      };
-    } catch {
-      return { conversations: [], folders: [] };
+      raw = fs.readFileSync(file, 'utf8');
+    } catch (e) {
+      if (e.code === 'ENOENT') return { conversations: [], folders: [] };
+      throw e; // 读不到不等于没有：不返回空列表，免得下一次写入覆盖掉全部对话索引
     }
+    try {
+      const m = JSON.parse(raw);
+      if (m && typeof m === 'object' && !Array.isArray(m) && (m.conversations === undefined || Array.isArray(m.conversations))) {
+        return {
+          conversations: m.conversations || [],
+          folders: Array.isArray(m.folders) ? m.folders : [],
+        };
+      }
+    } catch { /* 下面按损坏处理 */ }
+    return this._rebuildMeta(file);
+  }
+
+  /**
+   * conversations.json 解析失败：坏文件改名为 conversations.json.corrupt-<时间戳> 保留，
+   * 从各库 conversations/ 下的 <convId>.jsonl 重建索引（标题取第一条用户消息前 30 字，时间取文件修改时间，
+   * dsId 取所在目录；pi 会话文件按文件名里的 convId 找回）。文件夹归属无处可查，重建后为空。
+   */
+  _rebuildMeta(file) {
+    const kept = preserveCorrupt(file);
+    const conversations = [];
+    let dsIds = [];
+    try {
+      dsIds = fs.readdirSync(path.join(this.dataDir, 'knowledge'), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    } catch { /* 还没有任何库 */ }
+    for (const dsId of dsIds) {
+      const dir = this._convDir(dsId);
+      let names;
+      try {
+        names = fs.readdirSync(dir).sort();
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        const id = /^([0-9a-f]{12})\.jsonl$/.exec(name)?.[1];
+        if (!id) continue;
+        const abs = path.join(dir, name);
+        const at = fs.statSync(abs).mtime.toISOString();
+        const first = this._readHistoryFile(abs).find((x) => x.role === 'user' && String(x.text || '').trim());
+        const piSessionFile = names.filter((n) => n.includes(`_${id}-`) && n.endsWith('.jsonl')).pop();
+        conversations.push({
+          id,
+          title: first ? String(first.text).replace(/\s+/g, ' ').trim().slice(0, 30) : '新对话',
+          dsId,
+          agentId: this.agentId,
+          pinned: false,
+          folderId: null,
+          createdAt: at,
+          updatedAt: at,
+          ...(piSessionFile ? { piSessionFile } : {}),
+        });
+      }
+    }
+    const meta = { conversations, folders: [] };
+    this._saveMeta(meta);
+    console.warn(`[agent] conversations.json 无法解析，已另存为 ${path.basename(kept)}；从对话记录重建了 ${conversations.length} 个对话（文件夹归属未恢复）`);
+    return meta;
   }
 
   _saveMeta(m) {
-    fs.mkdirSync(this.dataDir, { recursive: true });
-    fs.writeFileSync(this._metaPath(), JSON.stringify(m, null, 2));
+    writeJsonAtomic(this._metaPath(), m);
+  }
+
+  _setConvFields(id, fields) {
+    const m = this._meta();
+    const c = m.conversations.find((x) => x.id === id);
+    if (!c) return;
+    Object.assign(c, fields);
+    this._saveMeta(m);
   }
 
   /** 对话列表（按库过滤；dsId 省略=当前库） */
@@ -366,9 +434,15 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       this.live.delete(id);
     }
     const m = this._meta();
+    const conv = m.conversations.find((c) => c.id === id);
+    // 显示记录、进行中记录、pi 会话文件一并删除（路径在移出索引前算好）
+    let files = [];
+    try {
+      files = [this._convFile(id), this._partialFile(id), this._piSessionPath(conv)];
+    } catch { /* 无法确定所属资料库：只移出索引 */ }
     m.conversations = m.conversations.filter((c) => c.id !== id);
     this._saveMeta(m);
-    for (const f of [this._convFile(id)]) {
+    for (const f of files.filter(Boolean)) {
       try { fs.unlinkSync(f); } catch { /* 忽略 */ }
     }
     return { ok: true };
@@ -379,6 +453,17 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     const dsId = conv?.dsId || this.currentDsId();
     if (!dsId) throw new Error('对话不存在或无法确定所属资料库: ' + id);
     return path.join(this._convDir(dsId), id + '.jsonl');
+  }
+
+  /** 生成中回复的「进行中」记录：与显示记录同目录的 <convId>.partial.json */
+  _partialFile(id) {
+    return this._convFile(id).replace(/\.jsonl$/, '.partial.json');
+  }
+
+  /** 对话对应的 pi 会话文件（元数据 piSessionFile 只存文件名，位于对话目录内） */
+  _piSessionPath(conv) {
+    if (!conv?.piSessionFile || !conv.dsId) return null;
+    return path.join(this._convDir(conv.dsId), path.basename(String(conv.piSessionFile)));
   }
 
   _touch(id, title) {
@@ -392,9 +477,21 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
   }
 
   history(id) {
+    // 本进程没有在生成时，进行中记录是上次被中断留下的：先并入历史
+    if (!this.live.get(id)?.busy) this._recoverPartial(id);
+    let file;
+    try {
+      file = this._convFile(id);
+    } catch {
+      return [];
+    }
+    return this._readHistoryFile(file);
+  }
+
+  _readHistoryFile(file) {
     const out = [];
     try {
-      const lines = fs.readFileSync(this._convFile(id), 'utf8').split('\n');
+      const lines = fs.readFileSync(file, 'utf8').split('\n');
       for (const ln of lines) {
         if (!ln.trim()) continue;
         try { out.push(JSON.parse(ln)); } catch { /* 坏行跳过 */ }
@@ -404,7 +501,124 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
   }
 
   _append(id, obj) {
-    fs.appendFileSync(this._convFile(id), JSON.stringify(obj) + '\n');
+    const file = this._convFile(id);
+    // 最后一行被截断（没有换行符）时先补换行，新记录不接在坏行后面
+    let lead = '';
+    try {
+      const size = fs.statSync(file).size;
+      if (size > 0) {
+        const fd = fs.openSync(file, 'r');
+        try {
+          const b = Buffer.alloc(1);
+          fs.readSync(fd, b, 0, 1, size - 1);
+          if (b[0] !== 0x0a) lead = '\n';
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+    } catch { /* 无文件：直接追加 */ }
+    fs.appendFileSync(file, lead + JSON.stringify(obj) + '\n');
+  }
+
+  /** 整体重写显示记录（编辑/删除消息）：写临时文件再改名 */
+  _rewriteHistory(id, list) {
+    writeFileAtomic(this._convFile(id), list.map((m) => JSON.stringify(m)).join('\n') + '\n');
+  }
+
+  // ---------- 中断恢复：进行中记录 ----------
+
+  /** 生成中按时间或字数节流写进行中记录（原子写）；entry.partialFile 在 chat() 开始本轮时设置 */
+  _savePartial(entry) {
+    if (!entry.partialFile) return;
+    const now = Date.now();
+    if (now - entry.partialAt < PARTIAL_EVERY_MS && entry.curText.length - entry.partialLen < PARTIAL_EVERY_CHARS) return;
+    entry.partialAt = now;
+    entry.partialLen = entry.curText.length;
+    try {
+      writeJsonAtomic(entry.partialFile, {
+        startedAt: entry.turnStartedAt,
+        at: nowIso(),
+        text: entry.curText,
+        thinking: entry.curThinking || '',
+        tools: entry.curTools,
+      });
+    } catch (e) {
+      console.warn('[agent] 写入进行中记录失败: ' + e.message);
+    }
+  }
+
+  /** 本轮已按原方式落盘：删除进行中记录 */
+  _clearPartial(entry) {
+    if (!entry.partialFile) return;
+    try { fs.unlinkSync(entry.partialFile); } catch { /* 本轮没写过 */ }
+    entry.partialFile = null;
+  }
+
+  /**
+   * 上次生成被中断（退出应用、崩溃）留下的进行中记录：作为一条 interrupted 的助手消息追加进历史后删除。
+   * 正式记录已经写入（落盘后、删记录前被中断）时只删记录；记录无法解析时改名保留。
+   */
+  _recoverPartial(convId) {
+    let file;
+    let raw;
+    try {
+      file = this._partialFile(convId);
+      raw = fs.readFileSync(file, 'utf8');
+    } catch {
+      return; // 无记录或无法确定所属资料库
+    }
+    let p;
+    try {
+      p = JSON.parse(raw);
+    } catch {
+      try {
+        const kept = preserveCorrupt(file);
+        console.warn(`[agent] 对话 ${convId} 的进行中记录无法解析，已另存为 ${path.basename(kept)}`);
+      } catch (e) {
+        console.warn(`[agent] 对话 ${convId} 的进行中记录无法解析且无法改名保留: ${e.message}`);
+      }
+      return;
+    }
+    try {
+      const hist = this._readHistoryFile(this._convFile(convId));
+      const last = hist[hist.length - 1];
+      const finalized = last?.role === 'assistant' && !!p.startedAt && String(last.at || '') >= p.startedAt;
+      const tools = Array.isArray(p.tools) ? p.tools : [];
+      if (!finalized && (String(p.text || '').trim() || tools.length)) {
+        this._append(convId, {
+          role: 'assistant', text: String(p.text || ''), tools, thinking: String(p.thinking || ''), interrupted: true, at: p.at || nowIso(),
+        });
+        console.log(`[agent] 对话 ${convId} 恢复了被中断的回复（${String(p.text || '').length} 字）`);
+      }
+      fs.unlinkSync(file);
+    } catch (e) {
+      console.warn(`[agent] 对话 ${convId} 恢复被中断的回复失败: ${e.message}`);
+    }
+  }
+
+  /** 启动时把各对话遗留的进行中记录并入历史；顺带在启动时发现 conversations.json 损坏并重建 */
+  _recoverInterrupted() {
+    try {
+      for (const c of this._meta().conversations) {
+        if (c.dsId && fs.existsSync(path.join(this._convDir(c.dsId), c.id + '.partial.json'))) this._recoverPartial(c.id);
+      }
+    } catch (e) {
+      console.warn('[agent] 启动时检查中断记录失败: ' + e.message);
+    }
+  }
+
+  /** 显示历史的问答文字（工具调用与读过的原文不保留），新建会话接不上上下文时作为前置上下文 */
+  _historyTranscript(hist) {
+    const lines = [];
+    for (const m of hist) {
+      const text = String(m.text || '').trim();
+      if (!text || (m.role !== 'user' && m.role !== 'assistant')) continue;
+      lines.push(`${m.role === 'user' ? '用户' : '助手'}：${text}${m.interrupted ? '（回答被中断）' : ''}`);
+    }
+    if (!lines.length) return '';
+    let body = lines.join('\n\n');
+    if (body.length > TRANSCRIPT_MAX_CHARS) body = '（更早的记录已省略）\n\n' + body.slice(-TRANSCRIPT_MAX_CHARS);
+    return '以下是本对话此前的问答记录。原会话上下文无法恢复，只保留了文字；当时的工具调用与读过的原文不在其中，需要时请重新检索。\n\n' + body;
   }
 
   // ---------- pi 会话 ----------
@@ -910,10 +1124,17 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     }
   }
 
-  async _ensureSession(convId) {
+  /**
+   * 取或建对话的运行时会话。pi 会话文件记在对话元数据 piSessionFile：存在就 SessionManager.open 打开，
+   * 接上含工具调用与结果的完整上下文；打不开（损坏）、不存在而显示历史非空（旧版本对话、分叉）、
+   * 或 fromText（续上的会话首轮报格式错误）时新建会话，把显示历史的问答文字作为前置上下文交给模型。
+   * history：fromText 时由调用方给出要交给模型的显示历史（去掉本轮已写入的用户消息）。
+   */
+  async _ensureSession(convId, { fromText = false, history = null } = {}) {
     let entry = this.live.get(convId);
     if (entry) return entry;
     if (!this.endpointReady()) throw new Error('生成端点未配置（去 Agent 设置页配置）');
+    if (!fromText) this._recoverPartial(convId);
     const runtime = await this._runtime();
     const model = runtime.getModel('workbench', this.llm().model);
     if (!model) throw new Error(`模型 ${this.llm().model} 未注册（检查端点配置）`);
@@ -1004,8 +1225,27 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     const convDsId = convMeta?.dsId || this.currentDsId() || 'default';
     const sessionDir = this._convDir(convDsId);
     fs.mkdirSync(sessionDir, { recursive: true });
-    const sessionManager = SessionManager.create(cwd, sessionDir);
-    // 会话文件名与 convId 对齐：pi 默认生成自己的文件名；此处接受 pi 命名，投影按 convId 存
+    let sessionManager = null;
+    let resumed = false;
+    const piFile = fromText ? null : this._piSessionPath(convMeta);
+    if (piFile && fs.existsSync(piFile)) {
+      try {
+        sessionManager = SessionManager.open(piFile, sessionDir, cwd);
+        resumed = sessionManager.buildSessionContext().messages.length > 0;
+      } catch (e) {
+        console.warn(`[agent] 对话 ${convId} 的 pi 会话文件无法打开，改用文字历史接上：${e.message}`);
+      }
+    }
+    let provisional = null;
+    if (!sessionManager) {
+      // 会话 id 带 convId（文件名 <时间>_<convId>-<uuid>.jsonl）：对话索引损坏重建时能按文件名找回
+      sessionManager = SessionManager.create(cwd, sessionDir, { id: `${convId}-${crypto.randomUUID()}` });
+      const file = sessionManager.getSessionFile();
+      // 格式错误回退的会话先不记入元数据：重发成功才改用它，失败则下次仍打开原会话
+      if (fromText) provisional = { name: path.basename(file), file };
+      else if (convMeta) this._setConvFields(convId, { piSessionFile: path.basename(file) });
+    }
+    const transcript = resumed ? '' : this._historyTranscript(history || (convMeta ? this._readHistoryFile(this._convFile(convId)) : []));
     const { session } = await createAgentSession({
       cwd,
       agentDir: this.agentDir,
@@ -1021,7 +1261,12 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       sessionManager,
       thinkingLevel: this.llm().thinkingLevel || 'off',
     });
-    entry = { session, sse: new Set(), busy: false, curText: '', curTools: [], curThinking: '', curUsage: null, curCompactions: [] };
+    if (transcript) {
+      // 不是 nextTurn：直接追加在下一条用户消息之前（随首条用户消息一起落进新会话文件）
+      await session.sendCustomMessage({ customType: 'history-transcript', display: false, content: [{ type: 'text', text: transcript }] });
+    }
+    // resumeProbe：续上的会话首轮若报会话格式错误，由 chat() 退回文字历史重发
+    entry = { session, sse: new Set(), busy: false, curText: '', curTools: [], curThinking: '', curUsage: null, curCompactions: [], resumeProbe: resumed, provisional };
     // 会话级事件订阅：所有轮次（含 steering 追加轮）的事件都经此转发
     entry.unsubscribe = session.subscribe((event) => {
       this._onEvent(convId, entry, event);
@@ -1040,9 +1285,11 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') {
       entry.curText += event.assistantMessageEvent.delta;
       send({ t: 'delta', v: event.assistantMessageEvent.delta });
+      this._savePartial(entry);
     } else if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'thinking_delta') {
       entry.curThinking = (entry.curThinking || '') + event.assistantMessageEvent.delta;
       send({ t: 'thinking', v: event.assistantMessageEvent.delta });
+      this._savePartial(entry);
     } else if (event.type === 'message_end' && event.message?.role === 'assistant') {
       // 错误常作为消息事件返回，prompt() 不一定抛异常。等自动恢复结束再决定是否报错。
       entry.lastFailure = event.message.stopReason === 'error'
@@ -1093,12 +1340,24 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
         item.durationMs = event.durationMs;
       }
       send({ t: 'tool_end', name: event.toolName, callId: event.toolCallId, summary, isError: event.isError, durationMs: event.durationMs });
+      this._savePartial(entry);
     } else if (event.type === 'agent_settled') {
+      // 续上的会话首轮请求就被端点以会话格式错误拒绝且没有任何输出：不落盘、不关 SSE，
+      // 由 chat() 退回文字历史新建会话后重发本轮
+      const probe = entry.resumeProbe;
+      entry.resumeProbe = false;
+      if (probe && !event.aborted && entry.lastFailure?.kind === 'model' && isSessionFormatError(entry.lastFailure.details) &&
+        !entry.curText.trim() && !entry.curTools.length) {
+        entry.fallbackPending = entry.lastFailure.details;
+        return;
+      }
       // 全部自动恢复/排队工作结束：写投影、关 SSE、清 busy
       entry.busy = false;
       const failure = entry.lastFailure || (!entry.curText.trim() ? agentFailure('', 'empty') : undefined);
       if (failure) send({ t: 'error', message: failure.message, failure });
       this._append(convId, { role: 'assistant', text: entry.curText, failure, tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, compactions: entry.curCompactions || [], at: nowIso() });
+      this._clearPartial(entry);
+      if (entry.provisional) this._settleProvisional(convId, entry, !failure);
       this._touch(convId);
       send({ t: 'done' });
       for (const res of entry.sse) {
@@ -1173,6 +1432,40 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       return;
     }
 
+    this._beginTurn(convId, entry);
+    let cur = entry;
+    try {
+      // images: [{ data(base64), mimeType }] —— pi 原生支持图片附件
+      const promptOpts = images.length ? { images } : undefined;
+      await cur.session.prompt(text, promptOpts);
+      if (cur.fallbackPending) {
+        cur = await this._fallbackToText(convId, cur);
+        await cur.session.prompt(text, promptOpts);
+      }
+      // prompt() 在 run 完成时 resolve；SSE 由 agent_settled 关闭（自动恢复可能追加轮次）
+      // 若 agent_settled 已触发但 SSE 未关（时序差），兜底关闭
+      if (cur.sse.has(res) && !cur.busy) {
+        send({ t: 'done' });
+        try { res.end(); } catch { /* */ }
+        cur.sse.delete(res);
+      }
+    } catch (e) {
+      if (!cur.busy) return; // agent_settled 已持久化并关闭响应，避免重复写入
+      const failure = agentFailure(e);
+      send({ t: 'error', message: failure.message, failure });
+      // 兜底收尾：失败提示和部分正文一并持久化，重新打开对话仍可见
+      cur.busy = false;
+      this._append(convId, { role: 'assistant', text: cur.curText, failure, tools: cur.curTools, thinking: cur.curThinking || '', usage: cur.curUsage, compactions: cur.curCompactions || [], at: nowIso() });
+      this._clearPartial(cur);
+      if (cur.provisional) this._settleProvisional(convId, cur, false);
+      send({ t: 'done' });
+      try { res.end(); } catch { /* */ }
+      cur.sse.delete(res);
+    }
+  }
+
+  /** 开始一轮生成：清空本轮累计，登记进行中记录（本轮用户消息已写入显示记录之后） */
+  _beginTurn(convId, entry) {
     entry.busy = true;
     entry.curText = '';
     entry.curTools = [];
@@ -1180,28 +1473,56 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     entry.lastFailure = null;
     entry.curThinking = '';
     entry.curUsage = null;
+    entry.fallbackPending = null;
+    entry.turnStartedAt = nowIso();
+    entry.partialAt = Date.now();
+    entry.partialLen = 0;
     try {
-      // images: [{ data(base64), mimeType }] —— pi 原生支持图片附件
-      const promptOpts = images.length ? { images } : undefined;
-      await entry.session.prompt(text, promptOpts);
-      // prompt() 在 run 完成时 resolve；SSE 由 agent_settled 关闭（自动恢复可能追加轮次）
-      // 若 agent_settled 已触发但 SSE 未关（时序差），兜底关闭
-      if (entry.sse.has(res) && !entry.busy) {
-        send({ t: 'done' });
-        try { res.end(); } catch { /* */ }
-        entry.sse.delete(res);
-      }
-    } catch (e) {
-      if (!entry.busy) return; // agent_settled 已持久化并关闭响应，避免重复写入
-      const failure = agentFailure(e);
-      send({ t: 'error', message: failure.message, failure });
-      // 兜底收尾：失败提示和部分正文一并持久化，重新打开对话仍可见
-      entry.busy = false;
-      this._append(convId, { role: 'assistant', text: entry.curText, failure, tools: entry.curTools, thinking: entry.curThinking || '', usage: entry.curUsage, compactions: entry.curCompactions || [], at: nowIso() });
-      send({ t: 'done' });
-      try { res.end(); } catch { /* */ }
-      entry.sse.delete(res);
+      entry.partialFile = this._partialFile(convId);
+    } catch {
+      entry.partialFile = null;
     }
+  }
+
+  /**
+   * 续上的 pi 会话首轮请求报会话格式错误：丢弃该运行时会话，新建会话并以显示历史的问答文字作前置上下文，
+   * SSE 连接转交新会话，由调用方重发本轮（本轮用户消息不进前置上下文，由重发的 prompt 带上）。
+   */
+  async _fallbackToText(convId, old) {
+    console.warn(`[agent] 对话 ${convId} 续上的 pi 会话首轮请求报会话格式错误，改用文字历史新建会话：${String(old.fallbackPending).slice(0, 300)}`);
+    try { old.unsubscribe?.(); } catch { /* */ }
+    try { old.session.dispose(); } catch { /* */ }
+    this.live.delete(convId);
+    const hist = this._readHistoryFile(this._convFile(convId));
+    if (hist[hist.length - 1]?.role === 'user') hist.pop();
+    const next = await this._ensureSession(convId, { fromText: true, history: hist });
+    for (const r of old.sse) next.sse.add(r);
+    this._beginTurn(convId, next);
+    next.turnStartedAt = old.turnStartedAt;
+    return next;
+  }
+
+  /**
+   * 格式错误回退会话的首轮结束：成功则改用它（记入元数据）；仍失败说明问题不在原会话（如本轮内容本身被拒），
+   * 保留原会话文件不动，丢弃回退会话与它的文件，下次仍打开原会话
+   */
+  _settleProvisional(convId, entry, ok) {
+    const { name, file } = entry.provisional;
+    entry.provisional = null;
+    if (ok) {
+      this._setConvFields(convId, { piSessionFile: name });
+      return;
+    }
+    console.warn(`[agent] 对话 ${convId} 改用文字历史重发仍失败，保留原 pi 会话文件，下次继续打开它`);
+    // 在 agent_settled 回调里，等本轮完全收尾后再释放
+    setImmediate(() => {
+      if (this.live.get(convId) === entry) {
+        try { entry.unsubscribe?.(); } catch { /* */ }
+        try { entry.session.dispose(); } catch { /* */ }
+        this.live.delete(convId);
+      }
+      try { fs.unlinkSync(file); } catch { /* 未落盘 */ }
+    });
   }
 
   _toolSummary(name, result) {
@@ -1533,7 +1854,7 @@ ${m.text}
     const dir = path.join(this.agentDir, 'skills');
     try {
       return fs.readdirSync(dir, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.')) // 点开头的是安装中的临时目录
         .map((d) => d.name)
         .filter((n) => fs.existsSync(path.join(dir, n, 'SKILL.md')));
     } catch {
@@ -1549,6 +1870,13 @@ function modelListError(status, url, detail) {
   if (status === 404) return `HTTP 404：${url} 不存在。baseUrl 必须填到 /v1 为止（如 https://host/v1），不要漏掉或重复 /v1`;
   if (status >= 500) return `HTTP ${status}：端点内部错误${tail}`;
   return `HTTP ${status}${tail}`;
+}
+
+// 请求被端点以消息结构错误拒绝（HTTP 400/422，且说的是 messages / 工具调用 / 角色 / 模板）：
+// 续上的会话首轮出现时，多半是会话里的消息结构与端点不兼容
+function isSessionFormatError(details) {
+  const s = String(details || '').trim();
+  return /^(400|422)\b/.test(s) && /messages|tool_call|tool_use|role|template|alternate/i.test(s);
 }
 
 function snapText(lib) {
