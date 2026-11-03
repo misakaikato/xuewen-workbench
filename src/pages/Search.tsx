@@ -200,6 +200,7 @@ export default function Search() {
   useEffect(() => {
     if (!(loading && mode === 'smart')) return;
     let stopped = false;
+    // 只是加载期的阶段文字：单次取不到等下一秒再取，检索本身的失败另有错误提示
     const tick = () => api.ragStatus().then((s) => { if (!stopped) setSmartRt(s.model?.runtime || null); }).catch(() => {});
     tick();
     const t = setInterval(tick, 1000);

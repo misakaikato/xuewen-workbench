@@ -1,9 +1,13 @@
 // JSON 只读结构视图：折叠、键值查找、复制、源码切换。
 // 大文件优化：JsonNode memo；默认展开「层级 < 2 且子项数 ≤ 100」；
 // 超过 200 子项分页显示；过滤 200ms 防抖 + useDeferredValue；容器按后代匹配过滤。
+// 大文件先显示加载态，JSON.parse 推迟到加载态首帧绘制之后（useAfterPaint），完成后回调 onContentReady。
 import { memo, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { ChevronRight, ChevronDown, Copy, Check, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { PageLoading } from '@/components/ui-states';
+import { LARGE_DOC_CHARS, useAfterPaint } from '@/hooks/useAfterPaint';
+import { errorMessage, notify } from '@/lib/notify';
 
 // 子项分页步长
 const PAGE = 200;
@@ -113,7 +117,16 @@ const JsonNode = memo(function JsonNode({ k, value, depth, filter, hits }: JsonN
   );
 });
 
-export function JsonViewer({ content, highlightTerm }: { content: string; highlightTerm?: string }) {
+export function JsonViewer({
+  content,
+  highlightTerm,
+  onContentReady,
+}: {
+  content: string;
+  highlightTerm?: string;
+  /** 推迟解析的大文件渲染完成后回调（阅读页据此重跑高亮与定位） */
+  onContentReady?: () => void;
+}) {
   // 带搜索命中词进入时默认原始源码视图：折叠结构里可能藏有命中，源码视图让高亮与定位可达
   const [raw, setRaw] = useState(!!highlightTerm);
   const [filterInput, setFilterInput] = useState('');
@@ -128,17 +141,24 @@ export function JsonViewer({ content, highlightTerm }: { content: string; highli
   }, [filterInput]);
   const deferredFilter = useDeferredValue(filter);
 
+  const deferred = content.length > LARGE_DOC_CHARS;
+  const ready = useAfterPaint(content, deferred);
+  useEffect(() => {
+    if (deferred && ready) onContentReady?.();
+  }, [deferred, ready, onContentReady]);
   const parsed = useMemo(() => {
+    if (!ready) return { data: null, error: null };
     try {
       return { data: JSON.parse(content), error: null };
     } catch (e) {
       return { data: null, error: (e as Error).message };
     }
-  }, [content]);
+  }, [ready, content]);
 
   const normFilter = deferredFilter.trim().toLowerCase();
   const hits = useMemo(() => buildHitMap(parsed.data, normFilter), [parsed.data, normFilter]);
 
+  if (!ready) return <PageLoading text="正在解析 JSON…" />;
   return (
     <div>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
@@ -163,9 +183,13 @@ export function JsonViewer({ content, highlightTerm }: { content: string; highli
           size="sm"
           className="text-xs"
           onClick={() => {
-            navigator.clipboard.writeText(content);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
+            navigator.clipboard.writeText(content).then(
+              () => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              },
+              (e) => notify('复制失败：' + errorMessage(e), { kind: 'error' })
+            );
           }}
         >
           {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />} 复制

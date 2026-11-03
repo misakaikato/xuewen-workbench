@@ -1,16 +1,21 @@
-// 文件/文件夹操作对话框：重命名、移动到…（数据源内目录选择）、删除（移入回收站）
+// 文件/文件夹操作对话框：重命名、移动到…（数据源内目录选择）、删除（移入回收站）。
+// 执行期间对话框锁定、确认按钮转圈，超过 1.5 秒忙碌文字换成「正在更新索引…」；
+// 名称校验错误就地显示，操作失败经 notify 提示（对话框保持打开，可修改后重试）。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Folder } from 'lucide-react';
 import { runEntryAction, type EntryAction } from '@/lib/entryOps';
+import { errorMessage, notify } from '@/lib/notify';
+import { WRITE_SLOW_MS, WRITE_SLOW_TEXT } from '@/lib/writeOp';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import type { TreeNode } from '@/lib/types';
 
 export type { EntryAction };
@@ -36,6 +41,7 @@ export function EntryActionDialogs({
   const [targetDir, setTargetDir] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const slow = useDelayedFlag(busy, WRITE_SLOW_MS);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -57,6 +63,7 @@ export function EntryActionDialogs({
 
   // 统一走 runEntryAction：重命名/移动前先 flush 打开中的编辑器，成功后刷新树、
   // 迁移草稿并跟随导航到新路径（wbFollow，编辑页不重置缓冲区）
+  const verb = action?.type === 'delete' ? '删除' : action?.type === 'move' ? '移动' : '重命名';
   async function run(fn: () => Promise<{ newPath: string | null }>, isDelete = false) {
     if (!action) return;
     setBusy(true); setError(null);
@@ -64,7 +71,7 @@ export function EntryActionDialogs({
       const r = await fn();
       onDone(action, isDelete ? null : r.newPath ?? null);
     } catch (ex) {
-      setError((ex as Error).message);
+      notify(`${verb}失败：${errorMessage(ex)}`, { kind: 'error' });
     } finally {
       setBusy(false);
     }
@@ -72,6 +79,7 @@ export function EntryActionDialogs({
 
   if (!action) return null;
   const close = (o: boolean) => { if (!o && !busy) onClose(); };
+  const busyText = (text: string) => (slow ? WRITE_SLOW_TEXT : text);
   const errorLine = error && <p className="text-xs text-destructive break-all" role="alert">{error}</p>;
 
   if (action.type === 'delete') {
@@ -85,15 +93,11 @@ export function EntryActionDialogs({
               （系统废纸篓；不可用时移入知识库内的 .trash/ 文件夹），可从回收站恢复。
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {errorLine}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={busy}
-              onClick={(e) => { e.preventDefault(); run(() => runEntryAction({ ...action }), true); }}
-            >
-              {busy ? '删除中…' : '移到回收站'}
-            </AlertDialogAction>
+            <Button loading={busy} onClick={() => run(() => runEntryAction({ ...action }), true)}>
+              {busy ? busyText('删除中…') : '移到回收站'}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -116,12 +120,12 @@ export function EntryActionDialogs({
               <DialogTitle>重命名{action.isDir ? '文件夹' : '文档'}</DialogTitle>
               <DialogDescription className="break-all">{action.path}</DialogDescription>
             </DialogHeader>
-            <Input ref={inputRef} value={value} onChange={(e) => { setValue(e.target.value); setError(null); }} aria-invalid={!!error} />
+            <Input ref={inputRef} value={value} disabled={busy} onChange={(e) => { setValue(e.target.value); setError(null); }} aria-invalid={!!error} />
             {!action.isDir && <p className="text-xs text-muted-foreground">元数据文件会一起重命名；扩展名省略时自动保留。</p>}
             {errorLine}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={onClose} disabled={busy}>取消</Button>
-              <Button type="submit" disabled={busy || value.trim() === action.name}>{busy ? '处理中…' : '重命名'}</Button>
+              <Button type="submit" loading={busy} disabled={value.trim() === action.name}>{busy ? busyText('处理中…') : '重命名'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -141,14 +145,14 @@ export function EntryActionDialogs({
           <DialogTitle>移动到…</DialogTitle>
           <DialogDescription className="break-all">{action.path}</DialogDescription>
         </DialogHeader>
-        <Input placeholder="过滤目录…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <Input placeholder="过滤目录…" value={filter} disabled={busy} onChange={(e) => setFilter(e.target.value)} />
         <div className="max-h-64 overflow-auto rounded border border-border p-1">
           {shown.map((d) => (
             <button
               key={d || '/'}
               type="button"
-              disabled={blocked(d)}
-              onClick={() => { setTargetDir(d); setError(null); }}
+              disabled={busy || blocked(d)}
+              onClick={() => setTargetDir(d)}
               className={`w-full flex items-center gap-1.5 px-2 py-1 rounded text-sm text-left disabled:opacity-40 hover:bg-accent ${
                 targetDir === d ? 'bg-accent font-medium' : ''
               }`}
@@ -161,14 +165,14 @@ export function EntryActionDialogs({
           ))}
           {shown.length === 0 && <div className="text-xs text-muted-foreground p-2">没有匹配的目录</div>}
         </div>
-        {errorLine}
         <DialogFooter>
           <Button type="button" variant="outline" onClick={onClose} disabled={busy}>取消</Button>
           <Button
-            disabled={busy || targetDir === null}
+            loading={busy}
+            disabled={targetDir === null}
             onClick={() => targetDir !== null && run(() => runEntryAction({ ...action, targetDir }))}
           >
-            {busy ? '移动中…' : '移动到此处'}
+            {busy ? busyText('移动中…') : '移动到此处'}
           </Button>
         </DialogFooter>
       </DialogContent>

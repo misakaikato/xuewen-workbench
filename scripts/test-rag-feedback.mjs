@@ -3,11 +3,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { makeTmpDir } from './tmpdirs.mjs';
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-ragfb-'));
+const tmp = makeTmpDir('wb-ragfb-');
 let pass = 0, fail = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function check(name, ok, detail) {

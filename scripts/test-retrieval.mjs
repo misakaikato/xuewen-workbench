@@ -1,9 +1,9 @@
 // 确定性检索回归：临时库 + 真实 SQLite/切块/FTS/RRF，向量用受控夹具。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-retrieval-'));
+import { makeTmpDir } from './tmpdirs.mjs';
+const tmp = makeTmpDir('wb-retrieval-');
 process.env.WORKBENCH_DATA_DIR = path.join(tmp, 'data');
 process.env.WORKBENCH_RAG_EMBED = 'mock';
 const { RagManager } = await import('../server/rag/manager.js');

@@ -15,7 +15,7 @@ function collect(node: TreeNode, dirPrefix: string, out: FileEntry[]) {
 }
 
 export default function Browse() {
-  const { tree, dsId, refreshTree } = useApp();
+  const { tree } = useApp();
   const [params] = useSearchParams();
   const [action, setAction] = useState<EntryAction | null>(null);
   const dir = params.get('dir') || '';
@@ -94,12 +94,7 @@ export default function Browse() {
               </button>
               </ContextMenuTrigger>
               <ContextMenuContent>
-                <ActionItems
-                  entry={{ path: f.path, name: f.name, isDir: false }}
-                  onAction={setAction}
-                  dsId={dsId}
-                  onDuplicated={() => { refreshTree().catch(() => {}); }}
-                />
+                <ActionItems entry={{ path: f.path, name: f.name, isDir: false }} onAction={setAction} />
               </ContextMenuContent>
               </ContextMenu>
             </li>

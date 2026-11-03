@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Send, Square, AtSign, Plus, X, Quote, FileText, Image as ImageIcon, Paperclip } from 'lucide-react';
 import { api } from '@/lib/api';
+import { notify } from '@/lib/notify';
 import type { TreeNode } from '@/lib/types';
 import {
   type Block, type TextBlock,
@@ -62,6 +63,7 @@ export function ChatInput({
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const composingRef = useRef(false);
 
+  // @ 提及的候选文件：取不到时只是没有候选，输入照常
   useEffect(() => { api.tree().then((r) => setFiles(flatten(r.tree))).catch(() => {}); }, []);
 
   const textBlocks = blocks.filter((b): b is TextBlock => b.type === 'text');
@@ -144,7 +146,7 @@ export function ChatInput({
     }
     onImagesChange(imgs);
     if (blocksNext !== blocks) onBlocksChange(blocksNext);
-    if (rejected.length) alert('以下文件未添加：\n' + rejected.join('\n'));
+    if (rejected.length) notify('以下文件未添加：' + rejected.join('；'), { kind: 'error' });
     setAttachOpen(false);
   };
 

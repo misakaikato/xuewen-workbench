@@ -1,6 +1,11 @@
-// 设置页：阅读与外观（与阅读页快捷面板共用配置）、逻辑集合映射、元数据来源映射
+// 设置页：阅读与外观（与阅读页快捷面板共用配置）、逻辑集合映射、元数据来源映射。
+// 各项保存：按钮转圈（Button loading），失败经 notify 提示；成功沿用页内的一行提示。
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
+import { errorMessage, notify } from '@/lib/notify';
+import { WRITE_SLOW_MS, WRITE_SLOW_TEXT, runWriteOp } from '@/lib/writeOp';
+import { refreshTreeAfterWrite } from '@/lib/entryOps';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { useApp } from '@/store/app-context';
 import { useReadingPrefs, DEFAULT_PREFS } from '@/lib/reading-prefs';
 import type { Collection, MetadataMapping, TreeNode } from '@/lib/types';
@@ -32,22 +37,28 @@ const THEME_CARDS: { id: Theme; name: string; desc: string; side: string; paper:
   { id: 'C', name: '夜读', desc: '深色夜幕，鎏金强调，衬线正文', side: '#17181c', paper: '#1b1c20', line: '#2a2b31', acc: '#d2ad62', ink: '#efe7d6', faint: '#6a655b', ui: SANS_STACK },
 ];
 
+// 读取失败要说出来：否则表单显示默认值，用户再保存会把真实设置覆盖掉
+const loadFail = (what: string) => (e: unknown) => notify(`读取${what}失败：${errorMessage(e)}`, { kind: 'error' });
+
 export default function Settings() {
   const [tab, setTab] = useState<string>('appearance');
   const { prefs, update, reset } = useReadingPrefs();
-  const { tree, dsId, update: updateState, applyUpdate } = useApp();
+  const { tree, dsId, hintActivity, update: updateState, applyUpdate } = useApp();
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [checking, setChecking] = useState(false);
   const [checkMsg, setCheckMsg] = useState('');
 
-  useEffect(() => {
-    api.getUiSettings().then((s) => setAutoUpdate(s.autoUpdate)).catch(() => {});
-  }, []);
   const { theme, setTheme } = useTheme();
 
-  // 阅读笔记目录：全局界面设置（默认「阅读笔记」）
+  // 界面设置：自动更新、阅读笔记目录（默认「阅读笔记」）、元数据文件开关
   useEffect(() => {
-    api.getUiSettings().then((cfg) => { setNotesDir(cfg.notesDir || '阅读笔记'); setShowMetaFiles(!!cfg.showMetaFiles); }).catch(() => {});
+    api.getUiSettings()
+      .then((cfg) => {
+        setAutoUpdate(cfg.autoUpdate);
+        setNotesDir(cfg.notesDir || '阅读笔记');
+        setShowMetaFiles(!!cfg.showMetaFiles);
+      })
+      .catch(loadFail('界面设置'));
   }, []);
   const saveNotesDir = async (dir: string) => {
     try {
@@ -56,7 +67,7 @@ export default function Settings() {
       setMsg('阅读笔记目录已保存：' + r.notesDir);
       setTimeout(() => setMsg(''), 2500);
     } catch (e) {
-      setMsg('保存失败：' + (e as Error).message);
+      notify('阅读笔记目录保存失败：' + errorMessage(e), { kind: 'error' });
     }
   };
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -67,37 +78,62 @@ export default function Settings() {
   const [inspect, setInspect] = useState<Record<string, string>>({});
   const [blocklistRaw, setBlocklistRaw] = useState('');
   const [ignoredCount, setIgnoredCount] = useState<number | null>(null);
-  const [diagMsg, setDiagMsg] = useState('');
   const [diagBusy, setDiagBusy] = useState(false);
   const [logsDir, setLogsDir] = useState('');
+  // 进行中的保存动作：按钮转圈；屏蔽词表要等重扫与索引，慢了换成「正在更新索引…」
+  const [busy, setBusy] = useState<'blocklist' | 'clearIgnores' | 'collections' | 'mappings' | null>(null);
+  const blocklistSlow = useDelayedFlag(busy === 'blocklist', WRITE_SLOW_MS);
+  const [inspecting, setInspecting] = useState<number | null>(null);
 
   useEffect(() => {
     if (!dsId) return;
-    api.collections().then((r) => setCollections(r.collections)).catch(() => {});
-    api.metadata().then((r) => setMappings(r.mappings)).catch(() => {});
+    api.collections().then((r) => setCollections(r.collections)).catch(loadFail('集合映射'));
+    api.metadata().then((r) => setMappings(r.mappings)).catch(loadFail('元数据映射'));
     api.linksBlocklist()
       .then((r) => {
         setBlocklistRaw(r.terms.join('\n'));
         setIgnoredCount(r.ignoredCount);
       })
-      .catch(() => setBlocklistRaw(''));
+      .catch((e) => {
+        setBlocklistRaw('');
+        loadFail('屏蔽词表')(e);
+      });
   }, [dsId]);
 
   useEffect(() => {
+    // 只用于显示日志目录：取不到时不显示这一行，导出照常可用
     api.diagnosticsState().then((s) => setLogsDir(s.logsDir)).catch(() => {});
   }, []);
 
   const onExportDiagnostics = async () => {
     setDiagBusy(true);
-    setDiagMsg('');
     try {
       const r = await api.exportDiagnostics();
-      setDiagMsg('已导出到 ' + r.file);
+      notify('诊断信息已导出到 ' + r.file, { kind: 'success', durationMs: 10000 });
     } catch (e) {
-      setDiagMsg('导出失败：' + (e instanceof Error ? e.message : String(e)));
+      notify('导出诊断信息失败：' + errorMessage(e), { kind: 'error' });
     } finally {
       setDiagBusy(false);
     }
+  };
+
+  // 元数据文件开关：后端保存后重扫各库，重扫与索引完成才返回；过程由顶栏全局指示显示
+  const [metaSaving, setMetaSaving] = useState(false);
+  const onToggleMetaFiles = async (v: boolean) => {
+    setShowMetaFiles(v);
+    setMetaSaving(true);
+    hintActivity();
+    const r = await runWriteOp(
+      { pending: '正在刷新文件树…', done: () => (v ? '已显示元数据文件' : '已隐藏元数据文件'), fail: '切换元数据文件显示失败' },
+      async () => {
+        const saved = await api.saveUiSettings({ showMetaFiles: v });
+        await refreshTreeAfterWrite();
+        return saved;
+      }
+    );
+    // 失败时以服务端为准回显开关（设置可能已保存、只是重扫失败）
+    if (!r) await api.getUiSettings().then((c) => setShowMetaFiles(!!c.showMetaFiles)).catch(loadFail('界面设置'));
+    setMetaSaving(false);
   };
 
   const allDirs = useMemo(() => {
@@ -108,16 +144,30 @@ export default function Settings() {
 
   async function persistCollections(cols: Collection[]) {
     setCollections(cols);
-    await api.saveCollections(cols.map(({ name, dirs }) => ({ name, dirs })));
-    setMsg('集合映射已保存');
-    setTimeout(() => setMsg(''), 2000);
+    setBusy('collections');
+    try {
+      await api.saveCollections(cols.map(({ name, dirs }) => ({ name, dirs })));
+      setMsg('集合映射已保存');
+      setTimeout(() => setMsg(''), 2000);
+    } catch (e) {
+      notify('集合映射保存失败：' + errorMessage(e), { kind: 'error' });
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function persistMappings(ms: MetadataMapping[]) {
     setMappings(ms);
-    await api.saveMetadata(ms);
-    setMsg('元数据映射已保存');
-    setTimeout(() => setMsg(''), 2000);
+    setBusy('mappings');
+    try {
+      await api.saveMetadata(ms);
+      setMsg('元数据映射已保存');
+      setTimeout(() => setMsg(''), 2000);
+    } catch (e) {
+      notify('元数据映射保存失败：' + errorMessage(e), { kind: 'error' });
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
@@ -215,7 +265,12 @@ export default function Settings() {
                 checked={autoUpdate}
                 onCheckedChange={async (v) => {
                   setAutoUpdate(v);
-                  try { await api.saveUiSettings({ autoUpdate: v }); } catch { setAutoUpdate(!v); }
+                  try {
+                    await api.saveUiSettings({ autoUpdate: v });
+                  } catch (e) {
+                    setAutoUpdate(!v);
+                    notify('自动检查更新开关保存失败：' + errorMessage(e), { kind: 'error' });
+                  }
                 }}
               />
               启动时自动检查更新
@@ -233,10 +288,9 @@ export default function Settings() {
             出现卡顿、白屏或报错时，导出诊断信息发给开发者。包含运行日志与环境信息，不含文档正文、对话与 API Key。
           </p>
           <div className="flex items-center gap-3 flex-wrap">
-            <Button size="sm" variant="outline" disabled={diagBusy} onClick={onExportDiagnostics}>
+            <Button size="sm" variant="outline" loading={diagBusy} onClick={onExportDiagnostics}>
               <Download className="w-3.5 h-3.5" />导出诊断信息
             </Button>
-            {diagMsg && <span className="text-xs text-muted-foreground break-all">{diagMsg}</span>}
           </div>
           {logsDir && <p className="text-xs text-muted-foreground mt-2">日志目录：{logsDir}</p>}
         </div>
@@ -262,17 +316,8 @@ export default function Settings() {
             <input
               type="checkbox"
               checked={showMetaFiles}
-              onChange={async (e) => {
-                const v = e.target.checked;
-                setShowMetaFiles(v);
-                try {
-                  await api.saveUiSettings({ showMetaFiles: v });
-                  setMsg(v ? '已在文件树中显示元数据文件（.meta.json / .annotations.json）' : '已隐藏元数据文件');
-                  setTimeout(() => setMsg(''), 2500);
-                } catch (err) {
-                  setMsg('保存失败：' + (err as Error).message);
-                }
-              }}
+              disabled={metaSaving}
+              onChange={(e) => { void onToggleMetaFiles(e.target.checked); }}
             />
             在文件树中显示元数据文件
           </label>
@@ -366,19 +411,24 @@ export default function Settings() {
             variant="outline"
             size="sm"
             className="text-xs"
+            loading={busy === 'blocklist'}
+            disabled={busy !== null}
             onClick={async () => {
+              setBusy('blocklist');
               try {
                 const terms = blocklistRaw.split('\n').map((s) => s.trim()).filter(Boolean);
                 const r = await api.saveLinksBlocklist(terms);
                 setBlocklistRaw(r.terms.join('\n'));
-                setMsg('屏蔽词表已保存（重建链接后生效）');
+                setMsg('屏蔽词表已保存，链接已按新词表重建');
                 setTimeout(() => setMsg(''), 2000);
               } catch (e) {
-                setMsg('保存失败：' + (e as Error).message);
+                notify('屏蔽词表保存失败：' + errorMessage(e), { kind: 'error' });
+              } finally {
+                setBusy(null);
               }
             }}
           >
-            保存屏蔽词表
+            {blocklistSlow ? WRITE_SLOW_TEXT : '保存屏蔽词表'}
           </Button>
           {ignoredCount != null && ignoredCount > 0 && (
             <>
@@ -387,7 +437,10 @@ export default function Settings() {
                 variant="outline"
                 size="sm"
                 className="text-xs"
+                loading={busy === 'clearIgnores'}
+                disabled={busy !== null}
                 onClick={async () => {
+                  setBusy('clearIgnores');
                   try {
                     const r = await api.linksIgnore({ clearAll: true });
                     setIgnoredCount(r.ignoredCount);
@@ -395,7 +448,9 @@ export default function Settings() {
                     setMsg('已清除全部忽略');
                     setTimeout(() => setMsg(''), 2000);
                   } catch (e) {
-                    setMsg('清除失败：' + (e as Error).message);
+                    notify('清除忽略失败：' + errorMessage(e), { kind: 'error' });
+                  } finally {
+                    setBusy(null);
                   }
                 }}
               >
@@ -469,6 +524,7 @@ export default function Settings() {
           variant="outline"
           size="sm"
           className="mt-3 text-xs"
+          loading={busy === 'collections'}
           onClick={() => persistCollections([...collections, { name: '', dirs: [] }])}
         >
           <Plus className="w-3.5 h-3.5" /> 新增集合
@@ -501,12 +557,17 @@ export default function Settings() {
                   variant="outline"
                   size="sm"
                   className="text-xs"
+                  loading={inspecting === i}
+                  disabled={inspecting !== null}
                   onClick={async () => {
+                    setInspecting(i);
                     try {
                       const r = await api.inspectMetadata(m.file);
                       setInspect({ ...inspect, [i]: JSON.stringify(r.shape, null, 2) });
                     } catch (e) {
-                      setInspect({ ...inspect, [i]: '解析失败：' + (e as Error).message });
+                      notify('预览结构失败：' + errorMessage(e), { kind: 'error' });
+                    } finally {
+                      setInspecting(null);
                     }
                   }}
                 >
@@ -557,6 +618,7 @@ export default function Settings() {
           variant="outline"
           size="sm"
           className="mt-3 text-xs"
+          loading={busy === 'mappings'}
           onClick={() =>
             persistMappings([...mappings, { file: '', itemPath: '', fields: { file: '', topics: '', concepts: '' } }])
           }

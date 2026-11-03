@@ -2,12 +2,12 @@
 // TS 模块先经 esbuild 编译到临时目录再 import（与 scripts/test-feedback.mjs 同一做法）。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { makeTmpDir } from './tmpdirs.mjs';
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-agent-reducer-'));
+const tmp = makeTmpDir('wb-agent-reducer-');
 await build({
   entryPoints: [path.resolve('src/lib/agentReducer.ts'), path.resolve('src/lib/base64.ts')],
   outdir: tmp,

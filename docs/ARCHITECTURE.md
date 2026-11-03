@@ -242,6 +242,14 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 - 前端除概览外按页面 `React.lazy` 拆分；复制渲染管线（unified/remark）与 `@codemirror/lang-html` 按需加载。
 - 动效遵守 `DESIGN.md` §7：侧栏折叠不动画 width（主区宽度一次到位，侧栏内层 transform + opacity 过渡）；面板挂载/卸载统一走 `src/lib/presence.ts`（med 档，离场播完再移除）；阅读页查找条与阅读偏好面板为浮层，不推挤正文；拖拽调宽期间只写 CSS 变量（rAF 节流），松手才提交 state 与持久化。
 
+### 6.11 后台状态与操作反馈：进行中可见，失败必报
+- **后台状态**：扫描分片异步（`server/scanner.js` 的 `scanTreeAsync`，每 30ms 让出），`/api/status` 按库下发 `scanning` / `scanned`（已扫文件数）/ `indexing`（`{ phase: null | 'text' | 'links', done, total, startedAt }`）/ `indexError` / `linksReady` / `linksSeq`，当前库在顶层另带一份。前端只有 `src/store/app.tsx` 一条状态轮询：后台忙时 1 秒、空闲 5 秒；`linksSeq` 推进时广播索引就绪事件（`src/lib/indexReady.ts`，组件用 `useWhenIndexReady` 订阅），等待方就绪后再取一次，不各写重试循环。
+- **全局指示**：顶栏 `BackgroundIndicator`（正在扫描 / 正在建立索引 / 正在更新链接，持续不到 1 秒的不显示）；精确检索在 text 阶段标注「结果可能不完整」，反链面板未就绪时显示加载而不是空结果。
+- **反馈基础件**：失败提示只用 `notify`（`src/lib/notify.ts`，带 `busy` 的条目显示转圈与慢提示）；按钮忙碌态只用 `Button loading`；「慢了才出现的次要文字」只用 `useDelayedFlag`；页面加载用 `PageLoading`（可带 `slowText`，如 Word 首次转换）与 `PageSkeleton`。
+- **耗时写操作**（创建、重命名、移动、删除、副本、粘贴、元数据导入、屏蔽词表、元数据文件开关）：后端等重扫与索引完成才返回，前端口径统一在 `src/lib/writeOp.ts`——有按钮或对话框的转圈并锁定，超过 1.5 秒换成「正在更新索引…」；没有对话框的走 `runWriteOp`，一条进行中 toast 收尾为完成或失败。条目操作的执行入口是 `src/lib/entryOps.ts`。
+- **切换知识库**：store 的 `switchingLib` 为真时顶栏库名旁转圈、内容区与侧栏显示骨架，新库 config 与目录树到位后才挂载页面。
+- **大文档**：超过 256K 字符的 JSON 解析与 TXT 分段推迟到加载态首帧绘制之后（`src/hooks/useAfterPaint.ts`）。
+
 ---
 
 ## 7. 网络出口与安全：只有 LLM 端点和生图会带出语料相关内容
@@ -287,8 +295,12 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 | `npm run test:retrieval:e2e` | Electron 内检索与阅读定位端到端（标准见 `specs/retrieval-regression.md`） |
 | `npm run test:e2e` | 编辑器端到端 |
 | `./node_modules/.bin/electron scripts/e2e-filetree.mjs` | 目录树端到端（先 `npm run build`） |
+| `node scripts/test-scan-async.mjs` / `node scripts/test-index-status.mjs` | 异步扫描与旧同步扫描逐项一致、不阻塞事件循环；`/api/status` 索引阶段字段 |
+| `./node_modules/.bin/electron scripts/e2e-index-visibility.mjs` / `e2e-files-feedback.mjs` | 后台指示与「结果可能不完整」；文件操作与其余入口的忙碌态、慢提示、失败提示 |
 | `node scripts/acceptance.mjs` | 后端整体验收（配置、扫描、读写、冲突、隔离、路径安全等） |
 | `node scripts/retrieval-tests.mjs --url http://127.0.0.1:7410` | 对当前激活库只读跑检索套件，真值由脚本直扫语料自证 |
+
+测试脚本的临时目录一律经 `scripts/tmpdirs.mjs` 的 `makeTmpDir` 创建：正常结束、断言失败、被 `timeout` 终止时都会删除（Electron 脚本经 `will-quit`），后端子进程用 `atExit` 先杀掉再删目录。
 
 ---
 

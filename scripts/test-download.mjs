@@ -2,11 +2,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { makeTmpDir } from './tmpdirs.mjs';
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-dl-'));
+const tmp = makeTmpDir('wb-dl-');
 let checks = 0;
 function test(name, fn) { return Promise.resolve(fn()).then(() => { checks++; console.log('PASS', name); }); }
 

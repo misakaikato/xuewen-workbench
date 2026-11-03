@@ -72,10 +72,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const dsChanged = cfg.configured && cfg.dsId !== prevDs;
     const genChanged = cfg.configured && cfg.generation !== prevGen;
     if (dsChanged) {
-      // 切库：后台状态对账基线重置，旧库的进度不串到新库
+      // 切库：后台状态对账基线重置，旧库的进度不串到新库；旧库目录树立即撤下，不在新库名下显示
       lastLinksSeqRef.current = null;
       lastIndexErrorRef.current = null;
       setBackend({ scanning: false, scanned: 0, indexing: null, indexError: null });
+      setTree(null);
     }
     if (dsChanged || genChanged) {
       // 知识库或代际变化：重取目录树
@@ -119,15 +120,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [hintActivity]);
 
-  const activateLib = useCallback(async (id: string) => {
-    await api.activateLibrary(id);
-    await refreshConfig();
+  // 切换知识库（含移除后落到另一个库）：新库的 config 与目录树都加载完之前 switchingLib 为 true；
+  // 失败抛给调用方提示
+  const [switchingLib, setSwitchingLib] = useState(false);
+  const switchLib = useCallback(async (change: () => Promise<unknown>) => {
+    setSwitchingLib(true);
+    try {
+      await change();
+      await refreshConfig();
+    } finally {
+      setSwitchingLib(false);
+    }
   }, [refreshConfig]);
-
+  const activateLib = useCallback((id: string) => switchLib(() => api.activateLibrary(id)), [switchLib]);
   const removeLib = useCallback(async (id: string) => {
+    if (id === dsRef.current) return switchLib(() => api.removeLibrary(id)); // 移除当前库会落到另一个库
     await api.removeLibrary(id);
     await refreshConfig();
-  }, [refreshConfig]);
+  }, [switchLib, refreshConfig]);
 
   useEffect(() => {
     refreshConfig().catch(() => setLoading(false));
@@ -179,10 +189,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const dsId = config?.dsId ?? null;
   const value = useMemo<AppState>(
     () => ({
-      config, libraries, tree, loading, dsId, update, scanning, backend, applyUpdate: setUpdate,
+      config, libraries, tree, loading, dsId, update, scanning, switchingLib, backend, applyUpdate: setUpdate,
       refreshConfig, refreshTree, rescan, activateLib, removeLib, hintActivity,
     }),
-    [config, libraries, tree, loading, dsId, update, scanning, backend, refreshConfig, refreshTree, rescan, activateLib, removeLib, hintActivity]
+    [config, libraries, tree, loading, dsId, update, scanning, switchingLib, backend, refreshConfig, refreshTree, rescan, activateLib, removeLib, hintActivity]
   );
 
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;

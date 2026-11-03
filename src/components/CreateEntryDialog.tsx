@@ -1,4 +1,5 @@
-// 新建文档 / 文件夹对话框：名称就地校验并显示服务端错误；成功后回调新路径
+// 新建文档 / 文件夹对话框：名称就地校验；创建期间对话框锁定、按钮转圈，超过 1.5 秒换成
+// 「正在更新索引…」；服务端失败经 notify 提示（对话框保持打开）；成功后回调新路径
 import { useEffect, useState } from 'react';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -8,6 +9,9 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { api, type DocType } from '@/lib/api';
+import { errorMessage, notify } from '@/lib/notify';
+import { WRITE_SLOW_MS, WRITE_SLOW_TEXT } from '@/lib/writeOp';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { useApp } from '@/store/app-context';
 
 export type CreateKind = 'md' | 'folder';
@@ -46,6 +50,7 @@ export function CreateEntryDialog({
   const [bodyTemplate, setBodyTemplate] = useState<'blank' | 'title' | 'title-date'>('title');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const slow = useDelayedFlag(busy, WRITE_SLOW_MS);
 
   useEffect(() => {
     if (target) {
@@ -72,14 +77,14 @@ export function CreateEntryDialog({
       });
       onCreated(r.path, target.kind);
     } catch (ex) {
-      setError((ex as Error).message);
+      notify('创建失败：' + errorMessage(ex), { kind: 'error' });
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <Dialog open={!!target} onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog open={!!target} onOpenChange={(o) => { if (!o && !busy) onClose(); }}>
       {target && (
         <DialogContent className="sm:max-w-md">
           <form onSubmit={submit} className="space-y-4">
@@ -92,6 +97,7 @@ export function CreateEntryDialog({
               <Input
                 id="ce-title"
                 autoFocus
+                disabled={busy}
                 value={title}
                 onChange={(e) => { setTitle(e.target.value); setError(null); }}
                 placeholder={isDoc ? '如：论语讲稿' : '如：草稿'}
@@ -102,7 +108,7 @@ export function CreateEntryDialog({
               <>
                 <div className="space-y-1.5">
                   <Label>类型</Label>
-                  <Select value={docType} onValueChange={(v) => setDocType(v as DocType)}>
+                  <Select value={docType} disabled={busy} onValueChange={(v) => setDocType(v as DocType)}>
                     <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {DOC_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
@@ -111,7 +117,7 @@ export function CreateEntryDialog({
                 </div>
                 <div className="space-y-1.5">
                   <Label>初始内容</Label>
-                  <Select value={bodyTemplate} onValueChange={(v) => setBodyTemplate(v as typeof bodyTemplate)}>
+                  <Select value={bodyTemplate} disabled={busy} onValueChange={(v) => setBodyTemplate(v as typeof bodyTemplate)}>
                     <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="title">标准（# 标题）</SelectItem>
@@ -124,6 +130,7 @@ export function CreateEntryDialog({
                   <Label htmlFor="ce-name">文件名（可选，默认同标题）</Label>
                   <Input
                     id="ce-name"
+                    disabled={busy}
                     value={fileName}
                     onChange={(e) => { setFileName(e.target.value); setError(null); }}
                     placeholder={title.trim() ? title.trim() + '.md' : '自动追加 .md'}
@@ -140,7 +147,7 @@ export function CreateEntryDialog({
             {error && <p className="text-xs text-destructive break-all" role="alert">{error}</p>}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={onClose} disabled={busy}>取消</Button>
-              <Button type="submit" disabled={busy}>{busy ? '创建中…' : '创建'}</Button>
+              <Button type="submit" loading={busy}>{busy ? (slow ? WRITE_SLOW_TEXT : '创建中…') : '创建'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>

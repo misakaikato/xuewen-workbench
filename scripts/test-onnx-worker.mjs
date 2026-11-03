@@ -7,6 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from './tmpdirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = fileURLToPath(import.meta.url);
@@ -182,7 +183,7 @@ async function setupFixture() {
     }
   }
 
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-onnx-'));
+  const tmp = makeTmpDir('wb-onnx-');
   process.env.WORKBENCH_DATA_DIR = path.join(tmp, 'data');
   process.env.WORKBENCH_RAG_EMBED = 'onnx';
   delete process.env.WORKBENCH_RAG_ONNX_EP;

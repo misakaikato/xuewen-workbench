@@ -24,6 +24,8 @@ export interface AppState {
   update: UpdateState | null;
   /** 手动重扫进行中（所有入口共享：顶栏图标 / ⌘K 命令同一反馈） */
   scanning: boolean;
+  /** 切换知识库进行中：新库的 config 与目录树都到位前为 true（内容区显示骨架，不露旧库数据） */
+  switchingLib: boolean;
   backend: BackendWork;
   applyUpdate: (s: UpdateState) => void;
   refreshConfig: () => Promise<void>;
@@ -36,7 +38,7 @@ export interface AppState {
 }
 
 export const AppCtx = createContext<AppState>({
-  config: null, libraries: [], tree: null, loading: true, dsId: null, update: null, scanning: false,
+  config: null, libraries: [], tree: null, loading: true, dsId: null, update: null, scanning: false, switchingLib: false,
   backend: { scanning: false, scanned: 0, indexing: null, indexError: null },
   applyUpdate: () => {},
   refreshConfig: async () => {}, refreshTree: async () => {}, rescan: async () => {},

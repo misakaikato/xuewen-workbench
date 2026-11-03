@@ -3,9 +3,9 @@
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const OUT = process.argv[2] || path.join(ROOT, 'docs', 'ui-shots');
@@ -14,7 +14,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 fs.mkdirSync(OUT, { recursive: true });
-const tmpObj = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-e2e-shots-'));
+const tmpObj = makeTmpDir('wb-e2e-shots-');
 const tmpData = path.join(tmpObj, 'data');
 const tmpCorpus = path.join(tmpObj, 'test-data');
 
@@ -32,6 +32,7 @@ async function waitApi() {
 
 let win = null;
 let server = null;
+atExit(() => server?.kill('SIGKILL'));
 
 async function main() {
   fs.cpSync(path.join(ROOT, 'test-data'), tmpCorpus, { recursive: true });

@@ -2,12 +2,12 @@
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 const root = fileURLToPath(new URL('..', import.meta.url));
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-reader-regress-'));
+const tmp = makeTmpDir('wb-reader-regress-');
 const corpus = path.join(tmp, 'corpus');
 fs.mkdirSync(path.join(corpus, '词条'), { recursive: true });
 fs.writeFileSync(path.join(corpus, '词条', '孔子家语.md'), '# 孔子家语\n\n词条源文档。');
@@ -22,6 +22,7 @@ fs.writeFileSync(path.join(corpus, 'txt.txt'), '纯文本开头\n这里提到孔
 const port = Number(process.env.E2E_READER_PORT) || 7494;
 const base = `http://127.0.0.1:${port}`;
 let server, win, passed = 0;
+atExit(() => server?.kill('SIGKILL'));
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 app.on('window-all-closed', () => {});
 const exec = (js) => win.webContents.executeJavaScript(js, true);

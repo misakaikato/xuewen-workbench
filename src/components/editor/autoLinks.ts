@@ -2,7 +2,8 @@
 // - 装饰存于 StateField：文档变更时按变更映射移动，被编辑触及的区间直接丢弃；
 //   保存 / 索引更新后重新拉取。wikilink 标记在光标所在行不显示（显示源码）。
 // - Cmd/Ctrl+点击跳转目标（含标题锚点）；悬停显示目标标题与摘录，可「忽略此链接」
-//   或「加入屏蔽词表」。[[ 触发词条自动补全。
+//   或「加入屏蔽词表」（无对话框的写操作：进行中、完成、失败都经 runWriteOp 的 toast 反馈）。
+//   [[ 触发词条自动补全。
 // 所有装饰只影响显示，绝不改动文档字节。
 import { StateEffect, StateField, Facet } from '@codemirror/state';
 import type { Extension, Range, EditorState } from '@codemirror/state';
@@ -14,6 +15,7 @@ import { api } from '@/lib/api';
 import type { DocLink } from '@/lib/api';
 import { wikiNameAt } from '../../../server/linkMatch.js';
 import { whenIndexSettled } from '@/lib/indexReady';
+import { runWriteOp } from '@/lib/writeOp';
 
 const alDocPath = Facet.define<string, string>({ combine: (v) => (v.length ? v[v.length - 1] : '') });
 
@@ -131,7 +133,7 @@ async function previewOf(path: string) {
     previewCache.set(path, v);
     return v;
   } catch {
-    return null;
+    return null; // 摘录取不到时卡片退回显示目标路径
   }
 }
 
@@ -152,7 +154,7 @@ export async function fetchDocLinks(view: EditorView, path: string, minSeq = 0):
     try {
       r = await api.linksDoc(path);
     } catch {
-      return;
+      return; // 链接是正文装饰：取不到时保持现有装饰，下次保存或索引更新再取
     }
     if (r.ready && r.buildSeq >= minSeq) {
       if (!view.dom.isConnected) return; // 编辑器已卸载
@@ -248,31 +250,45 @@ export function autoLinks(opts: AutoLinksOptions): Extension {
         if (l.kind === 'auto' && l.target?.path) {
           const actions = document.createElement('div');
           actions.className = 'cm-al-tip-actions';
-          const mk = (label: string, fn: () => void) => {
+          const mk = (label: string, fn: () => Promise<unknown>) => {
             const b = document.createElement('button');
             b.textContent = label;
-            // mousedown 只阻默认（避免抢焦点），动作挂在 click 上
+            // mousedown 只阻默认（避免抢焦点），动作挂在 click 上；执行期间禁用防重复点击
             b.addEventListener('mousedown', (e) => e.preventDefault());
-            b.addEventListener('click', () => fn());
+            b.addEventListener('click', async () => {
+              b.disabled = true;
+              try {
+                await fn();
+              } finally {
+                b.disabled = false;
+              }
+            });
             actions.appendChild(b);
             return b;
           };
           const path = String(view.state.facet(alDocPath));
           const norm = l.norm || l.term;
+          const refresh = async () => {
+            await fetchDocLinks(view, path);
+            notifyLinksUpdated();
+          };
           mk('忽略此链接（本篇）', async () => {
-            try {
-              await api.linksIgnore({ path, term: norm, targetPath: l.target!.path, ignore: true });
-              await fetchDocLinks(view, path);
-              notifyLinksUpdated();
-            } catch { /* 失败静默：下次悬停可重试 */ }
+            const r = await runWriteOp(
+              { pending: `正在忽略「${l.term}」…`, done: () => `已忽略本篇中「${l.term}」的链接`, fail: '忽略链接失败' },
+              () => api.linksIgnore({ path, term: norm, targetPath: l.target!.path, ignore: true })
+            );
+            if (r) await refresh();
           });
           mk('加入屏蔽词表', async () => {
-            try {
-              const cur = await api.linksBlocklist();
-              if (!cur.terms.includes(l.term)) await api.saveLinksBlocklist([...cur.terms, l.term]);
-              await fetchDocLinks(view, path);
-              notifyLinksUpdated();
-            } catch { /* 同上 */ }
+            const r = await runWriteOp(
+              { pending: `正在把「${l.term}」加入屏蔽词表…`, done: () => `已把「${l.term}」加入屏蔽词表`, fail: '加入屏蔽词表失败' },
+              async () => {
+                const cur = await api.linksBlocklist();
+                if (!cur.terms.includes(l.term)) await api.saveLinksBlocklist([...cur.terms, l.term]);
+                return true;
+              }
+            );
+            if (r) await refresh();
           });
           dom.appendChild(actions);
         }

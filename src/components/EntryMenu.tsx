@@ -1,16 +1,18 @@
 // 条目右键菜单的共享动作组：目录树与浏览页列表共用。
-// 复制类动作直接写剪贴板；创建副本走 /api/file/duplicate；重命名/移动/删除交给 EntryActionDialogs。
+// 复制类动作直接写剪贴板；创建副本走 entryOps.runDuplicate（进行中 toast）；重命名/移动/删除交给 EntryActionDialogs。
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Pencil, FolderInput, Trash2, Copy, Quote, ExternalLink, Files, FolderOpen } from 'lucide-react';
 import { ContextMenuItem, ContextMenuSeparator } from '@/components/ui/context-menu';
 import { api } from '@/lib/api';
 import type { Collection } from '@/lib/types';
-import type { EntryAction } from '@/lib/entryOps';
+import { runDuplicate, type EntryAction } from '@/lib/entryOps';
+import { errorMessage, notify } from '@/lib/notify';
 
 export type Entry = Omit<EntryAction, 'type'>;
 
-const copyText = (t: string) => navigator.clipboard.writeText(t).catch(() => {});
+const copyText = (t: string) =>
+  navigator.clipboard.writeText(t).catch((e) => notify('复制失败：' + errorMessage(e), { kind: 'error' }));
 
 const dirOf = (p: string) => {
   const i = p.lastIndexOf('/');
@@ -23,6 +25,7 @@ function useCollectionRefOf() {
   const [collections, setCollections] = useState<Collection[]>([]);
   useEffect(() => {
     let dead = false;
+    // 只用于「复制集合引用」菜单项：拉取失败时该项不出现，其余菜单照常
     api.collections().then((r) => { if (!dead) setCollections(r.collections); }).catch(() => {});
     return () => { dead = true; };
   }, []);
@@ -40,33 +43,20 @@ function useCollectionRefOf() {
 export function ActionItems({
   entry,
   onAction,
-  dsId,
-  onDuplicated,
 }: {
   entry: Entry;
   onAction: (a: EntryAction) => void;
-  /** 文件所属集合给出的「集合|文件名」引用（内部自动计算；目录或在集合外为 null） */
-  dsId: string | null;
-  /** 创建副本成功后的回调（刷新树） */
-  onDuplicated?: (path: string) => void;
 }) {
   const navigate = useNavigate();
+  // 文件所属集合给出的「集合|文件名」引用（目录或在集合外为 null）
   const colRefOf = useCollectionRefOf();
   const colRef = entry.isDir ? null : colRefOf(entry.path);
   const fire = (type: EntryAction['type']) => setTimeout(() => onAction({ ...entry, type }), 0);
-  const dup = async () => {
-    try {
-      const r = await api.duplicateEntry({ dsId, path: entry.path });
-      onDuplicated?.(r.path);
-    } catch (e) {
-      alert((e as Error).message);
-    }
-  };
   return (
     <>
       <ContextMenuItem onSelect={() => fire('rename')}><Pencil />重命名</ContextMenuItem>
       <ContextMenuItem onSelect={() => fire('move')}><FolderInput />移动到…</ContextMenuItem>
-      <ContextMenuItem onSelect={() => { dup(); }}><Files />创建副本</ContextMenuItem>
+      <ContextMenuItem onSelect={() => { void runDuplicate(entry); }}><Files />创建副本</ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={() => copyText(entry.name)}><Copy />复制文件名</ContextMenuItem>
       <ContextMenuItem onSelect={() => copyText(entry.path)}><Copy />复制相对路径</ContextMenuItem>
@@ -78,7 +68,11 @@ export function ActionItems({
       >
         <FolderOpen />{entry.isDir ? '在浏览页打开' : '在浏览页打开所在目录'}
       </ContextMenuItem>
-      <ContextMenuItem onSelect={() => { api.revealInSystem(entry.path).catch(() => {}); }}>
+      <ContextMenuItem
+        onSelect={() => {
+          api.revealInSystem(entry.path).catch((e) => notify('在系统中显示失败：' + errorMessage(e), { kind: 'error' }));
+        }}
+      >
         <ExternalLink />在系统中显示
       </ContextMenuItem>
       <ContextMenuSeparator />

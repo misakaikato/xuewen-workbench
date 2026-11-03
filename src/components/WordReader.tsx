@@ -4,6 +4,7 @@
 import { memo, useEffect, useMemo, useState } from 'react';
 import { api, rawFileUrl } from '@/lib/api';
 import { sanitizeWordHtml } from '@/lib/wordSanitize';
+import { errorMessage, notify } from '@/lib/notify';
 import { useApp } from '@/store/app-context';
 import { Download, FilePlus2, AlertCircle, ZoomIn, ZoomOut } from 'lucide-react';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -51,7 +52,7 @@ export const WordReader = memo(function WordReader({
       setMsg('已另存为 Markdown 副本：' + target);
       setTimeout(() => navigate('/read/' + target.split('/').map(encodeURIComponent).join('/')), 600);
     } catch (e) {
-      setMsg('另存失败：' + (e as Error).message);
+      notify('另存失败：' + errorMessage(e), { kind: 'error' });
     } finally {
       setSaving(false);
     }
@@ -105,7 +106,7 @@ export const WordReader = memo(function WordReader({
           variant="outline"
           size="sm"
           className="text-xs"
-          disabled={saving}
+          loading={saving}
           onClick={saveAsMarkdown}
           title="将提取的正文另存为新的 Markdown 文件，不修改原文件"
         >

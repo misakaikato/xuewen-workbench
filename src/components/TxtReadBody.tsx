@@ -4,8 +4,11 @@
 // 偏移口径与服务端一致：与 indexer 共用 toEditorText（剥 BOM、纯 CRLF 归一为 LF），
 // 保证链接区间不随换行漂移。
 // 样式复用 .wb-autolink / .wb-wikilink / .wb-wikilink-missing / .cm-note-mark。
-import { memo, useMemo } from 'react';
+// 大文本先显示加载态，分段推迟到加载态首帧绘制之后（useAfterPaint），完成后回调 onContentReady。
+import { memo, useEffect, useMemo } from 'react';
 import type { DocLink } from '@/lib/api';
+import { PageLoading } from '@/components/ui-states';
+import { LARGE_DOC_CHARS, useAfterPaint } from '@/hooks/useAfterPaint';
 import { toEditorText } from '../../server/editorText.js';
 
 export interface TxtLinkTarget {
@@ -65,6 +68,7 @@ export const TxtReadBody = memo(function TxtReadBody({
   noteMarks,
   highlightTerm,
   onOpenNote,
+  onContentReady,
 }: {
   content: string;
   links: DocLink[];
@@ -74,13 +78,21 @@ export const TxtReadBody = memo(function TxtReadBody({
   noteMarks?: NoteMark[];
   highlightTerm?: string;
   onOpenNote?: (href: string) => void;
+  /** 推迟分段的大文本渲染完成后回调（阅读页据此重跑定位） */
+  onContentReady?: () => void;
 }) {
+  const deferred = content.length > LARGE_DOC_CHARS;
+  const ready = useAfterPaint(content, deferred);
+  useEffect(() => {
+    if (deferred && ready) onContentReady?.();
+  }, [deferred, ready, onContentReady]);
   const text = useMemo(() => toEditorText(content), [content]);
 
   // 切点与分块：链接 / 笔记 / 高亮区间，加上每 200 行的块边界。
   // 块边界取行首偏移，落在链接区间内时顺延到链接结束（链接不跨块、不被切断）；
   // 普通文本也在块边界处切开，保证无链接的文本同样分成多个 content-visibility 块。
   const { blocks } = useMemo(() => {
+    if (!ready) return { blocks: [] as TxtSeg[][] };
     const linkSpans = links
       .filter((l) => !l.ignored && l.to > l.from && l.to <= text.length)
       .map((l) => ({ from: l.from, to: l.to, link: l }))
@@ -164,7 +176,7 @@ export const TxtReadBody = memo(function TxtReadBody({
     }
     if (text.length) grouped.push(cur);
     return { blocks: grouped };
-  }, [text, links, noteMarks, highlightTerm]);
+  }, [ready, text, links, noteMarks, highlightTerm]);
 
   // 按边界归组后的分块渲染；pre-wrap 下块尾单个换行不产生空行，文本原样保留即可
   const renderSeg = (s: TxtSeg) => {
@@ -211,6 +223,7 @@ export const TxtReadBody = memo(function TxtReadBody({
     return <span key={s.key}>{txt}</span>;
   };
 
+  if (!ready) return <PageLoading text="正在排版长文本…" />;
   return (
     <div className="whitespace-pre-wrap break-words" style={style}>
       {blocks.map((block, i) => (

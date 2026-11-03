@@ -5,18 +5,19 @@
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.E2E_UPDATE_PORT) || 7497;
 const BASE = `http://127.0.0.1:${PORT}`;
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-update-ui-'));
+const tmp = makeTmpDir('wb-update-ui-');
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 const IS_MAC = process.platform === 'darwin';
 let server = null;
+atExit(() => server?.kill('SIGKILL'));
 let win = null;
 
 let pass = 0;

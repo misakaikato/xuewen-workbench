@@ -3,8 +3,9 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { errorMessage, notify } from '@/lib/notify';
 import { useApp } from '@/store/app-context';
-import { Database, CheckCircle2, XCircle, Loader2, FolderMinus, Plus, FolderOpen } from 'lucide-react';
+import { Database, CheckCircle2, XCircle, FolderMinus, Plus, FolderOpen } from 'lucide-react';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -28,7 +29,6 @@ export default function Setup() {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; error?: string; writable?: boolean } | null>(null);
-  const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<{ id: string; name: string } | null>(null);
   const navigate = useNavigate();
 
@@ -47,17 +47,15 @@ export default function Setup() {
 
   async function save() {
     setSaving(true);
-    setSaveMsg(null);
     hintActivity(); // 扫描即将开始：让全局状态轮询收紧，下方计数才有实时性
     try {
       await api.saveConfig(baseDir);
       await refreshConfig();
-      setSaveMsg('已添加并打开知识库。');
       setBaseDir('');
       setResult(null);
       navigate('/');
     } catch (e) {
-      setSaveMsg('添加失败：' + (e as Error).message);
+      notify('添加知识库失败：' + errorMessage(e), { kind: 'error' });
     } finally {
       setSaving(false);
     }
@@ -110,7 +108,10 @@ export default function Setup() {
                 try {
                   const picked = await window.wbHost!.selectDirectory!(baseDir.trim() || undefined);
                   if (picked) { setBaseDir(picked); setResult(null); }
-                } catch { /* 用户取消或不可用 */ }
+                } catch (e) {
+                  // 用户取消时返回 null，不会走到这里；这里是选择器本身打不开
+                  notify('打开目录选择器失败：' + errorMessage(e), { kind: 'error' });
+                }
               }}
             >
               <FolderOpen className="w-3.5 h-3.5" /> 选择目录
@@ -121,18 +122,11 @@ export default function Setup() {
           路径指向<b>本服务端所在电脑</b>的目录。浏览器本身没有磁盘权限，读写由本应用后端完成。
         </p>
         <div className="flex gap-2 mt-3">
-          <Button
-            variant="outline"
-            onClick={test}
-            disabled={testing || !baseDir.trim()}
-          >
-            {testing && <Loader2 className="w-3.5 h-3.5 animate-spin" />} 测试连接
+          <Button variant="outline" onClick={test} loading={testing} disabled={!baseDir.trim()}>
+            测试连接
           </Button>
-          <Button
-            onClick={save}
-            disabled={saving || !baseDir.trim()}
-          >
-            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />} 添加并打开
+          <Button onClick={save} loading={saving} disabled={!baseDir.trim()}>
+            添加并打开
           </Button>
         </div>
         {saving && backend.scanning && (
@@ -161,7 +155,6 @@ export default function Setup() {
             </div>
           </div>
         )}
-        {saveMsg && <div className="mt-3 text-sm text-muted-foreground">{saveMsg}</div>}
       </section>
 
       {/* 已打开的知识库 */}
@@ -220,7 +213,7 @@ export default function Setup() {
               onClick={() => {
                 const t = removeTarget;
                 setRemoveTarget(null);
-                if (t) removeLib(t.id).catch(() => {});
+                if (t) removeLib(t.id).catch((e) => notify('移除知识库失败：' + errorMessage(e), { kind: 'error' }));
               }}
             >
               移除

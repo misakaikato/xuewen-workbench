@@ -1,4 +1,5 @@
-// Dashboard 知识库概览：统计、目录分布、最近记录、常用入口、主题/概念（有元数据映射时）
+// Dashboard 知识库概览：统计、目录分布、最近记录、常用入口、主题/概念（有元数据映射时）。
+// 首次加载显示骨架；只有加载完成且确实为空才显示「暂无数据」；加载失败显示错误与重试。
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
@@ -9,13 +10,15 @@ import type { StatsResponse, TopicEntry, ConceptEntry, FileEntry } from '@/lib/t
 import { extIcon } from '@/lib/extIcon';
 import { Pin, PinOff, AlertTriangle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
+import { errorMessage, notify } from '@/lib/notify';
 
 function fmtTime(ms: number) {
   return new Date(ms).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 export default function Dashboard() {
-  const { config, rescan } = useApp();
+  const { config, rescan, scanning } = useApp();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [recents, setRecents] = useState<{ path: string; at: number; exists: boolean }[]>([]);
   const [pins, setPins] = useState<{ path: string; at: number; exists: boolean }[]>([]);
@@ -25,15 +28,20 @@ export default function Dashboard() {
   const [derivedConcepts, setDerivedConcepts] = useState<ConceptItem[]>([]);
   const [openConcept, setOpenConcept] = useState<string | null>(null);
   const [metaConfigured, setMetaConfigured] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const navigate = useNavigate();
 
+  // 重扫（scannedAt 变化）后静默重取：已有数据先保留，失败时才换成错误态
   useEffect(() => {
     if (!config?.configured) return;
     let dead = false;
     const myDs = config.dsId;
+    // 主题词与概念表是可选的加工数据：缺失或读取失败时对应区块显示「尚无…」，不影响概览其余部分
     Promise.all([api.stats(), api.recents(), api.pins(), api.topics(), api.tags().catch(() => null), api.concepts().catch(() => null)])
       .then(([s, r, p, t, tg, cp]) => {
         if (dead || s.dsId !== myDs) return; // 旧数据源响应不覆盖
+        setLoadError(null);
         setStats(s);
         setRecents(r.recents);
         setPins(p.pins);
@@ -43,11 +51,13 @@ export default function Dashboard() {
         if (tg && tg.dsId === myDs) setTags(tg.tags);
         if (cp && cp.dsId === myDs) setDerivedConcepts(cp.concepts);
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (!dead) setLoadError(errorMessage(e));
+      });
     return () => {
       dead = true;
     };
-  }, [config?.configured, config?.dsId, config?.status.scannedAt]);
+  }, [config?.configured, config?.dsId, config?.status.scannedAt, reloadKey]);
 
   if (!config?.configured) {
     return (
@@ -63,6 +73,26 @@ export default function Dashboard() {
 
   const openFile = (p: string) => navigate('/read/' + p.split('/').map(encodeURIComponent).join('/'));
   const c = stats?.counts;
+  // 首次加载的三态：loading 骨架 / error 只显示上方错误条 / ready 才区分有数据与确实为空
+  const phase: 'loading' | 'error' | 'ready' = stats ? 'ready' : loadError ? 'error' : 'loading';
+  const loading = phase === 'loading';
+  const placeholder = loading ? (
+    <div className="space-y-2" aria-label="加载中">
+      <Skeleton className="h-4 w-4/5" />
+      <Skeleton className="h-4 w-3/5" />
+      <Skeleton className="h-4 w-2/3" />
+    </div>
+  ) : (
+    <div className="text-xs text-muted-foreground">加载失败</div>
+  );
+  const removePin = async (path: string) => {
+    try {
+      await api.pin(path, 'remove');
+      setPins((await api.pins()).pins);
+    } catch (e) {
+      notify('移除常用入口失败：' + errorMessage(e), { kind: 'error' });
+    }
+  };
 
   return (
     <div className="max-w-5xl mx-auto py-6 px-4 space-y-6">
@@ -70,7 +100,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-lg font-semibold">知识库概览</h1>
           <div className="text-xs text-muted-foreground mt-0.5">
-            {config.baseDir} · {config.status.scanning ? '扫描中…' : stats ? `扫描于 ${new Date(stats.scannedAt).toLocaleString('zh-CN')}` : '等待扫描'}
+            {config.baseDir} · {config.status.scanning ? '扫描中…' : stats ? `扫描于 ${new Date(stats.scannedAt).toLocaleString('zh-CN')}` : loading ? '加载中…' : '等待扫描'}
             {config.status.watching ? ' · 自动监听已开启' : ' · 可手动重扫'}
           </div>
         </div>
@@ -78,11 +108,22 @@ export default function Dashboard() {
           variant="outline"
           size="sm"
           className="text-xs"
+          loading={scanning}
           onClick={() => rescan()}
         >
           <RefreshCw className="w-3.5 h-3.5" /> 重新扫描
         </Button>
       </div>
+
+      {loadError && (
+        <div className="text-xs rounded border border-destructive/40 bg-destructive/10 text-destructive p-3 flex items-center gap-2" role="alert">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span className="flex-1 break-all">概览数据加载失败：{loadError}</span>
+          <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => setReloadKey((k) => k + 1)}>
+            重试
+          </Button>
+        </div>
+      )}
 
       {(config.status.dirErrors.length > 0 || config.status.fileErrors.length > 0) && (
         <div className="text-xs rounded border border-warning/40 bg-warning-soft text-warning-foreground p-3 flex gap-2">
@@ -113,7 +154,7 @@ export default function Dashboard() {
             to={card.to}
             className="bg-card border border-border rounded-lg p-3 hover:border-primary/60 transition-colors"
           >
-            <div className="text-lg font-semibold stat-num">{card.value ?? '—'}</div>
+            {loading ? <Skeleton className="h-7 w-12" /> : <div className="text-lg font-semibold stat-num">{card.value ?? '—'}</div>}
             <div className="text-xs text-muted-foreground mt-1">{card.label}</div>
           </Link>
         ))}
@@ -123,7 +164,7 @@ export default function Dashboard() {
         {/* 目录分布 */}
         <section className="bg-card border border-border rounded-lg p-4">
           <h2 className="text-sm font-semibold mb-3">顶层目录分布</h2>
-          {stats && stats.distribution.length > 0 ? (
+          {phase !== 'ready' ? placeholder : stats && stats.distribution.length > 0 ? (
             <ul className="space-y-1.5">
               {stats.distribution.slice(0, 10).map((d) => (
                 <li key={d.dir}>
@@ -146,7 +187,7 @@ export default function Dashboard() {
         {/* 最近修改 */}
         <section className="bg-card border border-border rounded-lg p-4">
           <h2 className="text-sm font-semibold mb-3">最近修改</h2>
-          {stats && stats.recentModified.length > 0 ? (
+          {phase !== 'ready' ? placeholder : stats && stats.recentModified.length > 0 ? (
             <ul className="space-y-1">
               {stats.recentModified.slice(0, 8).map((f: FileEntry) => (
                 <li key={f.path}>
@@ -166,7 +207,7 @@ export default function Dashboard() {
         {/* 最近打开 */}
         <section className="bg-card border border-border rounded-lg p-4">
           <h2 className="text-sm font-semibold mb-3">最近打开</h2>
-          {recents.length > 0 ? (
+          {phase !== 'ready' ? placeholder : recents.length > 0 ? (
             <ul className="space-y-1">
               {recents.slice(0, 8).map((r) => (
                 <li key={r.path} className="flex items-center gap-2 text-sm py-0.5">
@@ -191,7 +232,7 @@ export default function Dashboard() {
         <section className="bg-card border border-border rounded-lg p-4">
           <h2 className="text-sm font-semibold mb-1">常用入口</h2>
           <p className="text-xs text-muted-foreground mb-3">在阅读页可将文档固定到这里</p>
-          {pins.length > 0 ? (
+          {phase !== 'ready' ? placeholder : pins.length > 0 ? (
             <ul className="space-y-1">
               {pins.map((p) => (
                 <li key={p.path} className="flex items-center gap-1 text-sm py-0.5">
@@ -205,10 +246,7 @@ export default function Dashboard() {
                   <button
                     className="p-1 rounded hover:bg-accent text-muted-foreground"
                     title="移除"
-                    onClick={async () => {
-                      await api.pin(p.path, 'remove');
-                      setPins((await api.pins()).pins);
-                    }}
+                    onClick={() => { void removePin(p.path); }}
                   >
                     <PinOff className="w-3.5 h-3.5" />
                   </button>
@@ -224,7 +262,7 @@ export default function Dashboard() {
       </div>
 
       {/* 主题与概念：优先用 .xuewen 加工数据与人工标签，退化到元数据映射 */}
-      {tags.length || derivedConcepts.length ? (
+      {phase !== 'ready' ? null : tags.length || derivedConcepts.length ? (
         <div className="grid md:grid-cols-2 gap-4">
           <section className="bg-card border border-border rounded-lg p-4">
             <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">

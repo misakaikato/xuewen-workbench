@@ -3,9 +3,9 @@
 import { app, BrowserWindow, clipboard } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = 7497;
@@ -21,7 +21,7 @@ const check = (name, cond, detail = '') => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const tmpObj = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-e2e-tree-'));
+const tmpObj = makeTmpDir('wb-e2e-tree-');
 const tmpData = path.join(tmpObj, 'data');
 const corpus = path.join(tmpObj, 'corpus');
 // 嵌套目录 + 足量文件让侧栏需要滚动
@@ -40,6 +40,7 @@ const j = async (url, init) => (await fetch(BASE + url, init)).json();
 const post = (url, body) => j(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 let win = null, server = null;
+atExit(() => server?.kill('SIGKILL'));
 const exec = async (js) => win.webContents.executeJavaScript(js, true);
 // 轮询直到页面里的 JS 求值为真（树渲染是异步的）
 const until = async (js, ms = 8000) => {

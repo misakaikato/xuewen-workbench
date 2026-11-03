@@ -3,13 +3,13 @@
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-search-location-'));
+const tmp = makeTmpDir('wb-search-location-');
 const corpus = path.join(tmp, 'corpus');
 fs.mkdirSync(corpus);
 const paragraphs = Array.from({ length: 42 }, (_, i) =>
@@ -21,6 +21,7 @@ const port = Number(process.env.E2E_LOCATION_PORT) || 7494;
 const base = `http://127.0.0.1:${port}`;
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 let server;
+atExit(() => server?.kill('SIGKILL'));
 let win;
 app.on('window-all-closed', () => {});
 const post = async (url, body) => {

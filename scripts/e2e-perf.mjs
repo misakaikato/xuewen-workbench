@@ -4,10 +4,10 @@
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = 7499;
@@ -180,6 +180,7 @@ const info = (s) => console.log('  ·', s);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let win = null, server = null, server8 = null;
+atExit(() => { server?.kill('SIGKILL'); server8?.kill('SIGKILL'); });
 const exec = async (js) => win.webContents.executeJavaScript(js, true);
 const until = async (js, ms = 20000) => {
   for (let i = 0; i < ms / 100; i++) {
@@ -240,7 +241,7 @@ async function dragSelect(x, y, steps, dx, dy) {
 
 async function main() {
   const onlyE8 = process.env.WB_ONLY_E8 === '1';
-  const tmpObj = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-e2e-perf-'));
+  const tmpObj = makeTmpDir('wb-e2e-perf-');
   const tmpData = path.join(tmpObj, 'data');
   const corpus = path.join(tmpObj, 'corpus');
   const corpusBig = path.join(tmpObj, 'corpus-big');

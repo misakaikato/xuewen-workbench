@@ -1,13 +1,13 @@
 // B2：反馈基础件测试（node 可跑，不依赖 DOM）——notify 订阅表的行为。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { makeTmpDir } from './tmpdirs.mjs';
 
 // notify 是 TS 模块，先编译到临时目录再 import（不引新依赖，esbuild 已随 vite 存在）
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-feedback-'));
+const tmp = makeTmpDir('wb-feedback-');
 const outfile = path.join(tmp, 'notify.mjs');
 await build({
   entryPoints: [path.resolve('src/lib/notify.ts')],

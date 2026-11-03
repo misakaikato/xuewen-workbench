@@ -1,17 +1,17 @@
 // G2/G3（反馈第 4 批·上）：扫描异步化的一致性与不阻塞验证。
 // - G2：旧同步扫描（git show main:server/scanner.js，落在临时目录，不留仓库）与
-//   新 scanTree / scanTreeAsync 的结果深比较必须完全相等（现有语料 + 临时造 5000 文件语料）。
+//   新 scanTreeAsync 的结果深比较必须完全相等（现有语料 + 临时造 5000 文件语料）。
 // - G3：异步扫描 5000 文件期间，10ms 计时器回调最大延迟 ≤ 100ms（事件循环不再被阻塞）；
 //   scanned 单调递增，最终等于文件总数。
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { makeTmpDir } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-scan-async-'));
+const tmp = makeTmpDir('wb-scan-async-');
 
 let pass = 0;
 let fail = 0;
@@ -33,7 +33,7 @@ fs.writeFileSync(path.join(oldDir, 'scanner.js'), execFileSync('git', ['-C', ROO
 fs.writeFileSync(path.join(oldDir, 'lagWatch.js'), execFileSync('git', ['-C', ROOT, 'show', 'main:server/lagWatch.js']));
 fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(oldDir, 'node_modules'), 'dir');
 const oldScanner = await import(pathToFileURL(path.join(oldDir, 'scanner.js')).href);
-const { scanTree, scanTreeAsync } = await import(pathToFileURL(path.join(ROOT, 'server', 'scanner.js')).href);
+const { scanTreeAsync } = await import(pathToFileURL(path.join(ROOT, 'server', 'scanner.js')).href);
 
 // ---------- 临时语料：5000 文件、多层目录、隐藏文件、旁注、不支持的扩展名、空目录 ----------
 function makeCorpus() {
@@ -83,16 +83,9 @@ for (const showMetaFiles of [false, true]) {
     ['仓库语料 test-data/ds-a', path.join(ROOT, 'test-data', 'ds-a')],
   ]) {
     const oldResult = oldScanner.scanTree(target, { showMetaFiles });
-    const newSync = scanTree(target, { showMetaFiles });
     const newAsync = await scanTreeAsync(target, { showMetaFiles });
-    check(`${label} showMetaFiles=${showMetaFiles}：新同步 == 旧同步`, () => {
-      assert.deepStrictEqual(newSync, oldResult);
-    });
     check(`${label} showMetaFiles=${showMetaFiles}：新异步 == 旧同步`, () => {
       assert.deepStrictEqual(newAsync, oldResult);
-    });
-    check(`${label} showMetaFiles=${showMetaFiles}：异步结果与同步互相一致`, () => {
-      assert.deepStrictEqual(newAsync, newSync);
     });
   }
 }

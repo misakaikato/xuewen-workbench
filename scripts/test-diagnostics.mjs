@@ -1,11 +1,11 @@
 // 诊断基础设施回归：日志轮转、行格式、卡顿看门狗、异常事件记录与诊断包导出。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { makeTmpDir } from './tmpdirs.mjs';
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-diag-'));
+const tmp = makeTmpDir('wb-diag-');
 let checks = 0;
 function test(name, fn) {
   return Promise.resolve(fn()).then(() => { checks++; console.log('PASS', name); });

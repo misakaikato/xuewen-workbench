@@ -1,6 +1,11 @@
-// 设置页区块：导入 AI 产出的 JSONL 元数据（预览 → 确认 → 只写 <文件名>.meta.json 旁注，不修改文档本身）
+// 设置页区块：导入 AI 产出的 JSONL 元数据（预览 → 确认 → 只写 <文件名>.meta.json 旁注，不修改文档本身）。
+// 写入要等重扫与索引完成才返回：按钮转圈，超过 1.5 秒换成「正在更新索引…」；失败经 notify 提示。
 import { useState } from 'react';
 import { api } from '@/lib/api';
+import { errorMessage, notify } from '@/lib/notify';
+import { refreshTreeAfterWrite } from '@/lib/entryOps';
+import { WRITE_SLOW_MS, WRITE_SLOW_TEXT } from '@/lib/writeOp';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import type { MetaImportItem, MetaImportResponse } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -15,6 +20,9 @@ import {
 import { useApp } from '@/store/app-context';
 
 const ACTION_LABEL: Record<MetaImportItem['action'], string> = { create: '新建', update: '更新', skip: '跳过' };
+
+// 服务端异常消息自带「导入失败: 」前缀，提示时换成本地动作名
+const failText = (action: string, e: unknown) => `${action}失败：${errorMessage(e).replace(/^导入失败: /, '')}`;
 
 const isChange = (v: unknown): v is { from: unknown; to: unknown } =>
   !!v && typeof v === 'object' && 'from' in v && 'to' in v;
@@ -32,14 +40,14 @@ function describeFields(it: MetaImportItem): string {
 }
 
 export default function MetaImport() {
-  const { dsId, refreshTree } = useApp();
+  const { dsId } = useApp();
   const [text, setText] = useState('');
   const [overwrite, setOverwrite] = useState(false);
   const [preview, setPreview] = useState<MetaImportResponse | null>(null);
   const [applied, setApplied] = useState<MetaImportResponse | null>(null);
   const [dirty, setDirty] = useState(false); // 文本或覆盖开关变化后预览失效
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<'preview' | 'apply' | null>(null);
+  const slow = useDelayedFlag(busy === 'apply', WRITE_SLOW_MS);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const onText = (v: string) => {
@@ -52,32 +60,30 @@ export default function MetaImport() {
   };
 
   async function runPreview() {
-    setBusy(true);
-    setError('');
+    setBusy('preview');
     try {
       const r = await api.importMeta({ dsId, jsonl: text, mode: 'preview', overwrite });
       setPreview(r);
       setApplied(null);
       setDirty(false);
     } catch (e) {
-      setError((e as Error).message);
+      notify(failText('预览', e), { kind: 'error' });
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   async function runApply() {
-    setBusy(true);
-    setError('');
+    setBusy('apply');
     try {
       const r = await api.importMeta({ dsId, jsonl: text, mode: 'apply', overwrite });
       setApplied(r);
       setDirty(true); // 导入后当前预览不再反映磁盘状态
-      await refreshTree();
+      await refreshTreeAfterWrite();
     } catch (e) {
-      setError((e as Error).message);
+      notify(failText('导入', e), { kind: 'error' });
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -117,8 +123,10 @@ export default function MetaImport() {
           覆盖已有元数据（只合并提供的字段，id 不变）
         </label>
         <div className="flex items-center gap-3 flex-wrap">
-          <Button size="sm" variant="outline" onClick={runPreview} disabled={busy || !text.trim()}>预览</Button>
-          <Button size="sm" disabled={!canApply || busy} onClick={() => setConfirmOpen(true)}>确认导入</Button>
+          <Button size="sm" variant="outline" onClick={runPreview} loading={busy === 'preview'} disabled={busy !== null || !text.trim()}>预览</Button>
+          <Button size="sm" loading={busy === 'apply'} disabled={!canApply || busy !== null} onClick={() => setConfirmOpen(true)}>
+            {busy === 'apply' && slow ? WRITE_SLOW_TEXT : '确认导入'}
+          </Button>
           {s && (
             <span className="text-xs text-muted-foreground">
               共 {s.lines} 行：有效 {s.valid}，错误 {s.errors}；新建 {s.create}，更新 {s.update}，跳过 {s.skip}
@@ -127,7 +135,6 @@ export default function MetaImport() {
           )}
           {preview && dirty && <span className="text-xs text-warning">内容已变化，请重新预览</span>}
         </div>
-        {error && <p className="text-xs text-destructive break-all" role="alert">{error}</p>}
         {applied && (
           <p className="text-xs text-success">
             已写入 {applied.summary.written ?? 0} 个旁注（新建 {applied.summary.create}，更新 {applied.summary.update}），错误 {applied.summary.errors} 个。

@@ -17,6 +17,7 @@ import { detectLineSeparator } from '@/components/editor/lineSeparator';
 import { FormatToolbar } from '@/components/editor/FormatToolbar';
 import { pushDocLinks } from '@/components/editor/autoLinks';
 import { whenIndexSettled } from '@/lib/indexReady';
+import { errorMessage, notify } from '@/lib/notify';
 import type { FilePayload, FileEntry } from '@/lib/types';
 import { ReadOnlyDoc } from '@/components/ReadOnlyDoc';
 import { docHeadings, scrollDocToPos } from '@/components/editor/readDocHelpers';
@@ -49,6 +50,10 @@ import {
 } from 'lucide-react';
 
 type EditSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
+
+// Word 首次打开要在服务端转换，加载超过 1.5 秒时说明原因
+const WORD_EXT = /\.docx?$/i;
+const WORD_SLOW_TEXT = '正在转换 Word 文档，首次打开较慢…';
 
 // TXT 原位编辑主题：排版完全跟随阅读偏好（--rd-*），高度随内容增长、页面滚动，
 // 与阅读态的纯文本渲染零跳变（阅读态 div 与编辑态 CM 用同一组变量）
@@ -239,7 +244,7 @@ export default function Read() {
     window.addEventListener('mouseup', onUp);
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, []);
-  useEffect(() => { try { localStorage.setItem('wb.read.aiWidth', String(Math.round(aiWidth))); } catch { /* */ } }, [aiWidth]);
+  useEffect(() => { try { localStorage.setItem('wb.read.aiWidth', String(Math.round(aiWidth))); } catch { /* 隐私模式/配额：宽度只在本次会话生效 */ } }, [aiWidth]);
   const [aiQuote, setAiQuote] = useState<string | null>(null);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState('');
@@ -454,7 +459,7 @@ export default function Read() {
           baseMtimeRef.current = f.mtimeMs;
           return;
         }
-        api.touchRecent(relPath).catch(() => {});
+        api.touchRecent(relPath).catch(() => {}); // 最近记录只影响概览页列表，写失败不打扰阅读
         const [names, bl, pins, linksDoc] = await Promise.all([
           api.refNames().catch(() => null),
           api.backlinks(relPath).catch(() => ({ backlinks: [] })),
@@ -471,13 +476,11 @@ export default function Read() {
         if (linksDoc && linksDoc.dsId === dsId) {
           if (linksDoc.ready) setDocLinks(linksDoc.links);
           else {
-            // 索引尚在构建：稍后重拉一次
-            setTimeout(() => {
-              if (dead) return;
-              api.linksDoc(relPath).then((r) => {
-                if (!dead && r.dsId === dsId && r.ready) setDocLinks(r.links);
-              }).catch(() => {});
-            }, 1500);
+            // 索引尚在构建：等全局索引就绪信号后再取一次（与 rePullLinks 同口径，不再固定延时重试）
+            await whenIndexSettled();
+            if (dead) return;
+            const r = await api.linksDoc(relPath).catch(() => null); // 链接是正文的附加装饰：取不到时正文照常显示
+            if (!dead && r && r.dsId === dsId && r.ready) setDocLinks(r.links);
           }
         }
       })
@@ -509,9 +512,9 @@ export default function Read() {
             setFile(nf);
             setLineSep(detectLineSeparator(nf.content || ''));
           })
-          .catch(() => {});
+          .catch(() => {}); // 外部改动的静默刷新：失败时保留当前内容，下次重扫再试
       })
-      .catch(() => {});
+      .catch(() => {}); // 同上
 
   }, [config?.status.scannedAt, dsId, relPath]);
 
@@ -897,7 +900,7 @@ export default function Read() {
   useEffect(() => {
     if (!noteOpen) return;
     const t = setTimeout(() => {
-      try { localStorage.setItem('wb:note-draft:' + relPath, noteText); setNoteDraftSaved(true); } catch { /* 忽略 */ }
+      try { localStorage.setItem('wb:note-draft:' + relPath, noteText); setNoteDraftSaved(true); } catch { /* 存不了草稿时不显示「草稿已存」，输入框内容仍在 */ }
     }, 400);
     return () => clearTimeout(t);
   }, [noteOpen, noteText, relPath]);
@@ -908,10 +911,10 @@ export default function Read() {
     try {
       const r = await api.notesAppend({ sourcePath: relPath, quote: sel.text, note: noteText });
       setNoteOpen(false); setNoteText(''); setSel(null); window.getSelection()?.removeAllRanges();
-      try { localStorage.removeItem('wb:note-draft:' + relPath); } catch { /* 忽略 */ }
+      try { localStorage.removeItem('wb:note-draft:' + relPath); } catch { /* 草稿清不掉只会在下次打开时多一份旧草稿 */ }
       setNoteDraftSaved(false);
       // 重新拉取本文笔记，下划线与计数立即更新（不再等切换文档）
-      api.notesFor(relPath).then((x) => setDocNotes(x.notes || [])).catch(() => {});
+      api.notesFor(relPath).then((x) => setDocNotes(x.notes || [])).catch(() => {}); // 笔记已保存，只是标记列表刷新失败：下次打开再取
       setResumeHint(`已写入阅读笔记：${r.path}`);
       window.setTimeout(() => setResumeHint(null), 5000);
     } catch (err) {
@@ -921,8 +924,12 @@ export default function Read() {
   }, [sel, relPath, noteText]);
 
   const togglePin = useCallback(async () => {
-    await api.pin(relPath, pinned ? 'remove' : 'add');
-    setPinned(!pinned);
+    try {
+      await api.pin(relPath, pinned ? 'remove' : 'add');
+      setPinned(!pinned);
+    } catch (e) {
+      notify((pinned ? '取消固定失败：' : '固定失败：') + errorMessage(e), { kind: 'error' });
+    }
   }, [pinned, relPath]);
 
   // TXT 原位编辑扩展：行分隔符锁定 + 基础扩展（无行号/折叠）+ 阅读排版主题
@@ -1006,7 +1013,7 @@ export default function Read() {
                 }`}
               >
                 {saveState === 'dirty' && '未保存'}
-                {saveState === 'saving' && '保存中…'}
+                {saveState === 'saving' && <><Loader2 className="inline w-3 h-3 mr-1 align-[-2px] animate-spin" />保存中…</>}
                 {saveState === 'saved' && '已保存'}
                 {saveState === 'error' && '保存失败'}
                 {saveState === 'clean' && '编辑中'}
@@ -1015,6 +1022,7 @@ export default function Read() {
                 variant="outline"
                 size="sm"
                 className="text-xs shrink-0"
+                loading={saveState === 'saving'}
                 disabled={!dirty}
                 onClick={() => doSave()}
                 title="Ctrl+S"
@@ -1262,7 +1270,7 @@ export default function Read() {
                 </Button>
               </PageError>
             ) : !file ? (
-              <PageLoading />
+              WORD_EXT.test(relPath) ? <PageLoading slowText={WORD_SLOW_TEXT} slowAfterMs={1500} /> : <PageLoading />
             ) : (
               <>
               {file.type === 'markdown' && (
@@ -1310,9 +1318,12 @@ export default function Read() {
                   onOpenNote={onOpenNoteHref}
                   onOpenTarget={onTxtOpenTarget}
                   onCandidates={onTxtCandidates}
+                  onContentReady={onWordReady}
                 />
               ))}
-            {file.type === 'json' && <JsonViewer key={relPath} content={file.content || ''} highlightTerm={highlightTerm || hitText || findQ} />}
+            {file.type === 'json' && (
+              <JsonViewer key={relPath} content={file.content || ''} highlightTerm={highlightTerm || hitText || findQ} onContentReady={onWordReady} />
+            )}
             {file.type === 'html' &&
               (editing ? (
                 <CodeMirrorEditor

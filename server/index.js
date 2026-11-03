@@ -471,7 +471,7 @@ app.get('/api/ui-settings', (req, res) => {
   res.json(getUiSettings());
 });
 
-app.put('/api/ui-settings', (req, res) => {
+app.put('/api/ui-settings', async (req, res) => {
   const { theme, autoUpdate, notesDir, showMetaFiles } = req.body || {};
   const patch = {};
   if (theme !== undefined) {
@@ -500,12 +500,17 @@ app.put('/api/ui-settings', (req, res) => {
     return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate / notesDir）' });
   }
   const next = saveUiSettings(patch);
-  // showMetaFiles 变化：同步到各库 scanner 并重扫，让文件树立即反映
+  // showMetaFiles 变化：同步到各库 scanner 并重扫，与其他写操作一样等到重扫与索引完成才返回，
+  // 前端据此提示「已显示」；重扫失败如实返回（设置本身已保存）
   if (showMetaFiles !== undefined) {
     for (const lib of libs.values()) {
       lib.scanner.showMetaFiles = !!next.showMetaFiles;
     }
-    Promise.all([...libs.values()].map((l) => l.rescanAndIndex().catch(() => {}))).catch(() => {});
+    try {
+      await Promise.all([...libs.values()].map((l) => l.rescanAndIndex()));
+    } catch (e) {
+      return res.status(500).json({ error: '设置已保存，但重新扫描失败: ' + e.message });
+    }
   }
   res.json({ ok: true, ...next });
 });
@@ -1058,7 +1063,7 @@ app.post('/api/file/duplicate', async (req, res) => {
     const dstAbs = path.join(dstDirAbs, newName);
 
     if (isDir) {
-      fs.cpSync(srcAbs, dstAbs, { recursive: true });
+      await fs.promises.cp(srcAbs, dstAbs, { recursive: true }); // 异步复制：大目录不阻塞事件循环
       // 目录内所有旁注重生成 id
       const walk = (d) => {
         for (const e of fs.readdirSync(d, { withFileTypes: true })) {

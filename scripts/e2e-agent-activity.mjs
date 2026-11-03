@@ -4,15 +4,16 @@
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-agent-activity-'));
+const tmp = makeTmpDir('wb-agent-activity-');
 const port = 7495;
 const base = `http://127.0.0.1:${port}`;
 let server, win, passed = 0;
+atExit(() => server?.kill('SIGKILL'));
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 app.on('window-all-closed', () => {});
 const exec = (js) => win.webContents.executeJavaScript(js, true);

@@ -3,9 +3,10 @@
 // 粗体/链接/表格，纯文本目标得到无语法符号的正文。
 // 编辑实例不挂本扩展：编辑器里复制源码是本色。
 // unified 管线按需加载（unified/remark 系体积可观，不值得常驻）：
-// 文档挂载后空闲时预热；复制时未就绪则交回 CM 默认行为（复制源文纯文本）。
+// 文档挂载后空闲时预热；复制时未就绪则交回 CM 默认行为（复制源文纯文本），提示一次并重试加载。
 import { EditorView } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
+import { notify } from '@/lib/notify';
 
 // 最小结构类型：unified 链式泛型随插件变化，这里只声明复制路径用到的 processSync
 type MdProcessor = { processSync: (doc: string) => { toString(): string } };
@@ -41,6 +42,7 @@ function loadProcessor(): Promise<MdProcessor> {
 // 挂载后空闲预热（requestIdleCallback 不可用时退 1.5s 定时）
 export function scheduleCopyRenderWarmup(): void {
   if (processorPromise) return;
+  // 预热失败不打扰：复制时会提示已退回纯文本，并再次尝试加载
   const start = () => { loadProcessor().catch(() => {}); };
   if (typeof requestIdleCallback === 'function') requestIdleCallback(start, { timeout: 3000 });
   else setTimeout(start, 1500);
@@ -88,15 +90,26 @@ function normalizeText(s: string): string {
     .trim();
 }
 
+// 退回纯文本时说明原因（同一 id，连续复制不堆叠）
+function notifyPlain(reason: string) {
+  notify(`已复制为纯文本（${reason}）`, { id: 'copy-as-rendered', kind: 'info' });
+}
+
 function writeRendered(event: ClipboardEvent, view: EditorView): boolean {
   const src = selectionSource(view);
+  if (!src || !event.clipboardData) return false;
   // 管线未就绪时不拦截：CM 默认复制源文，即纯文本
-  if (!src || !processor || !event.clipboardData) return false;
+  if (!processor) {
+    notifyPlain('格式渲染尚未就绪，稍后再试可保留格式');
+    loadProcessor().catch(() => {}); // 加载失败时下次复制同样提示并再试
+    return false;
+  }
   let html: string;
   try {
     html = String(processor.processSync(src));
   } catch {
-    return false; // 解析异常（极端片段）回退 CM 默认复制
+    notifyPlain('这段内容无法按格式渲染'); // 解析异常（极端片段）回退 CM 默认复制
+    return false;
   }
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const text = normalizeText(domToText(doc.body));

@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { register } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { makeTmpDir } from './tmpdirs.mjs';
 
 const execFileP = promisify(execFile);
 
@@ -24,7 +24,7 @@ let checks = 0;
 function test(name, fn) { return Promise.resolve(fn()).then(() => { checks++; console.log('PASS', name); }); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-macinst-'));
+const tmp = makeTmpDir('wb-macinst-');
 const BUNDLE_ID = 'local.mayu.testapp';
 const VERSION = '9.9.9';
 let dmgPath = null;

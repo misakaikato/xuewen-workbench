@@ -5,7 +5,7 @@ import { api } from '@/lib/api';
 import type { AgentStatus, AgentMessage } from '@/lib/api';
 import type { TreeNode } from '@/lib/types';
 import { readAgentStream, streamFailure } from '@/lib/agentStream';
-import { notify } from '@/lib/notify';
+import { errorMessage, notify } from '@/lib/notify';
 import { useApp } from '@/store/app-context';
 import { usePolling } from '@/hooks/usePolling';
 import { useDelayedFlag } from '@/hooks/useDelayedFlag';
@@ -144,7 +144,7 @@ export default function AgentChat() {
   const aiRef = useRef(-1);
 
   const refresh = useCallback(async () => {
-    try { const st = await api.agentStatus(); setStatus(st); setConversations(st.conversations || []); } catch { /* */ }
+    try { const st = await api.agentStatus(); setStatus(st); setConversations(st.conversations || []); } catch { /* 状态随轮询再取：失败时保留上次的会话列表 */ }
   }, []);
   const [conversations, setConversations] = useState<Conv[]>([]);
   const prevBusyRef = useRef<Map<string, boolean>>(new Map());
@@ -196,7 +196,11 @@ export default function AgentChat() {
       setMsgs(mapped);
       setUsage(mapped.filter((m) => m.usage).pop()?.usage || null);
       requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; });
-    }).catch(() => { if (!dead && !streamRef.current) setMsgs([]); })
+    }).catch((e) => {
+      if (dead || streamRef.current) return;
+      setMsgs([]);
+      notify('加载对话失败：' + errorMessage(e), { kind: 'error' });
+    })
       .finally(() => { if (!dead) setLoadingConv(false); });
     return () => { dead = true; };
   }, [active]);
@@ -221,7 +225,7 @@ export default function AgentChat() {
   // 宽度持久化（防抖落盘）
   useEffect(() => {
     const t = setTimeout(() => {
-      try { localStorage.setItem('wb.agent.sidebar.w', String(Math.round(sidebarW))); } catch { /* 忽略 */ }
+      try { localStorage.setItem('wb.agent.sidebar.w', String(Math.round(sidebarW))); } catch { /* 隐私模式/配额：宽度只在本次会话生效 */ }
     }, 200);
     return () => clearTimeout(t);
   }, [sidebarW]);
@@ -253,16 +257,23 @@ export default function AgentChat() {
   const newConv = async () => { const c = await api.agentNewSession(); await refresh(); openConv(c.id); setBlocks(initialBlocks()); };
   const del = async (id: string) => { if (!window.confirm('删除这个对话？')) return; await api.agentDeleteSession(id); if (active === id) openConv(null); refresh(); };
   const fork = async (msgIndex: number) => { const c = await api.agentFork(active!, msgIndex); await refresh(); openConv(c.id); };
-  const doExport = () => { if (active) window.open(api.agentExport(active), '_blank'); };
+  const doExport = () => {
+    if (!active) return;
+    window.open(api.agentExport(active), '_blank');
+    notify('已在浏览器中打开导出页');
+  };
+  // 会话与文件夹操作失败的提示（同一动作同一 id：批量拖放时不堆叠）
+  const reportFail = (what: string) => (e: unknown) =>
+    notify(`${what}失败：${errorMessage(e)}`, { kind: 'error', id: 'agent-op-' + what });
 
   // 消息编辑/删除
   const editMsg = async (idx: number, text: string) => {
     setMsgs((m) => m.map((x, i) => (i === idx ? { ...x, text, editing: false } : x)));
-    if (active) await api.agentEditMessage(active, idx, text).catch(() => {});
+    if (active) await api.agentEditMessage(active, idx, text).catch(reportFail('保存消息修改'));
   };
   const deleteMsg = async (idx: number) => {
     setMsgs((m) => m.filter((_, i) => i !== idx));
-    if (active) await api.agentDeleteMessage(active, idx).catch(() => {});
+    if (active) await api.agentDeleteMessage(active, idx).catch(reportFail('删除消息'));
   };
 
   // 刷新（重新生成）：截断消息到 fromIndex，重发用户输入（利用 pi 分支语义）
@@ -286,7 +297,7 @@ export default function AgentChat() {
     setMsgs(kept);
     // 删掉投影中后续消息（服务端）
     for (let i = msgs.length - 1; i > userIdx - 1; i--) {
-      await api.agentDeleteMessage(active, i).catch(() => {});
+      await api.agentDeleteMessage(active, i).catch(reportFail('清理旧回复'));
     }
     // 重新发送
     setBlocks([{ id: 'b_' + Date.now(), type: 'text', value: userText }]);
@@ -379,7 +390,7 @@ export default function AgentChat() {
       setBusy(false); streamRef.current = false; abortRef.current = null; refresh();
     }
   };
-  const stop = () => { abortRef.current?.abort(); if (active) api.agentAbort(active).catch(() => {}); };
+  const stop = () => { abortRef.current?.abort(); if (active) api.agentAbort(active).catch(reportFail('停止生成')); };
   // 引用消息内容：插入引用 chip（可多个、可与文字交替）
   const quoteMsg = (i: number) => {
     const m = msgs[i];
@@ -444,10 +455,10 @@ export default function AgentChat() {
         onClick={(e) => {
           e.stopPropagation();
           const folders = status?.folders || [];
-          if (!folders.length) { alert('还没有文件夹，先新建一个'); return; }
+          if (!folders.length) { notify('还没有文件夹，先新建一个'); return; }
           void askFolder('移动到文件夹', folders, c.folderId || null).then((target) => {
             if (target === undefined) return; // 取消
-            api.convMove(c.id, target).then(refresh).catch(() => {});
+            api.convMove(c.id, target).then(refresh).catch(reportFail('移动对话'));
           });
         }}
       >
@@ -474,7 +485,7 @@ export default function AgentChat() {
               </Button>
               <Button variant="outline" size="icon" className="h-8 w-8 rounded-lg shrink-0" title="新建文件夹" onClick={async () => {
                 const name = await askInput('新建文件夹', '');
-                if (name) await api.folderCreate(name).then(refresh).catch((e) => alert((e as Error).message));
+                if (name) await api.folderCreate(name).then(refresh).catch(reportFail('新建文件夹'));
               }}>
                 <FolderPlus className="w-4 h-4" />
               </Button>
@@ -500,9 +511,9 @@ export default function AgentChat() {
                         e.preventDefault();
                         setDragOverFolder(null);
                         let ids: string[] = [];
-                        try { ids = JSON.parse(e.dataTransfer.getData('application/x-agent-conv')); } catch { /* 忽略 */ }
+                        try { ids = JSON.parse(e.dataTransfer.getData('application/x-agent-conv')); } catch { /* 忽略坏载荷：不是本页拖出的对话 */ }
                         if (!ids.length) return;
-                        for (const cid of ids) await api.convMove(cid, f.id).catch(() => {});
+                        for (const cid of ids) await api.convMove(cid, f.id).catch(reportFail('移动对话'));
                         setSelConvs(new Set());
                         refresh();
                       }}
@@ -514,12 +525,12 @@ export default function AgentChat() {
                       <button className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-background shrink-0" title="重命名" onClick={(e) => {
                         e.stopPropagation();
                         void askInput('重命名文件夹', f.name).then((name) => {
-                          if (name) api.folderRename(f.id, name).then(refresh).catch(() => {});
+                          if (name) api.folderRename(f.id, name).then(refresh).catch(reportFail('重命名文件夹'));
                         });
                       }}><Pencil className="w-2.5 h-2.5" /></button>
                       <button className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-background shrink-0" title="删除文件夹" onClick={(e) => {
                         e.stopPropagation();
-                        if (window.confirm(`删除文件夹「${f.name}」？里面的对话会回到根目录`)) api.folderDelete(f.id).then(refresh).catch(() => {});
+                        if (window.confirm(`删除文件夹「${f.name}」？里面的对话会回到根目录`)) api.folderDelete(f.id).then(refresh).catch(reportFail('删除文件夹'));
                       }}><Trash className="w-2.5 h-2.5" /></button>
                     </div>
                     {isOpen && inFolder.map((c) => renderConvRow(c, 1))}
@@ -535,8 +546,8 @@ export default function AgentChat() {
                   if (!e.dataTransfer.types.includes('application/x-agent-conv')) return;
                   e.preventDefault();
                   let ids: string[] = [];
-                  try { ids = JSON.parse(e.dataTransfer.getData('application/x-agent-conv')); } catch { /* */ }
-                  for (const cid of ids) await api.convMove(cid, null).catch(() => {});
+                  try { ids = JSON.parse(e.dataTransfer.getData('application/x-agent-conv')); } catch { /* 忽略坏载荷：不是本页拖出的对话 */ }
+                  for (const cid of ids) await api.convMove(cid, null).catch(reportFail('移动对话'));
                   setSelConvs(new Set());
                   refresh();
                 }}

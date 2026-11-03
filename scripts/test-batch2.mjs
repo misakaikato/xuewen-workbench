@@ -2,15 +2,15 @@
 // 不读写真实数据目录。运行：node scripts/test-batch2.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-batch2-'));
+const tmp = makeTmpDir('wb-batch2-');
 process.env.WORKBENCH_DATA_DIR = path.join(tmp, 'data');
 process.env.WORKBENCH_RAG_EMBED = 'mock';
 
@@ -343,6 +343,7 @@ function spawnBackend(dataDir, port, extraEnv = {}) {
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   proc.stderr.on('data', (d) => process.stderr.write('[srv] ' + d));
+  atExit(() => proc.kill('SIGKILL'));
   return proc;
 }
 async function waitReady(base) {

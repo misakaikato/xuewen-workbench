@@ -31,9 +31,10 @@ import { FormatToolbar } from '@/components/editor/FormatToolbar';
 import { CorpusRefPopover, type CorpusRefRequest } from '@/components/CorpusRefPopover';
 import { detectLineSeparator } from '@/components/editor/lineSeparator';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
-import { Save, Undo2, AlertTriangle, X, CheckCircle2, Columns2, Eye, Code2, Wand2, Link2 } from 'lucide-react';
+import { Save, Undo2, AlertTriangle, X, CheckCircle2, Columns2, Eye, Code2, Wand2, Link2, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PageLoading, PageError } from '@/components/ui-states';
+import { notify } from '@/lib/notify';
 
 type SaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
 type Mode = 'live' | 'source' | 'preview' | 'split';
@@ -297,7 +298,7 @@ export default function Edit() {
             setRefNames(n.names);
             setCollections(n.collections);
           }
-        }).catch(() => {});
+        }).catch(() => {}); // 引用名清单只用于 [[ 补全与引用高亮：取不到时编辑照常
       })
       .catch((e) => !dead && setError(e.message));
     return () => {
@@ -494,6 +495,7 @@ export default function Edit() {
     try {
       decoded = decodeURIComponent(filePart);
     } catch {
+      notify('链接地址无效：' + filePart, { kind: 'error' });
       return;
     }
     const target = resolveDocTarget(docDirRef.current, decoded, baseDirRef.current);
@@ -622,7 +624,7 @@ export default function Edit() {
           }`}
         >
           {saveState === 'dirty' && '未保存'}
-          {saveState === 'saving' && '保存中…'}
+          {saveState === 'saving' && <><Loader2 className="inline w-3 h-3 mr-1 align-[-2px] animate-spin" />保存中…</>}
           {saveState === 'saved' && '已保存'}
           {saveState === 'error' && '保存失败'}
           {saveState === 'clean' && '无修改'}
@@ -673,6 +675,7 @@ export default function Edit() {
           variant="outline"
           size="sm"
           className="text-xs"
+          loading={saveState === 'saving'}
           disabled={!dirty}
           onClick={() => doSave(false)}
           title="Ctrl+S"

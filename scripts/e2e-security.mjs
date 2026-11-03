@@ -4,10 +4,10 @@
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import AdmZip from 'adm-zip';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.E2E_PORT) || 7602;
@@ -60,7 +60,8 @@ function makeMaliciousDocx() {
 
 let win = null;
 let server = null;
-const tmpObj = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-e2e-security-'));
+atExit(() => server?.kill('SIGKILL'));
+const tmpObj = makeTmpDir('wb-e2e-security-');
 const tmpData = path.join(tmpObj, 'data');
 const corpus = path.join(tmpObj, 'corpus');
 fs.mkdirSync(corpus, { recursive: true });

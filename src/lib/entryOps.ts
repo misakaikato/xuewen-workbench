@@ -1,9 +1,12 @@
-// 条目操作（重命名 / 移动 / 删除）的统一执行：对话框与 e2e 测试钩子共用。
+// 条目操作（重命名 / 移动 / 删除 / 副本）的统一执行：对话框、右键菜单、剪贴板与 e2e 测试钩子共用。
 // 重命名 / 移动前先 flush 打开中的编辑器（失败中止），成功后刷新目录树、
 // 迁移草稿键、跟随导航到新路径（wbFollow，编辑页据此只重绑路径不重置缓冲区）。
+// 反馈口径见 writeOp.ts：对话框里的操作由对话框显示忙碌态，副本走 runWriteOp 的进行中 toast。
 import { api } from './api';
 import { flushOpenEditor } from './openEditor';
 import { migrateDrafts } from './drafts';
+import { errorMessage, notify } from './notify';
+import { runWriteOp } from './writeOp';
 
 export interface EntryAction {
   type: 'rename' | 'move' | 'delete';
@@ -43,7 +46,7 @@ function followNavigation(action: EntryAction, newPath: string | null) {
   try {
     cur = decodeURIComponent(loc.pathname.slice(m[0].length));
   } catch {
-    return;
+    return; // 当前地址不是合法编码的文档路径：没有可跟随的文档
   }
   const affected = cur === action.path || (action.isDir && cur.startsWith(action.path + '/'));
   if (!affected) return;
@@ -55,7 +58,16 @@ function followNavigation(action: EntryAction, newPath: string | null) {
   c.navigate('/' + m[1] + '/' + enc(next), { replace: true, state: { wbFollow: true } });
 }
 
-// 执行条目操作；成功返回 { newPath }（删除为 null），失败抛错（调用方在对话框中展示）
+// 写操作成功后刷新目录树；刷新失败时树与磁盘暂不一致，提示用户重扫（操作本身已成功，不回滚）
+export async function refreshTreeAfterWrite(): Promise<void> {
+  try {
+    await ctx?.refreshTree();
+  } catch (e) {
+    notify('目录树刷新失败：' + errorMessage(e) + '，可点顶栏的重新扫描', { kind: 'error' });
+  }
+}
+
+// 执行条目操作；成功返回 { newPath }（删除为 null），失败抛错（调用方负责提示）
 export async function runEntryAction(action: EntryAction): Promise<{ newPath: string | null }> {
   const dsId = ctx?.dsId ?? null;
   if (action.type === 'rename' || action.type === 'move') {
@@ -76,8 +88,22 @@ export async function runEntryAction(action: EntryAction): Promise<{ newPath: st
     await api.deleteEntry({ dsId, path: action.path });
     newPath = null;
   }
-  await ctx?.refreshTree().catch(() => {});
+  await refreshTreeAfterWrite();
   if (newPath !== null && dsId) migrateDrafts(dsId, action.path, newPath);
   followNavigation(action, newPath);
   return { newPath };
+}
+
+// 创建副本（targetDir 省略 = 原目录；指定 = 粘贴到该目录）：没有对话框，经进行中 toast 反馈
+export function runDuplicate(entry: Pick<EntryAction, 'path' | 'name'>, targetDir?: string) {
+  const dsId = ctx?.dsId ?? null;
+  const label = targetDir === undefined ? '创建副本' : '粘贴';
+  return runWriteOp(
+    { pending: `正在${label}「${entry.name}」…`, done: (r) => `已${label}：${r.path}`, fail: `${label}失败` },
+    async () => {
+      const r = await api.duplicateEntry({ dsId, path: entry.path, targetDir });
+      await refreshTreeAfterWrite();
+      return r;
+    }
+  );
 }

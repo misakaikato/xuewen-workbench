@@ -3,10 +3,10 @@
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.E2E_PORT) || 7496;
@@ -62,7 +62,8 @@ function listMd(dir) {
 
 let win = null;
 let server = null;
-const tmpObj = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-e2e-editor-'));
+atExit(() => server?.kill('SIGKILL'));
+const tmpObj = makeTmpDir('wb-e2e-editor-');
 const tmpData = path.join(tmpObj, 'data');
 const tmpCorpus = path.join(tmpObj, 'test-data');
 

@@ -8,7 +8,8 @@ import { DiagnosticsBanner } from './DiagnosticsBanner';
 import { BackgroundIndicator } from './BackgroundIndicator';
 import { FileTree } from './FileTree';
 import { setEntryContext } from '@/lib/entryOps';
-import { EmptyState } from './ui-states';
+import { errorMessage, notify } from '@/lib/notify';
+import { EmptyState, PageSkeleton } from './ui-states';
 import { CommandPalette } from './CommandPalette';
 import { QuickAgent } from './QuickAgent';
 import { Kbd } from '@/components/ui/kbd';
@@ -17,7 +18,7 @@ import {
 } from '@/components/ui/dialog';
 import {
   LayoutDashboard, RefreshCw, Settings, Database, PanelLeftClose, PanelLeftOpen, Search,
-  ChevronsUpDown, Check, Plus, FolderMinus, Bot } from 'lucide-react';
+  ChevronsUpDown, Check, Plus, FolderMinus, Bot, Loader2 } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -27,7 +28,7 @@ import {
 } from '@/components/ui/alert-dialog';
 
 export function Layout() {
-  const { config, libraries, tree, rescan, scanning, backend, dsId, refreshTree, activateLib, removeLib } = useApp();
+  const { config, libraries, tree, rescan, scanning, switchingLib, backend, dsId, refreshTree, activateLib, removeLib } = useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -122,7 +123,7 @@ export function Layout() {
       window.removeEventListener('mouseup', up);
       sideWRef.current = pending;
       setSideW(pending);
-      try { localStorage.setItem('wb.sidebar.w', String(Math.round(pending))); } catch { /* 忽略 */ }
+      try { localStorage.setItem('wb.sidebar.w', String(Math.round(pending))); } catch { /* 隐私模式/配额：宽度只在本次会话生效 */ }
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
@@ -153,11 +154,11 @@ export function Layout() {
         />
       </div>
       <div className="flex-1 min-h-0">
-        {tree ? (
+        {tree && !switchingLib ? (
           <FileTree tree={tree} filter={treeFilter} onFilterChange={setTreeFilter} />
-        ) : st?.scanning ? (
-          // 扫描中骨架屏：代替干巴巴的一行字
-          <div className="p-2 space-y-1.5" aria-label="正在扫描知识库">
+        ) : switchingLib || st?.scanning ? (
+          // 扫描中 / 切换知识库中的骨架屏：代替干巴巴的一行字，也不露出旧库的目录
+          <div className="p-2 space-y-1.5" aria-label={switchingLib ? '正在切换知识库' : '正在扫描知识库'}>
             <div className="h-6 rounded bg-sidebar-accent/70 animate-pulse w-3/5" />
             {Array.from({ length: 9 }, (_, i) => (
               <div key={i} className="h-7 rounded bg-sidebar-accent/60 animate-pulse" style={{ width: `${92 - (i % 4) * 14}%` }} />
@@ -209,7 +210,11 @@ export function Layout() {
             >
               <Database className="w-3.5 h-3.5 shrink-0" />
               <span className="truncate max-w-[120px] md:max-w-[240px]">{currentName}</span>
-              <ChevronsUpDown className="w-3 h-3 shrink-0 opacity-60" />
+              {switchingLib ? (
+                <Loader2 className="w-3 h-3 shrink-0 animate-spin" aria-label="正在切换知识库" />
+              ) : (
+                <ChevronsUpDown className="w-3 h-3 shrink-0 opacity-60" />
+              )}
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-96">
@@ -219,7 +224,7 @@ export function Layout() {
                 key={l.id}
                 onClick={() => {
                   if (l.id !== dsId) {
-                    activateLib(l.id).catch(() => {});
+                    activateLib(l.id).catch((e) => notify('切换知识库失败：' + errorMessage(e), { kind: 'error' }));
                     navigate('/');
                   }
                 }}
@@ -325,7 +330,8 @@ export function Layout() {
         <main className="flex-1 min-w-0 overflow-auto">
           {/* 路由过渡：按顶级 section key 重挂载，fade + 4px 上移；同路由内参数变化不触发 */}
           <div key={location.pathname.split('/')[1] ?? ''} className="animate-page-enter h-full">
-            <Outlet />
+            {/* 切换知识库期间不渲染页面（旧库数据不露出），新库 config 与目录树到位后再挂载 */}
+            {switchingLib ? <PageSkeleton /> : <Outlet />}
           </div>
         </main>
       </div>
@@ -376,7 +382,7 @@ export function Layout() {
               onClick={() => {
                 const id = dsId;
                 setConfirmRemove(false);
-                if (id) removeLib(id).catch(() => {});
+                if (id) removeLib(id).catch((e) => notify('移除知识库失败：' + errorMessage(e), { kind: 'error' }));
                 navigate('/');
               }}
             >

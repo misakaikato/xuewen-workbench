@@ -1,6 +1,6 @@
 // 扫描模块：递归发现目录与文件，符号链接循环保护，chokidar 监听 + 防抖重扫。
-// 逐项处理只有一份（createScanWalk 的帧栈驱动器）：同步 scanTree 与异步 scanTreeAsync
-// 只是两个驱动节奏不同的外壳，遍历顺序与结果完全一致（深度优先、按 readdir 顺序）。
+// 逐项处理在 createScanWalk 的帧栈驱动器里（深度优先、按 readdir 顺序），
+// scanTreeAsync 按时间片推进它，扫描期间不阻塞事件循环。
 import fs from 'node:fs';
 import path from 'node:path';
 import chokidar from 'chokidar';
@@ -174,7 +174,7 @@ function createScanWalk(baseDir, opts = {}) {
     }
   }
 
-  // 推进遍历：处理目录项直到栈空（done）或时间预算用尽。budgetMs 传 Infinity 即同步跑完。
+  // 推进遍历：处理目录项直到栈空（done）或时间预算用尽。
   function step(budgetMs) {
     const start = Date.now();
     for (;;) {
@@ -204,13 +204,6 @@ function createScanWalk(baseDir, opts = {}) {
   }
 
   return { step, finish };
-}
-
-// 同步扫描（与 scanTreeAsync 共用同一份逐项处理核心；当前没有调用方，保留作对照与测试）
-export function scanTree(baseDir, opts = {}) {
-  const walk = createScanWalk(baseDir, opts);
-  walk.step(Infinity); // Infinity 预算必定一次跑完
-  return walk.finish();
 }
 
 // 分片异步扫描：每遍历约 30ms 让出一次事件循环，扫描期间后端请求与轮询不被阻塞。

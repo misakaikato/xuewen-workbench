@@ -8,15 +8,15 @@
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.E2E_INDEX_PORT) || 7495;
 const BASE = `http://127.0.0.1:${PORT}`;
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-index-vis-'));
+const tmp = makeTmpDir('wb-index-vis-');
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0;
@@ -97,6 +97,7 @@ const TOTAL_FILES = MD_COUNT + DOCX_COUNT + 2;
 // ---------- 后端与窗口 ----------
 
 let server = null;
+atExit(() => server?.kill('SIGKILL'));
 let win = null;
 
 // 预置 config：后端启动即开始首扫 + 索引，窗口在 ready=false 期间进入

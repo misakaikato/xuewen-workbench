@@ -4,7 +4,7 @@
 // 行内徽标：草稿/元数据问题/近期修改/只读 Word（可开关）；被引用数（可开关）。
 // 文件行可拖拽：拖进编辑器落成完整文件名引用（见 Edit 页 drop 处理）。
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom';
 import type { TreeNode, FileEntry, Collection } from '@/lib/types';
 import {
   ChevronRight, ChevronDown, Folder, FolderOpen, FilePlus, FolderPlus,
@@ -19,7 +19,9 @@ import { useApp } from '@/store/app-context';
 import { CreateEntryDialog, type CreateKind, type CreateTarget } from './CreateEntryDialog';
 import { extIcon } from '@/lib/extIcon';
 import { api, type MetaIssue } from '@/lib/api';
-import { runEntryAction } from '@/lib/entryOps';
+import { refreshTreeAfterWrite, runDuplicate, runEntryAction } from '@/lib/entryOps';
+import { errorMessage } from '@/lib/notify';
+import { runWriteOp } from '@/lib/writeOp';
 import { useWhenIndexReady } from '@/hooks/useWhenIndexReady';
 import { ActionItems, type Entry } from './EntryMenu';
 
@@ -254,8 +256,6 @@ interface RowCtx {
   onToggle: (row: Row, e?: React.MouseEvent) => void;
   onCreate: OnCreate;
   onAction: OnAction;
-  dsId: string | null;
-  onDuplicated: (path: string) => void;
   /** 拖拽到目录行：把路径（们）移入该目录 */
   onDropInto: (dirPath: string, paths: string[]) => void;
 }
@@ -332,7 +332,7 @@ function RowView({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
       </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ActionItems entry={row.entry!} onAction={ctx.onAction} dsId={ctx.dsId} onDuplicated={ctx.onDuplicated} />
+        <ActionItems entry={row.entry!} onAction={ctx.onAction} />
       </ContextMenuContent>
       </ContextMenu>
     );
@@ -445,7 +445,7 @@ function DirRow({ row, idx, ctx }: { row: Row; idx: number; ctx: RowCtx }) {
       <ContextMenuItem onSelect={() => quickCreate('md')}><FilePlus />新建文档</ContextMenuItem>
       <ContextMenuItem onSelect={() => quickCreate('folder')}><FolderPlus />新建文件夹</ContextMenuItem>
       <ContextMenuSeparator />
-      <ActionItems entry={row.entry!} onAction={ctx.onAction} dsId={ctx.dsId} onDuplicated={ctx.onDuplicated} />
+      <ActionItems entry={row.entry!} onAction={ctx.onAction} />
     </ContextMenuContent>
     </ContextMenu>
   );
@@ -468,14 +468,15 @@ export function FileTree({
   const [searchParams] = useSearchParams();
   const currentDir = location.pathname === '/browse' ? searchParams.get('dir') || '' : null;
   const navigate = useNavigate();
-  const { refreshTree, dsId, config } = useApp();
+  const navType = useNavigationType();
+  const { dsId, config } = useApp();
   const [action, setAction] = useState<EntryAction | null>(null);
   const onActionDone = () => setAction(null);
   const [target, setTarget] = useState<CreateTarget | null>(null);
   const onCreate: OnCreate = (dir, kind) => setTarget({ dir, kind });
   const onCreated = async (p: string, kind: CreateKind) => {
     setTarget(null);
-    await refreshTree().catch(() => {});
+    await refreshTreeAfterWrite();
     if (kind === 'md') navigate('/edit/' + p.split('/').map(encodeURIComponent).join('/'));
   };
 
@@ -543,7 +544,7 @@ export function FileTree({
         const k = localStorage.key(i);
         if (k && k.startsWith(prefix)) s.add(k.slice(prefix.length));
       }
-    } catch { /* 忽略 */ }
+    } catch { /* localStorage 不可用（隐私模式）：没有草稿可标，徽标留空 */ }
     return s;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dsId, tree, currentPath, currentDir, filter]);
@@ -686,12 +687,18 @@ export function FileTree({
   const winRows = rows.slice(start, end);
 
   // ---- reveal：跟随当前文件/目录展开父链并滚到可见 ----
+  // 在目录树里（非过滤态）点开的文件不做 reveal：那一行此刻就在可见区域。路由提交比点击晚一拍
+  // （transition 渲染整页，几十毫秒起，机器忙或树大时更久），迟到的 reveal 按提交时的滚动位置判断，
+  // 会把用户在这段时间里滚开的目录又拽回去、卸载他正要操作的行。只认本次 PUSH 带的标记，
+  // 前进 / 后退回到同一条历史时仍正常 reveal。
   const revealedRef = useRef<string | null>(null);
   const [pendingScroll, setPendingScroll] = useState<string | null>(null);
   const revealKey = currentPath !== undefined ? 'f:' + currentPath : currentDir ? 'd:' + currentDir : null;
+  const openedFromTree = navType === 'PUSH' && (location.state as { wbFromTree?: boolean } | null)?.wbFromTree === true;
   useEffect(() => {
     if (!tree || !revealKey || revealedRef.current === revealKey) return;
     revealedRef.current = revealKey;
+    if (openedFromTree) return;
     const targetPath = revealKey.slice(2);
 
     // 集合视图下打开文件：保持集合模式不切回物理树——
@@ -743,30 +750,21 @@ export function FileTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingScroll, rows]);
 
-  // 剪贴板语义（树内）：Ctrl+C 复制 / Ctrl+X 剪切（半透明标记）/ Ctrl+V 粘贴（剪切=移动，复制=副本）
+  // 剪贴板语义（树内）：Ctrl+C 复制 / Ctrl+X 剪切（半透明标记）/ Ctrl+V 粘贴（剪切=移动，复制=副本）。
+  // 粘贴没有对话框：进行中、完成与失败都经 runWriteOp 的 toast 反馈
   const [clip, setClip] = useState<{ op: 'copy' | 'cut'; entry: Entry } | null>(null);
   const doPaste = async (targetDir: string) => {
     if (!clip) return;
     if (clip.op === 'cut') {
       if (dirOf(clip.entry.path) === targetDir) { setClip(null); return; }
-      try {
-        await runEntryAction({ ...clip.entry, type: 'move', targetDir });
-        setClip(null);
-      } catch (e) {
-        alert((e as Error).message);
-      }
+      const moved = await runWriteOp(
+        { pending: `正在移动「${clip.entry.name}」…`, done: (r) => `已移动到：${r.newPath}`, fail: '移动失败' },
+        () => runEntryAction({ ...clip.entry, type: 'move', targetDir })
+      );
+      if (moved) setClip(null);
     } else {
-      try {
-        await api.duplicateEntry({ dsId, path: clip.entry.path, targetDir });
-        await refreshTree().catch(() => {});
-        // 复制源保留，可连续粘贴
-      } catch (e) {
-        alert((e as Error).message);
-      }
+      await runDuplicate(clip.entry, targetDir); // 复制源保留，可连续粘贴
     }
-  };
-  const onDuplicated = async () => {
-    await refreshTree().catch(() => {});
   };
 
   // 全部展开/折叠
@@ -810,7 +808,6 @@ export function FileTree({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const anchorRef = useRef(-1);
   const [batchBusy, setBatchBusy] = useState(false);
-  const [batchFail, setBatchFail] = useState(0);
   const [confirmDel, setConfirmDel] = useState(false);
   const [moveAsk, setMoveAsk] = useState<string[] | null>(null);
   // 换库 / 切视图 / 过滤时清空选择（路径含义已变）
@@ -844,25 +841,33 @@ export function FileTree({
   };
   const isDescendant = (p: string, dir: string) => p === dir || p.startsWith(dir + '/');
 
-  // 批量执行：逐条复用 runEntryAction（flush / 刷新 / 草稿迁移 / 跟随导航全内置），失败计数
-  const runBatch = async (paths: string[], run: (p: string) => Promise<unknown>) => {
-    setBatchBusy(true);
-    setBatchFail(0);
-    let fail = 0;
-    for (const p of paths) {
-      try {
-        await run(p);
-      } catch {
-        fail++;
-      }
+  // 批量执行（多选移动 / 删除、拖放移动）：逐条复用 runEntryAction（flush / 刷新 / 草稿迁移 / 跟随导航全内置）。
+  // 没有对话框：整批一条进行中 toast；有失败时整批以错误收尾，列出失败数与首个原因
+  const runBatch = async (label: string, paths: string[], run: (p: string) => Promise<unknown>) => {
+    if (paths.length) {
+      setBatchBusy(true);
+      await runWriteOp(
+        { pending: `正在${label} ${paths.length} 项…`, done: () => `已${label} ${paths.length} 项`, fail: `${label}未全部完成` },
+        async () => {
+          const errors: string[] = [];
+          for (const p of paths) {
+            try {
+              await run(p);
+            } catch (e) {
+              errors.push(`${p}：${errorMessage(e)}`);
+            }
+          }
+          if (errors.length) throw new Error(`${errors.length} / ${paths.length} 项失败（${errors[0]}）`);
+        }
+      );
+      setBatchBusy(false);
     }
-    setBatchBusy(false);
-    setBatchFail(fail);
     setSelected(new Set());
     setConfirmDel(false);
   };
   const batchMove = (paths: string[], targetDir: string) =>
     runBatch(
+      '移动',
       paths.filter((p) => !isDescendant(targetDir, p) && dirOf(p) !== targetDir),
       (p) => {
         const { name, isDir } = entryOf(p);
@@ -873,7 +878,7 @@ export function FileTree({
       if (targetDir) applyOpen((s) => new Set([...s, targetDir]));
     });
   const batchDelete = (paths: string[]) =>
-    runBatch(paths, (p) => {
+    runBatch('删除', paths, (p) => {
       const { name, isDir } = entryOf(p);
       return runEntryAction({ type: 'delete', path: p, name, isDir });
     });
@@ -988,8 +993,13 @@ export function FileTree({
       return;
     }
     setSelected(new Set());
-    if (q) onFilterChange('');
-    navigate('/read/' + row.path.split('/').map(encodeURIComponent).join('/'));
+    const to = '/read/' + row.path.split('/').map(encodeURIComponent).join('/');
+    if (q) {
+      onFilterChange(''); // 平铺结果回到树视图后行位置会变：照常 reveal
+      navigate(to);
+    } else {
+      navigate(to, { state: { wbFromTree: true } }); // 行就在眼前：不 reveal（见上方 reveal 注释）
+    }
   };
 
   const ctx: RowCtx = {
@@ -1006,8 +1016,6 @@ export function FileTree({
     onToggle: toggleRow,
     onCreate,
     onAction: setAction,
-    dsId,
-    onDuplicated,
     onDropInto: (dirPath, paths) => batchMove(paths, dirPath),
   };
   const filtering = !!q;
@@ -1206,8 +1214,6 @@ export function FileTree({
               </button>
             </>
           )}
-          {batchBusy && <span className="text-muted-foreground">执行中…</span>}
-          {batchFail > 0 && <span className="text-destructive" title="部分条目操作失败（重名冲突 / 外部修改等）">{batchFail} 项失败</span>}
         </div>
       )}
 

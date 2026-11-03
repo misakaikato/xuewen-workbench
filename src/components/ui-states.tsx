@@ -2,6 +2,7 @@
 import type { ReactNode } from 'react';
 import { Loader2, Inbox, AlertCircle } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 
 /** 页面骨架：懒加载 chunk 就位前的 Suspense fallback（无文字，纯骨架） */
 export function PageSkeleton() {
@@ -17,12 +18,21 @@ export function PageSkeleton() {
   );
 }
 
-/** 页面级加载态：spin + 一句人话 */
-export function PageLoading({ text = '加载中…' }: { text?: string }) {
+/** 页面级加载态：spin + 一句人话；给了 slowText 时，加载超过 slowAfterMs 换成它（说明为什么慢） */
+export function PageLoading({
+  text = '加载中…',
+  slowText,
+  slowAfterMs = 1500,
+}: {
+  text?: string;
+  slowText?: string;
+  slowAfterMs?: number;
+}) {
+  const slow = useDelayedFlag(!!slowText, slowAfterMs);
   return (
     <div className="py-20 flex flex-col items-center gap-3 text-sm text-muted-foreground" role="status">
       <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/70" />
-      {text}
+      {slow ? slowText : text}
     </div>
   );
 }

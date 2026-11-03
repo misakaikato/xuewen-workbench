@@ -5,13 +5,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-index-status-'));
+const tmp = makeTmpDir('wb-index-status-');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0;
@@ -70,6 +70,7 @@ const proc = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
   stdio: ['ignore', 'ignore', 'pipe'],
 });
 proc.stderr.on('data', (d) => process.stderr.write('[srv] ' + d));
+atExit(() => proc.kill('SIGKILL'));
 
 try {
   for (let i = 0; ; i++) {

@@ -2,11 +2,11 @@
 // 运行：node scripts/test-security.mjs
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -24,7 +24,7 @@ function freePort() {
 }
 
 // 本进程内的纯函数单测：先隔离数据目录并禁用自动迁移，再 import 服务端模块（与后端同一份源码）
-const IN_PROC_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-sec-import-'));
+const IN_PROC_DATA = makeTmpDir('wb-sec-import-');
 process.env.WORKBENCH_HOSTED = '1';
 process.env.WORKBENCH_DATA_DIR = IN_PROC_DATA;
 const { migrateLegacyUserData } = await import(path.join(ROOT, 'server', 'store.js'));
@@ -32,8 +32,8 @@ const { migrateLegacyUserData } = await import(path.join(ROOT, 'server', 'store.
 // ---------- S10 旧数据迁移（直接调用 store 导出的迁移函数） ----------
 console.log('S10 旧数据迁移');
 {
-  const legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-sec-legacy-'));
-  const newData = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-sec-newdata-'));
+  const legacy = makeTmpDir('wb-sec-legacy-');
+  const newData = makeTmpDir('wb-sec-newdata-');
   fs.writeFileSync(path.join(legacy, 'config.json'), JSON.stringify({ version: 2, libraries: [{ id: 'x', baseDir: '/tmp/c', name: 'c' }], activeId: 'x' }));
   fs.mkdirSync(path.join(legacy, 'models'), { recursive: true });
   fs.writeFileSync(path.join(legacy, 'models', 'm.bin'), 'x');
@@ -43,8 +43,8 @@ console.log('S10 旧数据迁移');
   check('models/ 迁入新目录', fs.existsSync(path.join(newData, 'models', 'm.bin')));
   check('legacy 写入 MIGRATED.txt', fs.existsSync(path.join(legacy, 'MIGRATED.txt')));
 
-  const legacy2 = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-sec-legacy2-'));
-  const newData2 = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-sec-newdata2-'));
+  const legacy2 = makeTmpDir('wb-sec-legacy2-');
+  const newData2 = makeTmpDir('wb-sec-newdata2-');
   fs.writeFileSync(path.join(legacy2, 'config.json'), JSON.stringify({ version: 2, libraries: [{ id: 'old', baseDir: '/tmp/old', name: 'old' }], activeId: 'old' }));
   fs.mkdirSync(path.join(legacy2, 'models'), { recursive: true });
   fs.writeFileSync(path.join(legacy2, 'models', 'm.bin'), 'y');
@@ -57,7 +57,7 @@ console.log('S10 旧数据迁移');
 }
 
 // ---------- 准备临时数据目录与语料 ----------
-const tmpObj = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-sec-'));
+const tmpObj = makeTmpDir('wb-sec-');
 const tmpData = path.join(tmpObj, 'data');
 const corpus = path.join(tmpObj, 'corpus');
 const outside = path.join(tmpObj, 'outside');
@@ -146,6 +146,7 @@ function spawnBackend(dataDir, port) {
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   proc.stderr.on('data', (d) => process.stderr.write('[srv] ' + d));
+  atExit(() => proc.kill('SIGKILL'));
   return proc;
 }
 async function waitReady(base) {
