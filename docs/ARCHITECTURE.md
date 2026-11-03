@@ -214,6 +214,8 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 - **运行模式**：auto（全自动）/ confirm（破坏性工具与 `bash` 需用户确认）/ readonly（只给检索阅读类工具）。持久化在 `llm-settings.json`，缺省 confirm；readonly 在会话与工具执行两层生效，权限判断集中在 `tool_call` 钩子，`read` 工具限定资料库与 skills 目录。助手不信任语料库目录下的 `.pi`，MCP 配置只读 `agents/default/mcp.json`；skill 导入校验 zip 条目与名称，删除限定在 skills 目录。
 - **记忆与对话**：全局 / agent / 库三层记忆，对话按库、按 agent 存放，单一数据源是 pi 会话文件。设计见 `specs/2026-10-19-memory-design.md`。
 - **前端入口**：`/agent` 聊天页，另有阅读页侧栏问答与浮窗问答，会注入当前文档上下文。
+- **事件处理单一真相源（反馈第 3 批）**：三个对话界面（`AgentChat.tsx` / `QuickAgent.tsx` / `ReadAgentPanel.tsx`）的 SSE 事件全部经 `src/lib/agentReducer.ts` 的 `applyAgentEvent` 归约到同一份轮次状态（正文 / thinking / 工具 / usage / compactions / failure / activity / pendingConfirm），React 侧封装在 `src/hooks/useAgentTurn.ts`；各界面只保留自身特有的副作用分支（`open_doc` 跳转、`settings_changed` 应用设置）。
+- **全程活动指示**：activity 取值 connecting / thinking / tool / compacting / confirm / generating，由共用组件 `src/components/agent/AgentActivity.tsx` 渲染（替代各界面的三点动画）；工具卡运行中转圈计时、结束显示耗时、中断有标记（`ToolCard.tsx`）；破坏性工具的确认弹窗共用 `ConfirmToolDialog.tsx`，倒计时与后端 30s 超时一致，超时/关闭弹窗视同拒绝。
 
 ### 6.8 自动更新：两端安装过程全程可见
 仅打包版启用（开发模式与独立后端下停用），启动 10 秒后首查，之后每 6 小时一次，设置里可关。更新桥留在主进程（`electron/updater.js`），后端经 RPC 调用；状态机快照（`status` / `phase` / `progress`（含速度与剩余时间）/ `canCancel` / `installMode` / `lastInstall`）随 `/api/status` 下发，前端轮询在 checking / downloading / installing 时收紧到 1 秒。

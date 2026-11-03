@@ -1,13 +1,21 @@
 // 全局浮层助手：任意页面 ⌘J 唤出，不离开当前页面即可提问
 // 复用当前库最近一次对话（与主界面/阅读页面板上下文连续）
+// 事件处理走共用逻辑（src/lib/agentReducer.ts + useAgentTurn），只保留 open_doc 跳转这一界面特有分支
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Sparkles, Send, X, Loader2, Square, ChevronRight } from 'lucide-react';
+import { Sparkles, Send, X, Square, ChevronRight, AlertCircle } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { AgentMessage } from '@/lib/api';
 import { MarkdownMsg } from '@/components/agent/MarkdownMsg';
-import { ToolCard, type ToolItem } from '@/components/agent/ToolCard';
-import { readAgentStream } from '@/lib/agentStream';
+import { ToolCard } from '@/components/agent/ToolCard';
+import { ThinkingBlock } from '@/components/agent/Extras';
+import { AgentActivity } from '@/components/agent/AgentActivity';
+import { ConfirmToolDialog } from '@/components/agent/ConfirmToolDialog';
+import { InlineLoading } from '@/components/ui-states';
+import { readAgentStream, streamFailure } from '@/lib/agentStream';
+import type { AgentTurnState, SettleReason } from '@/lib/agentReducer';
+import { useAgentTurn } from '@/hooks/useAgentTurn';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 
 interface Msg extends AgentMessage { streaming?: boolean }
 const encPath = (p: string) => p.split('/').map(encodeURIComponent).join('/');
@@ -28,6 +36,9 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [models, setModels] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  const showLoading = useDelayedFlag(loading);
+  const turn = useAgentTurn();
   const aiRef = useRef(-1);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -38,6 +49,7 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
     if (!open) return;
     let dead = false;
     setErr(null);
+    setLoading(true);
     (async () => {
       try {
         const st = await api.agentStatus();
@@ -55,6 +67,8 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
         }
       } catch (e) {
         if (!dead) setErr((e as Error).message);
+      } finally {
+        if (!dead) setLoading(false);
       }
     })();
     setTimeout(() => inputRef.current?.focus(), 60);
@@ -71,16 +85,23 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
     if (!text || !convId || busy) return;
     setInput('');
     setBusy(true);
+    turn.begin();
     setMsgs((m) => {
-      const next = [...m, { role: 'user' as const, text }, { role: 'assistant' as const, text: '', tools: [], streaming: true }];
+      const next = [...m, { role: 'user' as const, text }, { role: 'assistant' as const, text: '', tools: [], streaming: true, thinking: '' }];
       aiRef.current = next.length - 1;
       return next;
     });
     const patch = (fn: (msg: Msg) => Msg) =>
       setMsgs((m) => { const n = [...m]; const i = aiRef.current; if (i >= 0 && n[i]) n[i] = fn(n[i]); return n; });
+    // 共用事件处理：轮次状态同步进当前助手消息
+    const sync = (t: AgentTurnState) => patch((msg) => ({
+      ...msg, text: t.text, thinking: t.thinking, tools: t.tools,
+      compactions: t.compactions, failure: t.failure ?? msg.failure,
+    }));
 
     const ctl = new AbortController();
     abortRef.current = ctl;
+    let outcome: SettleReason = 'finished';
     try {
       const resp = await fetch('/api/agent/chat', {
         method: 'POST',
@@ -88,26 +109,29 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
         body: JSON.stringify({ sessionId: convId, text, docContext }),
         signal: ctl.signal,
       });
-      await readAgentStream(resp, (d) => {
-        if (d.t === 'delta') patch((msg) => ({ ...msg, text: msg.text + String(d.v || '') }));
-        else if (d.t === 'thinking') patch((msg) => ({ ...msg, thinking: (msg.thinking || '') + String(d.v || '') }));
-        else if (d.t === 'tool_start') patch((msg) => ({ ...msg, tools: [...(msg.tools || []), { name: String(d.name || ''), args: d.args, durationMs: 0 }] }));
-        else if (d.t === 'tool_end') patch((msg) => ({ ...msg, tools: (msg.tools || []).map((t) => ((t as ToolItem).name === d.name && !(t as ToolItem).summary ? { ...t, summary: String(d.summary || ''), isError: !!d.isError, durationMs: d.durationMs as number } : t)) }));
-        else if (d.t === 'open_doc') {
+      const fallback = await readAgentStream(resp, (d) => {
+        // 界面特有分支：open_doc 关浮层再跳阅读页
+        if (d.t === 'open_doc') {
           const p = String(d.path || '');
           const term = d.term ? String(d.term) : '';
           onClose();
           navigate('/read/' + encPath(p) + (term ? '?h=' + encodeURIComponent(term) : ''));
-        } else if (d.t === 'error') patch((msg) => ({ ...msg, text: msg.text + `\n\n**错误**：${d.message}`, error: true }));
+          return;
+        }
+        sync(turn.consume(d));
       });
+      if (fallback) { outcome = 'disconnected'; sync(turn.consume({ t: 'error', failure: fallback })); }
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') patch((msg) => ({ ...msg, text: msg.text + `\n\n**连接失败**：${(e as Error).message}`, error: true }));
+      const aborted = (e as Error).name === 'AbortError';
+      outcome = aborted ? 'stopped' : 'disconnected';
+      sync(turn.consume({ t: 'error', failure: aborted ? streamFailure('cancelled') : streamFailure('connection', (e as Error).message) }));
     } finally {
-      patch((msg) => ({ ...msg, streaming: false }));
+      const t = turn.settle(outcome);
+      patch((msg) => ({ ...msg, streaming: false, tools: t.tools }));
       setBusy(false);
       abortRef.current = null;
     }
-  }, [input, convId, busy, navigate, onClose, docContext]);
+  }, [input, convId, busy, navigate, onClose, docContext, turn]);
 
   const stop = () => { abortRef.current?.abort(); if (convId) api.agentAbort(convId).catch(() => {}); };
 
@@ -116,7 +140,7 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
   return (
     <div className="fixed inset-0 z-[70] bg-black/30 flex items-start justify-center pt-[10vh] px-4" onClick={onClose}>
       <div
-        className="bg-card border border-border rounded-2xl shadow-2xl w-[640px] max-w-[94vw] h-[520px] max-h-[76vh] flex flex-col overflow-hidden"
+        className="bg-card border border-border rounded-2xl shadow-[var(--wb-pvshadow)] w-[640px] max-w-[94vw] h-[520px] max-h-[76vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 头部 */}
@@ -138,7 +162,8 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
         {/* 消息 */}
         <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-3 space-y-3">
           {err && <div className="text-xs text-destructive">{err}</div>}
-          {!msgs.length && !err && (
+          {showLoading && <InlineLoading text="正在打开对话…" />}
+          {!msgs.length && !err && !showLoading && (
             <div className="text-xs text-muted-foreground leading-relaxed">
               可以问语料、改设置、整理文件。<br />
               例：「这套语料讲了什么」「把主题换成夜读」「把第 3 章移到新文件夹」
@@ -152,18 +177,22 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
                 </div>
               ) : (
                 <div>
-                  {(m.tools || []).map((t, j) => <ToolCard key={j} t={t as ToolItem} />)}
-                  {m.text
-                    ? <div className="text-xs"><MarkdownMsg text={m.text} /></div>
-                    : m.streaming && <div className="flex items-center gap-1.5 py-1">
-                        <span className="w-1 h-1 rounded-full bg-primary animate-pulse" />
-                        <span className="w-1 h-1 rounded-full bg-primary animate-pulse [animation-delay:200ms]" />
-                        <span className="w-1 h-1 rounded-full bg-primary animate-pulse [animation-delay:400ms]" />
-                      </div>}
+                  {m.thinking && <ThinkingBlock text={m.thinking} streaming={m.streaming && !m.text} />}
+                  {(m.tools || []).map((t, j) => <ToolCard key={j} t={t} />)}
+                  {m.text && <div className="text-xs"><MarkdownMsg text={m.text} /></div>}
+                  {m.failure && (
+                    <div role={m.failure.kind === 'cancelled' ? 'status' : 'alert'} data-agent-failure
+                      className="my-1.5 rounded-lg border border-warning/40 bg-warning-soft p-2.5 text-xs text-warning-foreground">
+                      <div className="flex items-center gap-1.5 font-medium"><AlertCircle className="w-3.5 h-3.5 shrink-0" />{m.failure.title}</div>
+                      <p className="mt-0.5 leading-relaxed">{m.failure.message}</p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           ))}
+          {/* 活动指示：连接/思考/工具/压缩/确认/生成全程可见 */}
+          <AgentActivity activity={turn.activity} />
         </div>
 
         {/* 输入 */}
@@ -194,9 +223,10 @@ export function QuickAgent({ open, onClose }: { open: boolean; onClose: () => vo
               </button>
             )}
           </div>
-          {busy && <div className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1"><Loader2 className="w-2.5 h-2.5 animate-spin" />生成中…</div>}
         </div>
       </div>
+      {/* 确认弹窗：关闭浮层（本组件卸载）时由弹窗兜底拒绝 */}
+      <ConfirmToolDialog req={turn.confirmReq} onResolve={turn.answer} />
     </div>
   );
 }

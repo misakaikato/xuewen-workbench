@@ -2,6 +2,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
+import { notify } from '@/lib/notify';
+import { uint8ToBase64 } from '@/lib/base64';
 import type { AgentStatus, AgentSettingsPatch } from '@/lib/api';
 import {
   X, RefreshCw, Brain, Plug, Wrench, BookOpen, Plus, Trash,
@@ -31,6 +33,8 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
   const [models, setModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [skillBusy, setSkillBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [agentsMd, setAgentsMd] = useState('');
   const [agentsMdPath, setAgentsMdPath] = useState('');
@@ -78,11 +82,26 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
   };
 
   const testConn = async () => {
+    if (testing) return;
+    setTesting(true);
     setMsg('测试中…');
     try {
       const r = await api.agentModels({ baseUrl: baseUrl.trim(), apiKey });
       setMsg(r.ok ? `连通 OK${r.models?.length ? `（${r.models.length} 个模型）` : ''}` : '失败：' + r.error);
-    } catch (e) { setMsg('失败：' + (e as Error).message); }
+    } catch (e) { setMsg('失败：' + (e as Error).message); } finally { setTesting(false); }
+  };
+
+  // Skill / MCP 增删：检查返回结果，成功失败都用 notify 提示（不再静默）
+  const postAgentApi = async (label: string, url: string, init?: RequestInit) => {
+    try {
+      const res = await fetch(url, init);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.ok === false) throw new Error(body.error || `HTTP ${res.status}`);
+      notify(`${label}成功`, { kind: 'success' });
+      onSaved();
+    } catch (e) {
+      notify(`${label}失败：` + (e as Error).message, { kind: 'error' });
+    }
   };
 
   return (
@@ -230,7 +249,10 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                     <BookOpen className="w-4 h-4 text-primary shrink-0" />
                     <span className="font-medium flex-1">{sk}</span>
                     <button className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive" title="删除"
-                      onClick={async () => { if (!window.confirm(`删除 skill "${sk}"？`)) return; await fetch(`/api/agent/skill/${encodeURIComponent(sk)}`, { method: 'DELETE' }); onSaved(); }}>
+                      onClick={() => {
+                        if (!window.confirm(`删除 skill "${sk}"？`)) return;
+                        void postAgentApi(`删除 skill「${sk}」`, `/api/agent/skill/${encodeURIComponent(sk)}`, { method: 'DELETE' });
+                      }}>
                       <Trash className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -242,14 +264,26 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                 <p className="text-sm">暂无 skills</p>
               </div>
             )}
-            <label className="mt-3 inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-primary/40 text-primary hover:bg-primary/5 cursor-pointer">
-              <Plus className="w-3.5 h-3.5" />安装 Skill 包（.zip，含完整文件夹）
-              <input type="file" accept=".zip" className="hidden" onChange={async (e) => {
-                const f = e.target.files?.[0]; if (!f) return;
-                const buf = await f.arrayBuffer();
-                const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-                await fetch('/api/agent/skill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ zipBase64: base64, fileName: f.name }) });
-                onSaved();
+            <label className={`mt-3 inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-primary/40 text-primary hover:bg-primary/5 ${skillBusy ? 'pointer-events-none opacity-50' : ''} cursor-pointer`}>
+              <Plus className="w-3.5 h-3.5" />{skillBusy ? '安装中…' : '安装 Skill 包（.zip，含完整文件夹）'}
+              <input type="file" accept=".zip" className="hidden" disabled={skillBusy} onChange={async (e) => {
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                if (!f) return;
+                setSkillBusy(true);
+                try {
+                  // 分块编码：大 zip 不再抛 RangeError（src/lib/base64.ts）
+                  const buf = new Uint8Array(await f.arrayBuffer());
+                  const base64 = uint8ToBase64(buf);
+                  await postAgentApi(`安装 Skill 包「${f.name}」`, '/api/agent/skill', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ zipBase64: base64, fileName: f.name }),
+                  });
+                } catch (err) {
+                  notify('安装 Skill 失败：' + (err as Error).message, { kind: 'error' });
+                } finally {
+                  setSkillBusy(false);
+                }
               }} />
             </label>
           </>
@@ -268,7 +302,10 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                     <span className="text-muted-foreground text-xs">{m.type}</span>
                     {m.url && <span className="text-muted-foreground text-xs truncate flex-1">{m.url}</span>}
                     <button className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive" title="删除"
-                      onClick={async () => { if (!window.confirm(`删除 MCP "${m.name}"？`)) return; await fetch(`/api/agent/mcp-server/${encodeURIComponent(m.name)}`, { method: 'DELETE' }); onSaved(); }}>
+                      onClick={() => {
+                        if (!window.confirm(`删除 MCP "${m.name}"？`)) return;
+                        void postAgentApi(`删除 MCP「${m.name}」`, `/api/agent/mcp-server/${encodeURIComponent(m.name)}`, { method: 'DELETE' });
+                      }}>
                       <Trash className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -294,8 +331,9 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
                   const name = q('name')?.value?.trim(); const type = q('type')?.value; const url = q('url')?.value?.trim();
                   if (!name || !url) return;
                   const cfg = type === 'http' ? { url } : { command: url.split(' ')[0], args: url.split(' ').slice(1) };
-                  await fetch('/api/agent/mcp-server', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, config: cfg }) });
-                  onSaved();
+                  await postAgentApi(`添加 MCP「${name}」`, '/api/agent/mcp-server', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, config: cfg }),
+                  });
                 }}>添加</Button>
               </div>
             </details>
@@ -309,7 +347,7 @@ export function AgentSettingsPanel({ status, onClose, onSaved }: { status: Agent
             <Button className="rounded-lg" disabled={saving || !baseUrl || !model} onClick={save}>
               {saving ? '保存中…' : '保存'}
             </Button>
-            <Button variant="outline" className="rounded-lg" onClick={testConn}>测试连通</Button>
+            <Button variant="outline" className="rounded-lg" loading={testing} onClick={testConn}>测试连通</Button>
             {msg && <span className="text-xs text-muted-foreground flex-1 truncate" title={msg}>{msg}</span>}
           </div>
         )}

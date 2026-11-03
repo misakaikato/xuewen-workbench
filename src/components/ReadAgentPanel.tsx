@@ -1,12 +1,20 @@
 // 阅读页内嵌 AI 面板：不离开文档就能问 AI，自动带上当前文档上下文
 // 复用主 agent 的会话（当前库最近一次对话），保证上下文连续
+// 事件处理走共用逻辑（src/lib/agentReducer.ts + useAgentTurn），只保留 open_doc 跳转这一界面特有分支
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, X } from 'lucide-react';
+import { Sparkles, X, AlertCircle } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { AgentMessage } from '@/lib/api';
 import { MarkdownMsg } from '@/components/agent/MarkdownMsg';
-import { ToolCard, type ToolItem } from '@/components/agent/ToolCard';
-import { readAgentStream } from '@/lib/agentStream';
+import { ToolCard } from '@/components/agent/ToolCard';
+import { ThinkingBlock } from '@/components/agent/Extras';
+import { AgentActivity } from '@/components/agent/AgentActivity';
+import { ConfirmToolDialog } from '@/components/agent/ConfirmToolDialog';
+import { InlineLoading } from '@/components/ui-states';
+import { readAgentStream, streamFailure } from '@/lib/agentStream';
+import type { AgentTurnState, SettleReason } from '@/lib/agentReducer';
+import { useAgentTurn } from '@/hooks/useAgentTurn';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { ChatInput } from '@/components/agent/ChatInput';
 import { type Block, initialBlocks, blocksToPrompt, hasUserText, appendQuote } from '@/components/agent/blocks';
 import { ContextBar } from '@/components/agent/Extras';
@@ -36,6 +44,9 @@ export function ReadAgentPanel({
   const [usage, setUsage] = useState<AgentMessage['usage'] | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const showLoading = useDelayedFlag(loading);
+  const turn = useAgentTurn();
   const aiRef = useRef(-1);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -46,6 +57,7 @@ export function ReadAgentPanel({
   // 打开面板：取当前库最近一次对话（没有就新建），保证与主界面上下文连续
   useEffect(() => {
     let dead = false;
+    setLoading(true);
     (async () => {
       try {
         const st = await api.agentStatus();
@@ -61,6 +73,8 @@ export function ReadAgentPanel({
         }
       } catch (e) {
         if (!dead) setErr((e as Error).message);
+      } finally {
+        if (!dead) setLoading(false);
       }
     })();
     return () => { dead = true; };
@@ -89,16 +103,23 @@ export function ReadAgentPanel({
     setImages([]);
     setBusy(true);
     setErr(null);
+    turn.begin();
     setMsgs((m) => {
-      const next = [...m, { role: 'user' as const, text: body }, { role: 'assistant' as const, text: '', tools: [], streaming: true }];
+      const next = [...m, { role: 'user' as const, text: body }, { role: 'assistant' as const, text: '', tools: [], streaming: true, thinking: '' }];
       aiRef.current = next.length - 1;
       return next;
     });
     const patch = (fn: (msg: Msg) => Msg) =>
       setMsgs((m) => { const n = [...m]; const i = aiRef.current; if (i >= 0 && n[i]) n[i] = fn(n[i]); return n; });
+    // 共用事件处理：轮次状态同步进当前助手消息
+    const sync = (t: AgentTurnState) => patch((msg) => ({
+      ...msg, text: t.text, thinking: t.thinking, tools: t.tools,
+      compactions: t.compactions, failure: t.failure ?? msg.failure,
+    }));
 
     const ctl = new AbortController();
     abortRef.current = ctl;
+    let outcome: SettleReason = 'finished';
     try {
       const resp = await fetch('/api/agent/chat', {
         method: 'POST',
@@ -106,19 +127,21 @@ export function ReadAgentPanel({
         body: JSON.stringify({ sessionId: convId, text: body, images: pending.length ? pending.map((im) => ({ data: im.data, mimeType: im.mimeType })) : undefined, docContext: { path: docPath, name: docName } }),
         signal: ctl.signal,
       });
-      await readAgentStream(resp, (d) => {
-        if (d.t === 'delta') patch((msg) => ({ ...msg, text: msg.text + String(d.v || '') }));
-        else if (d.t === 'usage') setUsage(d.usage as AgentMessage['usage']);
-        else if (d.t === 'thinking') patch((msg) => ({ ...msg, thinking: (msg.thinking || '') + String(d.v || '') }));
-        else if (d.t === 'tool_start') patch((msg) => ({ ...msg, tools: [...(msg.tools || []), { name: String(d.name || ''), args: d.args, durationMs: 0 }] }));
-        else if (d.t === 'tool_end') patch((msg) => ({ ...msg, tools: (msg.tools || []).map((t) => ((t as ToolItem).name === d.name && !(t as ToolItem).summary ? { ...t, summary: String(d.summary || ''), isError: !!d.isError, durationMs: d.durationMs as number } : t)) }));
-        else if (d.t === 'open_doc') onOpenDoc(String(d.path || ''), d.term ? String(d.term) : undefined);
-        else if (d.t === 'error') patch((msg) => ({ ...msg, text: msg.text + `\n\n**错误**：${d.message}`, error: true }));
+      const fallback = await readAgentStream(resp, (d) => {
+        // 界面特有分支：open_doc 交给阅读页自己跳转
+        if (d.t === 'open_doc') { onOpenDoc(String(d.path || ''), d.term ? String(d.term) : undefined); return; }
+        const t = turn.consume(d);
+        sync(t);
+        if (t.usage) setUsage(t.usage);
       });
+      if (fallback) { outcome = 'disconnected'; sync(turn.consume({ t: 'error', failure: fallback })); }
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') patch((msg) => ({ ...msg, text: msg.text + `\n\n**连接失败**：${(e as Error).message}`, error: true }));
+      const aborted = (e as Error).name === 'AbortError';
+      outcome = aborted ? 'stopped' : 'disconnected';
+      sync(turn.consume({ t: 'error', failure: aborted ? streamFailure('cancelled') : streamFailure('connection', (e as Error).message) }));
     } finally {
-      patch((msg) => ({ ...msg, streaming: false }));
+      const t = turn.settle(outcome);
+      patch((msg) => ({ ...msg, streaming: false, tools: t.tools }));
       setBusy(false);
       abortRef.current = null;
     }
@@ -141,7 +164,8 @@ export function ReadAgentPanel({
       {/* 消息 */}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto px-3 py-3 space-y-3">
         {err && <div className="text-xs text-destructive">{err}</div>}
-        {!msgs.length && !err && (
+        {showLoading && <InlineLoading text="正在打开对话…" />}
+        {!msgs.length && !err && !showLoading && (
           <div className="text-xs text-muted-foreground leading-relaxed">
             可以就这篇文档提问。选中正文后点「问 AI」会把内容带进来。
           </div>
@@ -154,18 +178,22 @@ export function ReadAgentPanel({
               </div>
             ) : (
               <div>
-                {(m.tools || []).map((t, j) => <ToolCard key={j} t={t as ToolItem} />)}
-                {m.text
-                  ? <div className="text-xs"><MarkdownMsg text={m.text} /></div>
-                  : m.streaming && <div className="flex items-center gap-1.5 py-1">
-                      <span className="w-1 h-1 rounded-full bg-primary animate-pulse" />
-                      <span className="w-1 h-1 rounded-full bg-primary animate-pulse [animation-delay:200ms]" />
-                      <span className="w-1 h-1 rounded-full bg-primary animate-pulse [animation-delay:400ms]" />
-                    </div>}
+                {m.thinking && <ThinkingBlock text={m.thinking} streaming={m.streaming && !m.text} />}
+                {(m.tools || []).map((t, j) => <ToolCard key={j} t={t} />)}
+                {m.text && <div className="text-xs"><MarkdownMsg text={m.text} /></div>}
+                {m.failure && (
+                  <div role={m.failure.kind === 'cancelled' ? 'status' : 'alert'} data-agent-failure
+                    className="my-1.5 rounded-lg border border-warning/40 bg-warning-soft p-2.5 text-xs text-warning-foreground">
+                    <div className="flex items-center gap-1.5 font-medium"><AlertCircle className="w-3.5 h-3.5 shrink-0" />{m.failure.title}</div>
+                    <p className="mt-0.5 leading-relaxed">{m.failure.message}</p>
+                  </div>
+                )}
               </div>
             )}
           </div>
         ))}
+        {/* 活动指示：连接/思考/工具/压缩/确认/生成全程可见 */}
+        <AgentActivity activity={turn.activity} />
       </div>
 
       {/* 输入区：完整 ChatInput（引用 chip / 附件 / @文件 / 命令） */}
@@ -188,6 +216,8 @@ export function ReadAgentPanel({
           onImagesChange={setImages}
         />
       </div>
+      {/* 确认弹窗：关面板（本组件卸载）时由弹窗兜底拒绝 */}
+      <ConfirmToolDialog req={turn.confirmReq} onResolve={turn.answer} />
     </div>
   );
 }

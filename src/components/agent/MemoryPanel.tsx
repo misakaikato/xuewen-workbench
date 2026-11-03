@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import type { MemoryFact, MemoryPayload } from '@/lib/api';
+import { Button } from '@/components/ui/button';
 import {
   Brain, Globe, User, Library, Plus, Trash, Pin, PinOff, Sparkles,
   RefreshCw, Check, Pencil, X,
@@ -21,6 +22,7 @@ export function MemoryPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
   const [msg, setMsg] = useState('');
+  const [consolidating, setConsolidating] = useState(false);
 
   const load = useCallback(async (s = scope) => {
     setLoading(true);
@@ -74,6 +76,8 @@ export function MemoryPanel() {
   };
 
   const consolidate = async () => {
+    if (consolidating) return; // 忙碌中不可重复触发
+    setConsolidating(true);
     setMsg('整理中…');
     try {
       const r = await api.memoryConsolidate(scope);
@@ -81,6 +85,8 @@ export function MemoryPanel() {
       await load();
     } catch (e) {
       setMsg('整理失败：' + (e as Error).message);
+    } finally {
+      setConsolidating(false);
     }
   };
 
@@ -105,9 +111,9 @@ export function MemoryPanel() {
         <button className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground" onClick={() => load()} title="刷新">
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>
-        <button className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-border hover:bg-accent" onClick={consolidate}>
+        <Button variant="outline" size="sm" className="text-xs" loading={consolidating} onClick={consolidate}>
           <Sparkles className="w-3.5 h-3.5" />整理
-        </button>
+        </Button>
       </div>
 
       <p className="text-xs text-muted-foreground mb-3">{cur.hint}</p>

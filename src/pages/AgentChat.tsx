@@ -2,12 +2,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { AgentStatus, AgentMessage, AgentFailure } from '@/lib/api';
+import type { AgentStatus, AgentMessage } from '@/lib/api';
 import type { TreeNode } from '@/lib/types';
 import { readAgentStream, streamFailure } from '@/lib/agentStream';
 import { notify } from '@/lib/notify';
 import { useApp } from '@/store/app-context';
 import { usePolling } from '@/hooks/usePolling';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
+import { useAgentTurn } from '@/hooks/useAgentTurn';
+import type { AgentTurnState, SettleReason } from '@/lib/agentReducer';
 import { useTheme } from '@/lib/theme-context';
 import { useReadingPrefs } from '@/lib/reading-prefs';
 import { MarkdownMsg } from '@/components/agent/MarkdownMsg';
@@ -16,13 +19,16 @@ import { ChatInput } from '@/components/agent/ChatInput';
 import { type Block, initialBlocks, blocksToPrompt, hasUserText, appendQuote } from '@/components/agent/blocks';
 import { ToolCard, type ToolItem } from '@/components/agent/ToolCard';
 import { ThinkingBlock, ContextBar } from '@/components/agent/Extras';
+import { AgentActivity } from '@/components/agent/AgentActivity';
+import { ConfirmToolDialog } from '@/components/agent/ConfirmToolDialog';
 import { InputDialog, FolderPickerDialog } from '@/components/agent/Dialogs';
 import { AgentSettingsPanel } from '@/components/agent/AgentSettingsPanel';
+import { InlineLoading } from '@/components/ui-states';
 import {
   Plus, Trash2, Bot, Sparkles, Copy, Check, FileText, Zap,
   GitBranch, Download, Search, X, MessageSquareQuote, Brain, Gauge, ListChecks,
   PanelLeftClose, PanelLeftOpen, Settings2, Pencil, Trash, RotateCcw, ChevronDown, ShieldCheck, ShieldAlert, Eye, ChevronRight,
-  FolderPlus, Folder, FolderOpen, MoreHorizontal, Layers, AlertTriangle, Quote, AlertCircle,
+  FolderPlus, Folder, FolderOpen, MoreHorizontal, Layers, AlertTriangle, Quote, AlertCircle, Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -99,8 +105,11 @@ export default function AgentChat() {
   const [searchQ, setSearchQ] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelList, setModelList] = useState<string[]>([]);
-  const [confirmReq, setConfirmReq] = useState<{ id: string; tool: string; args: unknown } | null>(null);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
+  // 一轮生成的共用状态（事件处理单一真相源在 src/lib/agentReducer.ts）
+  const turn = useAgentTurn();
   const [images, setImages] = useState<{ data: string; mimeType: string; name: string }[]>([]);
   // 应用内输入/选择对话框（替代 window.prompt）
   const [ask, setAsk] = useState<{
@@ -174,17 +183,21 @@ export default function AgentChat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dsId, conversations.length]);
 
+  const [loadingConv, setLoadingConv] = useState(false);
+  const showConvLoading = useDelayedFlag(loadingConv);
   useEffect(() => {
     if (!active) { setMsgs([]); setUsage(null); return; }
     if (sendingConvRef.current === active) { sendingConvRef.current = null; return; }
     let dead = false;
+    setLoadingConv(true);
     api.agentSession(active).then((s) => {
       if (dead || streamRef.current) return; // 新建会话的历史响应不能覆盖正在显示的流式消息
       const mapped = (s.messages || []).map((m) => ({ ...m }));
       setMsgs(mapped);
       setUsage(mapped.filter((m) => m.usage).pop()?.usage || null);
       requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; });
-    }).catch(() => { if (!dead && !streamRef.current) setMsgs([]); });
+    }).catch(() => { if (!dead && !streamRef.current) setMsgs([]); })
+      .finally(() => { if (!dead) setLoadingConv(false); });
     return () => { dead = true; };
   }, [active]);
 
@@ -212,6 +225,23 @@ export default function AgentChat() {
     }, 200);
     return () => clearTimeout(t);
   }, [sidebarW]);
+
+  // 「选择模型」下拉：点开立即展开并加载，失败显示原因 + 重试
+  const loadModels = useCallback(async () => {
+    setModelLoading(true);
+    setModelError(null);
+    try {
+      const r = await api.agentModels();
+      setModelList(r.models || []);
+      if (!r.ok) setModelError(r.error || '端点未返回模型列表');
+      else if (!(r.models || []).length) setModelError('端点返回了空列表');
+    } catch (e) {
+      setModelList([]);
+      setModelError((e as Error).message);
+    } finally {
+      setModelLoading(false);
+    }
+  }, []);
 
   const openConv = (id: string | null) => {
     setActive(id);
@@ -248,6 +278,9 @@ export default function AgentChat() {
     }
     if (userIdx < 0) return;
     const userText = msgs[userIdx].text;
+    // 从点击起就进入 connecting 活动态：下面串行 DELETE 的空窗也有指示
+    setBusy(true);
+    turn.begin();
     // 截断：保留到 userIdx（不含），后续全部丢弃
     const kept = msgs.slice(0, userIdx);
     setMsgs(kept);
@@ -305,52 +338,44 @@ export default function AgentChat() {
     setImages([]);
     autoScrollRef.current = true;
     setBusy(true); streamRef.current = true; aiRef.current = -1;
+    turn.begin();
     setMsgs((m) => { const next = [...m, { role: 'user' as const, text }, { role: 'assistant' as const, text: '', tools: [], streaming: true, thinking: '' }]; aiRef.current = next.length - 1; return next; });
     const patch = (fn: (msg: Msg) => Msg) => setMsgs((m) => { const next = [...m]; const i = aiRef.current; if (i >= 0 && next[i]) next[i] = fn(next[i]); return next; });
+    // 共用事件处理（src/lib/agentReducer.ts）：轮次状态同步进当前助手消息
+    const sync = (t: AgentTurnState) => patch((msg) => ({
+      ...msg, text: t.text, thinking: t.thinking, tools: t.tools,
+      compactions: t.compactions, failure: t.failure ?? msg.failure,
+    }));
     const ctl = new AbortController(); abortRef.current = ctl;
-    const showFailure = (failure: AgentFailure) => patch((msg) => ({ ...msg, failure, error: failure.kind !== 'cancelled' }));
+    let outcome: SettleReason = 'finished';
     try {
       const resp = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: convId, text, images: pending.length ? pending.map((im) => ({ data: im.data, mimeType: im.mimeType })) : undefined }), signal: ctl.signal });
       const fallback = await readAgentStream(resp, (d) => {
-          if (d.t === 'delta') patch((msg) => ({ ...msg, text: msg.text + (d.v as string) }));
-          else if (d.t === 'thinking') patch((msg) => ({ ...msg, thinking: (msg.thinking || '') + (d.v as string) }));
-          else if (d.t === 'usage') setUsage(d.usage as Msg['usage']);
-          else if (d.t === 'tool_start') patch((msg) => ({ ...msg, tools: [...(msg.tools || []), { name: d.name as string, args: d.args, durationMs: 0 }] }));
-          else if (d.t === 'tool_end') patch((msg) => ({ ...msg, tools: (msg.tools || []).map((t) => ((t as ToolItem).name === d.name && !(t as ToolItem).summary ? { ...t, summary: d.summary as string, isError: d.isError as boolean, durationMs: d.durationMs as number } : t)) }));
-          else if (d.t === 'compaction' && d.phase === 'end') {
-            patch((msg) => ({
-              ...msg,
-              compactions: [...(msg.compactions || []), {
-                reason: String(d.reason || ''),
-                tokensBefore: (d.tokensBefore as number) ?? null,
-                tokensAfter: (d.tokensAfter as number) ?? null,
-                aborted: !!d.aborted,
-                error: null,
-                at: new Date().toISOString(),
-              }],
-            }));
+        // 界面特有分支仅两个：settings_changed 立即应用、open_doc 跳转阅读页
+        if (d.t === 'settings_changed') {
+          if (d.category === 'theme') {
+            const t = String(d.value || '');
+            if (['A', 'B', 'C'].includes(t)) setTheme(t as 'A' | 'B' | 'C');
+          } else if (d.category === 'reading' && d.value && typeof d.value === 'object') {
+            updatePrefs(d.value as Record<string, never>);
           }
-          else if (d.t === 'settings_changed') {
-            // agent 通过工具改了设置：前端立即应用
-            if (d.category === 'theme') {
-              const t = String(d.value || '');
-              if (['A', 'B', 'C'].includes(t)) setTheme(t as 'A' | 'B' | 'C');
-            } else if (d.category === 'reading' && d.value && typeof d.value === 'object') {
-              updatePrefs(d.value as Record<string, never>);
-            }
-          }
-          else if (d.t === 'open_doc') navigate('/read/' + encPath(d.path as string) + ((d.term as string) ? '?h=' + encodeURIComponent(d.term as string) : ''));
-          else if (d.t === 'confirm') { setConfirmReq({ id: d.id as string, tool: d.tool as string, args: d.args }); }
-          else if (d.t === 'error') showFailure((d.failure as AgentFailure) || {
-            kind: 'model', title: '模型未能完成回答', message: String(d.message || '模型或端点返回错误，请检查 Agent 设置后重试。'),
-          });
+          return;
+        }
+        if (d.t === 'open_doc') navigate('/read/' + encPath(d.path as string) + ((d.term as string) ? '?h=' + encodeURIComponent(d.term as string) : ''));
+        else {
+          const t = turn.consume(d);
+          sync(t);
+          if (t.usage) setUsage(t.usage);
+        }
       });
-      if (fallback) showFailure(fallback);
+      if (fallback) { outcome = 'disconnected'; sync(turn.consume({ t: 'error', failure: fallback })); }
     } catch (e) {
-      showFailure((e as Error).name === 'AbortError'
-        ? streamFailure('cancelled') : streamFailure('connection', (e as Error).message));
+      const aborted = (e as Error).name === 'AbortError';
+      outcome = aborted ? 'stopped' : 'disconnected';
+      sync(turn.consume({ t: 'error', failure: aborted ? streamFailure('cancelled') : streamFailure('connection', (e as Error).message) }));
     } finally {
-      patch((msg) => ({ ...msg, streaming: false }));
+      const t = turn.settle(outcome);
+      patch((msg) => ({ ...msg, streaming: false, tools: t.tools }));
       setBusy(false); streamRef.current = false; abortRef.current = null; refresh();
     }
   };
@@ -411,6 +436,7 @@ export default function AgentChat() {
         e.dataTransfer.effectAllowed = 'move';
       }}
     >
+      {c.busy && <span title="生成中"><Loader2 className="w-3 h-3 animate-spin text-primary shrink-0" /></span>}
       <div className="truncate flex-1">{c.title || '新对话'}</div>
       <button
         className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-background shrink-0"
@@ -587,6 +613,7 @@ export default function AgentChat() {
             </div>
           )}
           <div className="max-w-3xl mx-auto space-y-5">
+            {showConvLoading && !msgs.length && <div className="flex justify-center"><InlineLoading text="正在打开对话…" /></div>}
             {msgs.map((m, i) => {
               const isHit = searchQ && m.text?.toLowerCase().includes(searchQ.toLowerCase());
               return (
@@ -639,13 +666,7 @@ export default function AgentChat() {
                           </div>
                         </div>
                       )}
-                      {m.streaming && !m.text && !m.thinking && !(m.tools || []).length && (
-                        <div className="flex items-center gap-1.5 py-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse [animation-delay:200ms]" />
-                          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse [animation-delay:400ms]" />
-                        </div>
-                      )}
+                      {/* 活动指示统一在消息列表末尾（见下方 AgentActivity），正文流式期间也可见 */}
                       {!m.streaming && m.text && (
                         <div className="opacity-0 group-hover/msg:opacity-100 flex items-center gap-0.5 mt-1 transition-opacity">
                           <button className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground" title="复制" onClick={() => copyMsg(i)}>
@@ -672,6 +693,8 @@ export default function AgentChat() {
                 </div>
               );
             })}
+            {/* 活动指示：任何阶段（连接/思考/工具/压缩/确认/生成）都可见，含重新生成的空窗 */}
+            <AgentActivity activity={turn.activity} />
           </div>
         </div>
 
@@ -682,24 +705,31 @@ export default function AgentChat() {
           </div>
           {/* 模型/思考/模式选择器 */}
           <div className="max-w-3xl mx-auto px-4 pb-2.5 flex items-center gap-2 text-xs flex-wrap">
-            {/* 模型选择 */}
+            {/* 模型选择：点开立即展开并加载，失败显示原因与重试 */}
             <div className="relative">
-              <button className="flex items-center gap-1 px-2 py-1 rounded-lg border border-border hover:border-primary/40 text-muted-foreground font-mono" onClick={async () => {
-                const r = await api.agentModels().catch(() => ({ models: [] }));
-                setModelList(r.models || []);
-                setModelOpen((v) => !v);
+              <button className="flex items-center gap-1 px-2 py-1 rounded-lg border border-border hover:border-primary/40 text-muted-foreground font-mono" onClick={() => {
+                const next = !modelOpen;
+                setModelOpen(next);
+                if (next && !modelList.length && !modelLoading) void loadModels();
               }}>
                 {ep?.model || '选择模型'} <ChevronDown className="w-3 h-3" />
               </button>
               {modelOpen && (
-                <div className="absolute bottom-full left-0 mb-1 bg-card border rounded-lg shadow-lg p-1 z-30 min-w-44 max-w-[90vw] max-h-56 overflow-auto">
-                  {modelList.map((m) => (
+                <div className="absolute bottom-full left-0 mb-1 bg-card border rounded-lg shadow-[var(--wb-pvshadow)] p-1 z-30 min-w-44 max-w-[90vw] max-h-56 overflow-auto">
+                  {modelLoading && <div className="px-2.5 py-2"><InlineLoading text="正在拉取模型列表…" /></div>}
+                  {!modelLoading && modelError && (
+                    <div className="px-2.5 py-2 space-y-1.5">
+                      <div className="text-xs text-destructive">拉取失败：{modelError}</div>
+                      <Button variant="outline" size="sm" className="text-xs" onClick={() => void loadModels()}>重试</Button>
+                    </div>
+                  )}
+                  {!modelLoading && !modelError && modelList.map((m) => (
                     <button key={m} className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-mono ${m === ep?.model ? 'bg-accent text-primary' : 'hover:bg-accent transition-colors'}`}
                       onClick={async () => { await api.agentSettings({ model: m }); setModelOpen(false); refresh(); }}>
                       {m}
                     </button>
                   ))}
-                  {!modelList.length && <div className="px-2.5 py-2 text-xs text-muted-foreground">未拉到列表</div>}
+                  {!modelLoading && !modelError && !modelList.length && <div className="px-2.5 py-2 text-xs text-muted-foreground">未拉到列表</div>}
                 </div>
               )}
             </div>
@@ -732,26 +762,8 @@ export default function AgentChat() {
           </div>
         </div>
 
-        {/* 确认对话框 */}
-        {confirmReq && (
-          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-            <div className="bg-card border border-warning/50 rounded-2xl shadow-2xl p-5 w-96 max-w-[90vw]">
-              <h3 className="text-sm font-semibold flex items-center gap-2 mb-2">
-                <ShieldAlert className="w-4 h-4 text-warning" />
-                确认执行：{confirmReq.tool}
-              </h3>
-              <pre className="text-xs bg-muted rounded-lg p-2.5 max-h-40 overflow-auto mb-3">{JSON.stringify(confirmReq.args, null, 2)}</pre>
-              <div className="flex gap-2 justify-end">
-                <Button variant="outline" size="sm" onClick={async () => { await api.agentConfirm(confirmReq.id, false); setConfirmReq(null); }}>
-                  取消
-                </Button>
-                <Button size="sm" onClick={async () => { await api.agentConfirm(confirmReq.id, true); setConfirmReq(null); }}>
-                  确认执行
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* 确认对话框（三个助手界面共用） */}
+        <ConfirmToolDialog req={turn.confirmReq} onResolve={turn.answer} />
       </div>
 
       {/* 应用内输入/选择对话框 */}
