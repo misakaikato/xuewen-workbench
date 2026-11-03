@@ -25,13 +25,22 @@ class RagIndex {
       this.cfg = loadRagConfig(dsId);
     };
     this.store = null;
-    this.state = 'none'; // none | building | paused | ready | error
-    this.phase = ''; // 切块 | 嵌入 | 完成
+    this.state = 'none'; // none | building | pausing | paused | ready | error | stale
+    this.phase = ''; // 等待文本索引 | 清理旧索引 | 切块 | 嵌入 | 加载模型 | 完成
     this.done = 0;
     this.total = 0;
     this.error = null;
+    this.currentFile = null;
+    this.fileChunksDone = 0;
+    this.fileChunksTotal = 0;
+    this.chunksPerSec = null;
+    this.etaSeconds = null;
+    this.clearing = null; // { done, total } 清库分批进度
     this._pauseFlag = false;
     this._buildSeq = 0;
+    this._chunksDone = 0; // 本次构建已嵌入的块数（速度/剩余时间用）
+    this._embedT0 = 0;
+    this._clearBatchHook = null; // 测试钩子：清库每批后回调（可抛错模拟中断）
     // 构建期间收到 onScanComplete 时置位：当前构建结束后立即再跑一次增量
     this.pendingRescan = false;
   }
@@ -72,6 +81,12 @@ class RagIndex {
       phase: this.phase,
       done: this.done,
       total: this.total,
+      currentFile: this.currentFile,
+      fileChunksDone: this.fileChunksDone,
+      fileChunksTotal: this.fileChunksTotal,
+      chunksPerSec: this.chunksPerSec,
+      etaSeconds: this.etaSeconds,
+      clearing: this.clearing ? { ...this.clearing } : null,
       files: st.files,
       filesDone: st.filesDone,
       chunks: st.chunks,
@@ -84,75 +99,130 @@ class RagIndex {
     };
   }
 
-  /** 全量/增量构建；rebuild=true 清库重来。幂等：构建中忽略重复请求 */
-  async build({ rebuild = false } = {}) {
-    if (this.state === 'building') return { ok: true, already: true };
+  /** 构建前置检查（同步）：检查通过即切 building（状态先于第一个 await），供路由提前返回 409 */
+  begin() {
+    if (this.state === 'building' || this.state === 'pausing') return { ok: true, already: true };
     const snap = this.getSnapshot();
-    if (!snap || !snap.files || !snap.files.length) return { ok: false, error: '资料库尚未扫描完成' };
-    if (this.whenIndexed) await this.whenIndexed(); // 等文本索引就绪（切块要从 indexer.texts 拿正文）
-    const store = this._ensureStore();
-    const seq = ++this._buildSeq;
+    if (!snap || !snap.files || !snap.files.length) {
+      this.state = 'error';
+      this.error = '资料库尚未扫描完成';
+      return { ok: false, error: this.error };
+    }
     this._pauseFlag = false;
     this.state = 'building';
+    this.phase = '等待文本索引';
     this.error = null;
+    this.clearing = null;
+    return { ok: true };
+  }
+
+  /** 全量/增量构建；rebuild=true 清库重来。幂等：构建中忽略重复请求。begin() 已通过时可直接 _runBuild */
+  async build({ rebuild = false } = {}) {
+    const pre = this.begin();
+    if (!pre.ok || pre.already) return pre;
+    return this._runBuild({ rebuild });
+  }
+
+  _pauseNow(seq) {
+    if (seq !== this._buildSeq) return { ok: true, superseded: true };
+    this.state = 'paused';
+    this.phase = '';
+    console.log('[rag] 索引构建暂停: 已完成 ' + this.done + ' 个文件');
+    return { ok: true, paused: true };
+  }
+
+  async _runBuild({ rebuild = false } = {}) {
+    const store = this._ensureStore();
+    const seq = ++this._buildSeq;
     const t0 = Date.now();
     try {
-      if (rebuild || (store.metaGet('index_cfg') && store.metaGet('index_cfg') !== indexConfigFingerprint(this.cfg))) {
-        // 清库与写入新指纹在同一事务：中途暂停/失败/退出后再续建不会再次清库
-        const txn = store.db.transaction(() => {
-          store.db.exec('DELETE FROM files; DELETE FROM chunks_fts; DELETE FROM chunks; DELETE FROM vecs;');
-          store.metaSet('index_cfg', indexConfigFingerprint(this.cfg));
-        });
-        txn();
-        store._bump();
+      if (this.whenIndexed) {
+        this.phase = '等待文本索引';
+        await this.whenIndexed(); // 等文本索引就绪（切块要从 indexer.texts 拿正文）
+        if (this._pauseFlag) return this._pauseNow(seq); // 等待期间点了暂停：直接停在 paused
       }
-      const plan = store.planIncremental(snap.files.map((f) => ({ ...f, contentHash: f.mtimeMs + ':' + f.size })));
+      // 清库分批：先写「清理中」标记，清完写新指纹——中断后续建先清余量，不会新旧混杂、不会重复清已清的库
+      const fp = indexConfigFingerprint(this.cfg);
+      const cfgOld = store.metaGet('index_cfg');
+      if (rebuild || store.metaGet('clearing') === '1' || (cfgOld && cfgOld !== fp)) {
+        this.phase = '清理旧索引';
+        store.metaSet('clearing', '1');
+        await store.clearBatched({
+          batch: 2000,
+          onBatch: (done, total) => {
+            this.clearing = { done, total };
+            if (this._clearBatchHook) this._clearBatchHook(done, total);
+          },
+        });
+        store.metaSet('index_cfg', fp);
+        store.metaSet('clearing', '0');
+        this.clearing = null;
+      }
+      const plan = store.planIncremental(this.getSnapshot().files.map((f) => ({ ...f, contentHash: f.mtimeMs + ':' + f.size })));
       if (plan.toDel.length) store.deleteFiles(plan.toDel);
       const todo = plan.toAdd;
       this.total = todo.length;
       this.done = 0;
+      this.currentFile = null;
+      this.fileChunksDone = 0;
+      this.fileChunksTotal = 0;
+      this.chunksPerSec = null;
+      this.etaSeconds = null;
+      this._chunksDone = 0;
+      this._embedT0 = Date.now();
       this.phase = '切块';
       console.log('[rag] 索引构建开始: ' + todo.length + ' 个文件');
       for (const f of todo) {
         if (seq !== this._buildSeq) return { ok: true, superseded: true };
-        if (this._pauseFlag) {
-          this.state = 'paused';
-          this.phase = '';
-          console.log('[rag] 索引构建暂停: 已完成 ' + this.done + ' 个文件');
-          return { ok: true, paused: true };
-        }
+        if (this._pauseFlag) return this._pauseNow(seq);
         const restoreActivity = setActivity('RAG 切块/嵌入 ' + f.path);
         try {
+          this.currentFile = f.path;
+          this.fileChunksDone = 0;
+          this.fileChunksTotal = 0;
+          this.phase = '切块';
           const text = this.getText(f.path);
           if (text == null) {
             // 扫描快照里没有正文缓存时记录为空完成（词表文件等极端情况）
             store.replaceChunks(f.path, f.contentHash, [], f.ext?.slice(1) || 'md', () => '');
             this.done++;
+            this._tickEta();
             continue;
           }
           const chunks = chunkFile(f.ext || '.md', text, this.cfg.chunk);
           if (chunks.length) chunks[0] = { ...chunks[0], text: f.name + '\n\n' + chunks[0].text }; // 文件名进入正文索引与定位
           const eOpts = { headingContext: this.cfg.chunk.headingContext, fileName: this.cfg.chunk.fileNameContext ? f.name : '' };
           store.replaceChunks(f.path, f.contentHash, chunks, kindOf(f.ext), (c) => ftsIndexText(t2s(embedTextOf(c, eOpts))));
-          // 立即嵌入该文件全部块（文件级完成粒度）
-          this.phase = '嵌入';
+          // 立即嵌入该文件全部块（文件级完成粒度；分批上报块级进度）
+          this.fileChunksTotal = chunks.length;
+          this.fileChunksDone = 0;
           if (chunks.length) {
             const ids = store.db.prepare('SELECT id FROM chunks WHERE path=? ORDER BY ordinal').all(f.path).map((r) => r.id);
             const tEmb = Date.now();
-            const vecs = await this.embed.embed(chunks.map((c) => embedTextOf(c, eOpts)), { maxLength: this.cfg.embed.maxLength });
+            const BATCH = 32;
+            for (let i = 0; i < chunks.length; i += BATCH) {
+              if (this._pauseFlag) return this._pauseNow(seq); // 批间响应暂停
+              if (this.embed.runtime.state !== 'ready') this.phase = '加载模型'; // 嵌入运行时未就绪：首次加载可能数十秒
+              const vecs = await this.embed.embed(chunks.slice(i, i + BATCH).map((c) => embedTextOf(c, eOpts)), { maxLength: this.cfg.embed.maxLength });
+              this.phase = '嵌入';
+              store.writeVecs(ids.slice(i, i + BATCH).map((id, j) => ({ id, vec: vecs[j] })));
+              this.fileChunksDone = Math.min(chunks.length, i + BATCH);
+              this._chunksDone += vecs.length;
+            }
             const embMs = Date.now() - tEmb;
             if (embMs >= 2000) console.warn('[rag] 单文件嵌入慢: ' + f.path + '，' + chunks.length + ' 段，耗时 ' + embMs + 'ms');
-            store.writeVecs(ids.map((id, i) => ({ id, vec: vecs[i] })));
           }
           store.markFileDone(f.path);
           this.done++;
           this._updatedAt = Date.now();
+          this._tickEta();
         } finally {
           restoreActivity();
         }
       }
       this.state = 'ready';
       this.phase = '完成';
+      this.currentFile = null;
       this._updatedAt = Date.now();
       store.metaSet('index_cfg', indexConfigFingerprint(this.cfg)); // 重建提示指纹
       console.log('[rag] 索引构建完成: ' + this.done + ' 个文件，耗时 ' + (Date.now() - t0) + 'ms');
@@ -171,9 +241,23 @@ class RagIndex {
     }
   }
 
+  /** 速度与剩余时间：按已嵌入块数与耗时估算，剩余量按文件折算 */
+  _tickEta() {
+    const el = (Date.now() - this._embedT0) / 1000;
+    if (this._chunksDone > 0 && el > 0) {
+      this.chunksPerSec = Math.round(this._chunksDone / el);
+      if (this.done > 0 && this.done < this.total) {
+        this.etaSeconds = Math.round(((this.total - this.done) * (el / this.done)));
+      } else if (this.done >= this.total) {
+        this.etaSeconds = 0;
+      }
+    }
+  }
+
   pause() {
-    if (this.state === 'building') {
+    if (this.state === 'building' || this.state === 'pausing') {
       this._pauseFlag = true;
+      this.state = 'pausing'; // 循环真正停下前给前端可见的过渡态
       return { ok: true };
     }
     return { ok: false, error: '未在构建' };
@@ -247,6 +331,11 @@ export class RagManager {
 
   async build(dsId, opts) {
     return this.index(dsId).build(opts);
+  }
+
+  /** 路由用：前置检查（begin）已由调用方完成，这里只启动后台构建 */
+  startBuild(dsId, rebuild) {
+    return this.index(dsId)._runBuild({ rebuild });
   }
 
   saveConfig(dsId, patch) {

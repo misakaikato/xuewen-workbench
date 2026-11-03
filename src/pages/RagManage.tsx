@@ -1,16 +1,48 @@
-// RAG 管理页：模型（下载/导入/状态）、索引（构建/暂停/重建/进度/统计）、检索测试台、生成端点配置。
-// 状态 5s 轮询（与扫描状态同模式）；构建中进度实时刷新。
+// RAG 管理页：模型（下载/导入/取消/进度）、索引（构建/暂停/重建/阶段进度）、检索测试台、生成端点配置。
+// 阶段与进度全部来自后端 status；模型任务、运行时加载、索引构建期间 1s 轮询，其余 5s。
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { RagStatus, RagConfig } from '@/lib/api';
+import type { RagStatus, RagConfig, RagModelProgress } from '@/lib/api';
 import { useApp } from '@/store/app-context';
 import { usePolling } from '@/hooks/usePolling';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { extIcon } from '@/lib/extIcon';
-import { Download, FolderInput, Play, Pause, RotateCcw, Cpu, Zap, FlaskConical, CheckCircle2, AlertTriangle, SlidersHorizontal } from 'lucide-react';
+import { notify } from '@/lib/notify';
+import { Download, FolderInput, Play, Pause, RotateCcw, Cpu, Zap, FlaskConical, CheckCircle2, AlertTriangle, SlidersHorizontal, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
+import { InlineLoading } from '@/components/ui-states';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 
 const fmtBytes = (n: number) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : String(n));
+
+const fmtEta = (s: number | null) => {
+  if (s == null) return '';
+  if (s < 60) return `约 ${s} 秒`;
+  return `约 ${Math.ceil(s / 60)} 分钟`;
+};
+
+// 模型任务阶段文字（与后端 progress.phase 一一对应；无法计量阶段的进度条用不确定态）
+function modelPhaseText(p: RagModelProgress): string {
+  switch (p.phase) {
+    case 'env-extract': return '准备 Python 环境：' + (p.phaseDetail || '解压运行时');
+    case 'env-install': return '准备 Python 环境：' + (p.phaseDetail || '安装依赖');
+    case 'probe': return '探测下载源';
+    case 'download': return `下载 ${p.file || '…'}（第 ${Math.min(p.done + 1, p.files)}/${p.files} 个文件）`;
+    case 'verify': return `校验 ${p.file || '…'}`;
+    case 'copy': return `复制 ${p.file || '…'}`;
+    default: return p.phaseDetail || '准备中…';
+  }
+}
+
+// 阶段能否按字节计量：只有下载/复制/校验有量可算，解压/装依赖/探测没有
+const measurablePhase = (p: RagModelProgress) => ['download', 'copy', 'verify'].includes(p.phase) && p.percent != null;
+
+const EP_LABEL: Record<string, string> = { dml: 'DirectML（GPU）', cpu: 'CPU' };
 
 function Highlight({ text, terms }: { text: string; terms: string[] }) {
   if (!terms.length) return <>{text}</>;
@@ -48,6 +80,7 @@ export default function RagManage() {
   const [importDir, setImportDir] = useState('');
   const [q, setQ] = useState('');
   const [smart, setSmart] = useState<Awaited<ReturnType<typeof api.ragSearch>> | null>(null);
+  const [smartBusy, setSmartBusy] = useState(false);
   const [cfg, setCfg] = useState<RagConfig | null>(null);
   const [cfgSaved, setCfgSaved] = useState<string | null>(null);
 
@@ -62,42 +95,62 @@ export default function RagManage() {
     }
   }, [dsId]);
 
-  const downloading = st?.model?.state === 'downloading';
+  const m = st?.model;
+  const ix = st?.index;
+  const fast =
+    m?.state === 'downloading' || m?.state === 'importing' || m?.runtime?.state === 'loading' ||
+    ix?.state === 'building' || ix?.state === 'pausing' || smartBusy;
   useEffect(() => {
     poll();
   }, [poll, dsId]);
-  usePolling(() => { poll(); }, downloading ? 1000 : 5000, { enabled: !!dsId });
+  usePolling(() => { poll(); }, fast ? 1000 : 5000, { enabled: !!dsId });
 
   useEffect(() => {
     api.ragConfigGet().then((r) => setCfg(r.config)).catch(() => {});
   }, [dsId]);
 
+  // 动作统一入口：读取返回体，{ok:false,error} 不许被吞——页内错误条 + notify 双通道
   const run = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label);
     try {
-      await fn();
+      const r = await fn();
+      if (r && typeof r === 'object' && (r as { ok?: boolean }).ok === false) {
+        const msg = String((r as { error?: string }).error || '操作失败');
+        setErr(msg);
+        notify(msg, { kind: 'error' });
+      }
       await poll();
     } catch (e) {
-      setErr((e as Error).message);
+      const msg = (e as Error).message;
+      setErr(msg);
+      notify(msg, { kind: 'error' });
     } finally {
       setBusy(null);
     }
   };
 
   const doSmart = async () => {
-    if (!q.trim()) return;
+    if (!q.trim() || smartBusy) return;
+    setSmartBusy(true);
+    poll(); // 立即拉一次状态：首次加载模型时能尽快拿到 runtime 阶段
     try {
       setSmart(await api.ragSearch(q, 100));
     } catch (e) {
-      setSmart({ dsId: '', hits: [], took: 0, backend: '' } as Awaited<ReturnType<typeof api.ragSearch>>);
-      setErr((e as Error).message);
+      setSmart(null);
+      const msg = (e as Error).message;
+      setErr(msg);
+      notify(msg, { kind: 'error' });
+    } finally {
+      setSmartBusy(false);
     }
   };
 
-  const m = st?.model;
-  const ix = st?.index;
   const modelReady = m?.state === 'ready';
   const indexPct = ix && ix.total > 0 ? Math.round((ix.done / ix.total) * 100) : null;
+  const runtimeLoading = m?.runtime?.state === 'loading';
+  const rtElapsed = m?.runtime?.startedAt ? Math.max(0, Math.round((Date.now() - m.runtime.startedAt) / 1000)) : 0;
+  const showSmartLoading = useDelayedFlag(smartBusy, 150);
+  const p = m?.progress || null;
 
   return (
     <div className="space-y-6">
@@ -119,36 +172,99 @@ export default function RagManage() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs mb-3">
           <div><div className="text-muted-foreground">模型</div><div className="font-medium">{m?.id || '—'}（{m?.dim} 维）</div></div>
           <div><div className="text-muted-foreground">后端</div><div className="font-medium">{m ? BACKEND_LABEL[m.backend] || m.backend : '—'}</div></div>
+          <div><div className="text-muted-foreground">执行设备</div><div className="font-medium">{m?.ep ? EP_LABEL[m.ep] || m.ep : '—'}</div></div>
           <div><div className="text-muted-foreground">状态</div>
             <div className="font-medium flex items-center gap-1">
               {modelReady ? <><CheckCircle2 className="w-3.5 h-3.5 text-success" />就绪</> :
-                m?.state === 'downloading' ? '下载中…' : m?.state === 'error' ? '失败' : '未下载'}
+                m?.state === 'downloading' ? '下载中…' :
+                m?.state === 'importing' ? '导入中…' :
+                m?.state === 'error' ? '失败' : '未下载'}
             </div>
           </div>
-          <div><div className="text-muted-foreground">权重 sha256</div><div className="font-mono truncate" title={m?.sha || ''}>{m?.sha ? m.sha.slice(0, 12) + '…' : '—'}</div></div>
+          <div className="sm:col-span-2"><div className="text-muted-foreground">权重 sha256</div><div className="font-mono truncate" title={m?.sha || ''}>{m?.sha ? m.sha.slice(0, 12) + '…' : '—'}</div></div>
         </div>
-        {m?.state === 'downloading' && m.progress && (
-          <div className="text-xs mb-3">
-            <div className="text-muted-foreground mb-1 truncate">
-              正在从 {m.progress.host || '…'} 下载 {m.progress.file || '…'}：{fmtBytes(m.progress.bytes)} / {m.progress.total ? fmtBytes(m.progress.total) : '…'}{m.progress.speedBps ? '（' + (m.progress.speedBps / 1048576).toFixed(1) + ' MB/s）' : ''}，第 {m.progress.attempt || 1} 次尝试
+        {(m?.state === 'downloading' || m?.state === 'importing') && p && (
+          <div className="text-xs mb-3 space-y-2" data-rag-model-progress>
+            <div className="text-muted-foreground truncate" data-rag-phase>{modelPhaseText(p)}</div>
+            <div>
+              <div className="flex justify-between text-muted-foreground mb-1">
+                <span>
+                  总体 {measurablePhase(p) ? <><span className="stat-num">{Math.round(p.percent || 0)}%</span>{p.estimated ? '（估算）' : ''}</> : ''}
+                </span>
+                <span className="stat-num">
+                  {fmtBytes(p.overallBytes)}{p.overallTotal ? ' / ' + fmtBytes(p.overallTotal) : ''}
+                  {p.speedBps ? ' · ' + (p.speedBps / 1048576).toFixed(1) + ' MB/s' : ''}
+                  {p.etaSeconds != null ? ' · 剩余 ' + fmtEta(p.etaSeconds) : ''}
+                </span>
+              </div>
+              <Progress
+                value={measurablePhase(p) ? p.percent || 0 : undefined}
+                indeterminate={!measurablePhase(p)}
+                className="h-1.5"
+              />
             </div>
-            <div className="text-muted-foreground mb-1 text-right">{m.progress.done}/{m.progress.files} 文件</div>
-            <div className="h-1.5 rounded bg-muted overflow-hidden">
-              <div className="h-full bg-primary transition-all" style={{ width: m.progress.total ? Math.min(100, (m.progress.bytes / m.progress.total) * 100) + '%' : '30%' }} />
+            {p.total > 0 && (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <span className="shrink-0">当前文件</span>
+                <Progress value={(p.bytes / p.total) * 100} className="h-1 flex-1" />
+                <span className="shrink-0 stat-num">{p.done}/{p.files}</span>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs"
+                loading={busy === 'cancel'}
+                disabled={busy !== null}
+                onClick={() => run('cancel', () => api.ragModelCancel())}
+              >
+                <XCircle className="w-3.5 h-3.5" />取消
+              </Button>
+              <span className="text-muted-foreground">已处理 {p.done}/{p.files} 个文件{p.host ? `，源 ${p.host}` : ''}{p.attempt > 1 ? `，第 ${p.attempt} 次尝试` : ''}</span>
             </div>
           </div>
         )}
         {m?.error && <div className="text-xs text-destructive mb-3">{m.error}</div>}
         <div className="flex items-center gap-2 flex-wrap">
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs"
-            disabled={busy !== null || m?.state === 'downloading'}
-            onClick={() => run('download', () => api.ragModelDownload())}
-          >
-            <Download className="w-3.5 h-3.5" />{modelReady ? '重新下载' : '下载模型（约 1.1 GB，hf-mirror 自动回退）'}
-          </Button>
+          {modelReady ? (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  loading={busy === 'download'}
+                  disabled={busy !== null || m?.state === 'downloading' || m?.state === 'importing'}
+                >
+                  <Download className="w-3.5 h-3.5" />重新下载
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>重新下载嵌入模型？</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    将重新下载约 1.1 GB 的模型文件并替换现有模型。下载完成前旧模型继续可用，可随时取消。
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>取消</AlertDialogCancel>
+                  <AlertDialogAction onClick={() => run('download', () => api.ragModelDownload(true))}>重新下载</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs"
+              loading={busy === 'download'}
+              disabled={busy !== null || m?.state === 'downloading' || m?.state === 'importing'}
+              onClick={() => run('download', () => api.ragModelDownload())}
+            >
+              <Download className="w-3.5 h-3.5" />下载模型（约 1.1 GB，hf-mirror 自动回退）
+            </Button>
+          )}
           <span className="flex items-center gap-1 text-xs">
             <FolderInput className="w-3.5 h-3.5 text-muted-foreground" />
             <input
@@ -161,8 +277,9 @@ export default function RagManage() {
               variant="outline"
               size="sm"
               className="text-xs"
-              disabled={!importDir.trim() || busy !== null}
-              onClick={() => run('import', () => api.ragModelImport(importDir.trim()))}
+              loading={busy === 'import'}
+              disabled={!importDir.trim() || busy !== null || m?.state === 'downloading' || m?.state === 'importing'}
+              onClick={() => { run('import', () => api.ragModelImport(importDir.trim())); }}
             >导入</Button>
           </span>
         </div>
@@ -175,18 +292,43 @@ export default function RagManage() {
         </h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs mb-3">
           <div><div className="text-muted-foreground">状态</div><div className="font-medium">
-            {ix?.state === 'building' ? `构建中（${ix.phase}）` : ix?.state === 'ready' ? '就绪' : ix?.state === 'paused' ? '已暂停' : ix?.state === 'error' ? '失败' : ix?.state === 'stale' ? '待更新' : '未构建'}
+            {ix?.state === 'building' ? '构建中' : ix?.state === 'pausing' ? '正在暂停…' : ix?.state === 'ready' ? '就绪' : ix?.state === 'paused' ? '已暂停' : ix?.state === 'error' ? '失败' : ix?.state === 'stale' ? '待更新' : '未构建'}
           </div></div>
           <div><div className="text-muted-foreground">文件 / 块</div><div className="font-medium stat-num">{ix?.filesDone ?? 0}/{ix?.files ?? 0} · {ix?.chunks ?? 0} 块</div></div>
           <div><div className="text-muted-foreground">向量覆盖</div><div className="font-medium stat-num">{ix?.vecs ?? 0}/{ix?.chunks ?? 0}</div></div>
           <div><div className="text-muted-foreground">库体积</div><div className="font-medium">{fmtBytes(ix?.dbBytes || 0)}{ix?.updatedAt ? ' · ' + new Date(ix.updatedAt).toLocaleString('zh-CN') : ''}</div></div>
         </div>
-        {ix?.state === 'building' && (
-          <div className="text-xs mb-3">
-            <div className="flex justify-between text-muted-foreground mb-1"><span>{ix.phase}</span><span>{ix.done}/{ix.total}</span></div>
-            <div className="h-1.5 rounded bg-muted overflow-hidden">
-              <div className="h-full bg-primary transition-all" style={{ width: (indexPct || 0) + '%' }} />
+        {(ix?.state === 'building' || ix?.state === 'pausing') && (
+          <div className="text-xs mb-3 space-y-2" data-rag-index-progress>
+            <div className="flex justify-between text-muted-foreground mb-1">
+              <span data-rag-phase>{ix.phase || '构建中'}{ix.state === 'pausing' ? '（正在暂停…）' : ''}</span>
+              <span className="stat-num">{ix.done}/{ix.total} 个文件</span>
             </div>
+            {ix.phase === '加载模型' ? (
+              <div data-rag-load-model>
+                <div className="mb-1">首次加载嵌入模型，可能需要几十秒（已用 {rtElapsed} 秒）</div>
+                <Progress indeterminate className="h-1.5" />
+              </div>
+            ) : ix.phase === '清理旧索引' ? (
+              ix.clearing
+                ? <Progress value={(ix.clearing.done / Math.max(1, ix.clearing.total)) * 100} className="h-1.5" />
+                : <Progress indeterminate className="h-1.5" />
+            ) : ix.phase === '切块' || ix.phase === '嵌入' ? (
+              <Progress value={indexPct || 0} className="h-1.5" />
+            ) : (
+              <Progress indeterminate className="h-1.5" />
+            )}
+            {ix.currentFile && (
+              <div className="text-muted-foreground truncate" data-rag-current-file>
+                当前文件：{ix.currentFile}
+                {ix.fileChunksTotal > 0 ? `（块 ${ix.fileChunksDone}/${ix.fileChunksTotal}）` : ''}
+              </div>
+            )}
+            {ix.chunksPerSec != null && (
+              <div className="text-muted-foreground">
+                <span className="stat-num">{ix.chunksPerSec}</span> 块/秒{ix.etaSeconds != null && ix.etaSeconds > 0 ? ' · 剩余 ' + fmtEta(ix.etaSeconds) : ''}
+              </div>
+            )}
           </div>
         )}
         {ix?.error && <div className="text-xs text-destructive mb-3">{ix.error}</div>}
@@ -200,35 +342,37 @@ export default function RagManage() {
           <div className="text-xs border border-warning/40 bg-warning-soft text-warning-foreground rounded p-2 mb-3 flex items-center gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             索引与当前文件不完全一致，有待更新。
-            <button className="underline" disabled={busy !== null} onClick={() => run('build', () => api.ragIndexBuild(false))}>立即更新</button>
+            <Button variant="link" className="text-xs h-auto p-0" loading={busy === 'update'} disabled={busy !== null} onClick={() => run('update', () => api.ragIndexBuild(false))}>立即更新</Button>
           </div>
         )}
         {ix?.configChanged && (
           <div className="text-xs border border-warning/40 bg-warning-soft text-warning-foreground rounded p-2 mb-3 flex items-center gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             切块/嵌入参数与建库时不同，现有索引按旧参数生成。
-            <button className="underline" disabled={busy !== null} onClick={() => run('rebuild', () => api.ragIndexBuild(true))}>立即重建</button>
+            <Button variant="link" className="text-xs h-auto p-0" loading={busy === 'rebuild'} disabled={busy !== null} onClick={() => run('rebuild', () => api.ragIndexBuild(true))}>立即重建</Button>
           </div>
         )}
         <div className="flex items-center gap-2 flex-wrap">
           <Button
             size="sm"
             className="text-xs"
-            disabled={busy !== null || ix?.state === 'building' || !modelReady}
+            loading={busy === 'build'}
+            disabled={busy !== null || ix?.state === 'building' || ix?.state === 'pausing' || !modelReady}
             title={modelReady ? undefined : '请先就绪嵌入模型'}
             onClick={() => run('build', () => api.ragIndexBuild(false))}
           >
             <Play className="w-3.5 h-3.5" />{ix?.files ? '继续构建 / 增量更新' : '构建索引'}
           </Button>
-          {ix?.state === 'building' && (
+          {(ix?.state === 'building' || ix?.state === 'pausing') && (
             <Button
               variant="outline"
               size="sm"
               className="text-xs"
-              disabled={busy !== null}
+              loading={busy === 'pause' || ix?.state === 'pausing'}
+              disabled={busy !== null || ix?.state === 'pausing'}
               onClick={() => run('pause', () => api.ragIndexPause())}
             >
-              <Pause className="w-3.5 h-3.5" />暂停
+              <Pause className="w-3.5 h-3.5" />{ix?.state === 'pausing' ? '正在暂停…' : '暂停'}
             </Button>
           )}
           {ix && ix.files > 0 && (
@@ -236,7 +380,8 @@ export default function RagManage() {
               variant="outline"
               size="sm"
               className="text-xs"
-              disabled={busy !== null || ix.state === 'building'}
+              loading={busy === 'rebuild'}
+              disabled={busy !== null || ix.state === 'building' || ix.state === 'pausing'}
               onClick={() => { if (window.confirm('清空当前库的语义索引并全量重建？')) run('rebuild', () => api.ragIndexBuild(true)); }}
             >
               <RotateCcw className="w-3.5 h-3.5" />重建
@@ -298,6 +443,7 @@ export default function RagManage() {
               <Button
                 size="sm"
                 className="text-xs"
+                loading={busy === 'save'}
                 disabled={busy !== null}
                 onClick={async () => {
                   const r = await api.ragConfigSave(cfg);
@@ -310,6 +456,7 @@ export default function RagManage() {
                 variant="outline"
                 size="sm"
                 className="text-xs"
+                loading={busy === 'defaults'}
                 disabled={busy !== null}
                 onClick={async () => {
                   const r = await api.ragConfigSave({ chunk: { maxChars: 600, jsonValueLimit: 1500, headingContext: true, fileNameContext: true, hardSplitOversize: false }, embed: { maxLength: 1024 }, search: { topN: 30, rrfK: 60, rrfMin: 0.0105, cosFloor: 0.25, cosSigma: 2.0, semanticWeight: 1.2 } });
@@ -335,9 +482,14 @@ export default function RagManage() {
             placeholder="输入问题测试混合检索（与检索页「智能」tab 同链路）"
             className="flex-1 px-3 py-2 rounded-lg border border-input bg-card text-sm"
           />
-          <Button className="text-xs" onClick={doSmart}>测试</Button>
+          <Button className="text-xs" loading={smartBusy} disabled={!q.trim()} onClick={doSmart}>测试</Button>
         </div>
-        {smart && (
+        {smartBusy && showSmartLoading && (
+          <div className="mb-3" data-rag-test-loading>
+            <InlineLoading text={runtimeLoading ? `首次加载嵌入模型…（已用 ${rtElapsed} 秒）` : '正在检索…'} />
+          </div>
+        )}
+        {smart && !smartBusy && (
           <div className="space-y-2">
             <div className="text-xs text-muted-foreground">共 {smart.total ?? smart.hits.length} 段（显示 {smart.hits.length}）· {smart.took}ms · {BACKEND_LABEL[smart.backend || ''] || smart.backend}
               <Link to={'/search?q=' + encodeURIComponent(q) + '&mode=smart'} className="ml-2 text-primary underline">去检索页</Link>

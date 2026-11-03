@@ -62,6 +62,16 @@
 .wb-drag { -webkit-app-region: drag; }
 .wb-drag button, .wb-drag a, .wb-drag input, .wb-drag [role="button"] { -webkit-app-region: no-drag; }
 
+/* 进度条不确定态：时长无法计量时的循环滑动（与 animate-spin 同档 1s，遵守减弱动效全局降级） */
+@keyframes wb-progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
+.wb-progress-indeterminate {
+  width: 40%;
+  animation: wb-progress-slide 1s ease-in-out infinite;
+}
+
 /* 动效降级：用户系统开启减弱动态效果时，所有过渡/动画压到 ~0（DESIGN.md §7） */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

@@ -19,23 +19,33 @@ export function mountRag(manager, resolveLib) {
     res.json({ dsId: lib.id, ...manager.status(lib.id) });
   });
 
-  r.post('/model/download', async (_req, res) => {
-    res.json(await manager.embed.download());
+  r.post('/model/download', async (req, res) => {
+    const force = !!(req.body && req.body.force);
+    res.json(await manager.embed.download({ force }));
   });
 
-  r.post('/model/import', async (req, res) => {
+  r.post('/model/import', (req, res) => {
     const dir = req.body && req.body.dir;
     if (!dir) return res.status(400).json({ error: '缺少 dir' });
-    res.json(await manager.embed.importDir(dir));
+    // 同步校验参数（缺文件/目录不存在立即报错），复制在后台跑（进度走 status 轮询）
+    res.json(manager.embed.importDir(dir));
   });
 
-  r.post('/index/build', async (req, res) => {
+  r.post('/model/cancel', (_req, res) => {
+    res.json(manager.embed.cancel());
+  });
+
+  r.post('/index/build', (req, res) => {
     const lib = needLib(req, res);
     if (!lib) return;
     const rebuild = !!(req.body && req.body.rebuild);
-    // 立即返回，进度走 status 轮询
-    manager.build(lib.id, { rebuild }).catch(() => {});
-    res.json({ ok: true });
+    // 前置检查同步执行：失败返回 409 且错误进入状态；通过则后台构建，立即返回
+    const pre = manager.index(lib.id).begin();
+    if (!pre.ok) return res.status(409).json({ error: pre.error });
+    if (!pre.already) {
+      manager.startBuild(lib.id, rebuild).catch((e) => console.error('[rag] 构建异常退出: ' + (e?.message || e)));
+    }
+    res.json({ ok: true, already: !!pre.already });
   });
 
   r.post('/index/pause', (req, res) => {

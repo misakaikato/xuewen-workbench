@@ -93,7 +93,7 @@ function makeSpeed() {
 // 连续两次在同一源失败则换下一个源；超过 maxAttempts 抛中文错误（取最后一次尝试的原因）。
 export async function downloadFile({
   urls, dest, fetchImpl, idleTimeoutMs = 30000, maxAttempts = 5,
-  backoffMs = [2000, 4000, 8000, 16000, 30000], onProgress, log,
+  backoffMs = [2000, 4000, 8000, 16000, 30000], onProgress, isCancelled, log,
 }) {
   const part = dest + '.part';
   const name = path.basename(dest);
@@ -103,6 +103,7 @@ export async function downloadFile({
   let lastCode = 'unknown';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (isCancelled?.()) throw new Error('已取消');
     const url = urls[hostIdx % urls.length];
     const host = new URL(url).host;
     const offset = partSize(part);
@@ -125,6 +126,7 @@ export async function downloadFile({
     }
     const code = r.code || 'unknown';
     lastCode = code;
+    if (isCancelled?.()) throw new Error('已取消'); // 取消不重试
     say(`下载 ${name} 第 ${attempt} 次尝试失败（${host}）：${reasonText(code, idleTimeoutMs)}（${code}）`);
     failsOnHost++;
     if (failsOnHost >= 2) { hostIdx = (hostIdx + 1) % urls.length; failsOnHost = 0; }

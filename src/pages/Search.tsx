@@ -8,6 +8,9 @@ import type { SearchResult } from '@/lib/types';
 import { extIcon } from '@/lib/extIcon';
 import { SearchX, Loader2, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { InlineLoading } from '@/components/ui-states';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
+import type { RagRuntimeStatus } from '@/lib/api';
 import { normalizeText } from '../../server/linkMatch.js';
 
 // 搜索会话缓存：路由离开 Search 后返回时恢复结果与滚动位置，免去重新检索。
@@ -75,6 +78,7 @@ export default function Search() {
   const [smart, setSmart] = useState<RagSearchResponse | null>(null);
   const [smartLimit, setSmartLimit] = useState(50);
   const [smartErr, setSmartErr] = useState<string | null>(null);
+  const [smartRt, setSmartRt] = useState<RagRuntimeStatus | null>(null); // 智能检索期间拉取运行时状态（首次加载模型的阶段说明）
   const [terms, setTerms] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -191,6 +195,17 @@ export default function Search() {
     },
     [smartLimit]
   );
+
+  // 智能检索加载中：1s 拉一次 RAG 状态，首次加载模型时给出阶段与已用时间
+  useEffect(() => {
+    if (!(loading && mode === 'smart')) return;
+    let stopped = false;
+    const tick = () => api.ragStatus().then((s) => { if (!stopped) setSmartRt(s.model?.runtime || null); }).catch(() => {});
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => { stopped = true; clearInterval(t); };
+  }, [loading, mode]);
+  const showSmartLoading = useDelayedFlag(loading && mode === 'smart', 150);
 
   // 输入防抖（组字期间不发请求，组字结束后再按防抖发）
   useEffect(() => {
@@ -309,13 +324,23 @@ export default function Search() {
         </div>
       )}
 
-      {/* 结果区加载态：检索中在结果区顶部给出明确提示，旧结果淡出保留（防闪烁） */}
-      {loading && q && (
+      {/* 结果区加载态：智能模式用 InlineLoading（首次加载模型时附阶段说明），精确模式保留原有提示；150ms 延迟防闪 */}
+      {loading && q && (mode === 'smart' ? (
+        showSmartLoading && (
+          <div className="mb-3" data-smart-loading>
+            <InlineLoading
+              text={smartRt?.state === 'loading'
+                ? `首次加载嵌入模型…（已用 ${smartRt.startedAt ? Math.max(0, Math.round((Date.now() - smartRt.startedAt) / 1000)) : 0} 秒）`
+                : `正在检索「${q}」…`}
+            />
+          </div>
+        )
+      ) : (
         <div className="mb-3 flex items-center gap-2 text-sm text-muted-foreground border border-border rounded-lg px-3 py-2.5 bg-card animate-fade-in" role="status">
           <Loader2 className="w-4 h-4 animate-spin" />
           正在检索「{q}」…
         </div>
-      )}
+      ))}
 
       {mode === 'smart' && !loading && q && smart && smart.hits.length === 0 && !smartErr && (
         <div className="text-center py-16 text-muted-foreground">

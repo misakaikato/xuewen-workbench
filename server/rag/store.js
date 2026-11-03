@@ -174,6 +174,32 @@ export class RagStore {
     this._bump();
   }
 
+  /** 分批清空全部索引表：批间让出事件循环（不阻塞进度轮询），onBatch 上报进度。
+   * 中断后续建靠调用方的「清理中」标记（meta clearing），删除幂等，重跑不会新旧混杂 */
+  async clearBatched({ batch = 2000, onBatch } = {}) {
+    const total = this.db.prepare(
+      'SELECT (SELECT COUNT(*) FROM vecs) + (SELECT COUNT(*) FROM chunks_fts) + (SELECT COUNT(*) FROM chunks) + (SELECT COUNT(*) FROM files) AS n'
+    ).get().n;
+    let done = 0;
+    const steps = [
+      'DELETE FROM vecs WHERE chunk_id IN (SELECT chunk_id FROM vecs LIMIT ?)',
+      'DELETE FROM chunks_fts WHERE rowid IN (SELECT rowid FROM chunks_fts LIMIT ?)',
+      'DELETE FROM chunks WHERE id IN (SELECT id FROM chunks LIMIT ?)',
+      'DELETE FROM files WHERE path IN (SELECT path FROM files LIMIT ?)',
+    ];
+    for (const sql of steps) {
+      const stmt = this.db.prepare(sql);
+      for (;;) {
+        const r = stmt.run(batch);
+        done += r.changes;
+        if (onBatch) onBatch(Math.min(done, total), total);
+        if (r.changes < batch) break;
+        await new Promise((resolve) => setImmediate(resolve)); // 批间让出，进度轮询可插入
+      }
+    }
+    this._bump();
+  }
+
   stats() {
     const f = this.db.prepare('SELECT COUNT(*) n, COALESCE(SUM(done),0) done FROM files').get();
     const c = this.db.prepare('SELECT COUNT(*) n FROM chunks').get();

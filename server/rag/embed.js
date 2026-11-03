@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { pipeline } from 'node:stream/promises';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { T2S_MAP } from '../t2s.js';
@@ -24,7 +25,7 @@ const HOSTS = (process.env.WORKBENCH_RAG_MODEL_HOSTS || 'https://huggingface.co,
   .split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
 
 // MLX sidecar 最小依赖集（实证对齐 resources-mlx/requirements.txt；vendor 前向后不再依赖 mlx-embeddings）
-const MLX_REQUIREMENTS = [
+export const MLX_REQUIREMENTS = [
   'anyio', 'click', 'filelock', 'h11', 'httpcore2', 'httpx2', 'huggingface-hub', 'idna',
   'mlx', 'mlx-metal', 'numpy', 'packaging', 'pyyaml', 'regex', 'requests', 'safetensors',
   'tokenizers', 'tqdm', 'transformers', 'truststore', 'typing-extensions',
@@ -52,13 +53,20 @@ export class EmbedService {
     this.dataDir = dataDir;
     this.modelsDir = path.join(dataDir, 'models', MODEL_ID);
     this.venvDir = path.join(dataDir, 'py', 'rag-venv');
-    this.state = 'missing'; // missing | downloading | ready | error
-    this.progress = { file: '', bytes: 0, total: 0, done: 0, files: 0, host: '', attempt: 0, speedBps: 0 };
+    this.state = 'missing'; // missing | downloading | importing | ready | error
+    this.progress = _emptyProgress();
     this.error = null;
     this.backend = null; // 实际使用的后端（ready 后有值）
+    this.runtime = { state: 'idle', phase: null, startedAt: null, error: null }; // 运行时加载状态（ensureReady 维护）
     this._runtime = null; // { kind, embed(texts) }
     this._loading = null;
     this._downloadTask = null;
+    this._cancelFlag = false;
+    this._activeProc = null; // 置备环境期间的可杀子进程（取消用）
+    this._taskKind = null; // 'download' | 'import'
+    this._bytesDone = 0; // 已完成文件的累计字节数
+    this._totalKnownAll = null; // 全部文件大小是否已知（导入已知，下载逐个揭示）
+    this._importCopyHook = null; // 测试钩子：导入复制每个 chunk 后回调
     if (process.env.WORKBENCH_RAG_EMBED === 'mock') {
       this.state = 'ready';
       this.backend = 'mock';
@@ -88,10 +96,55 @@ export class EmbedService {
   _manifestOk(kind) {
     try {
       const m = JSON.parse(fs.readFileSync(this.manifestPath(kind), 'utf8'));
-      return m && m.model === MODEL_ID && Array.isArray(m.files) && m.files.length > 0;
+      if (!m || m.model !== MODEL_ID || !Array.isArray(m.files) || m.files.length === 0) return false;
+      const dir = this.modelDir(kind);
+      return m.files.every((x) => fs.existsSync(path.join(dir, x.path)));
     } catch {
       return false;
     }
+  }
+
+  _setPhase(phase, phaseDetail = '') {
+    this.progress.phase = phase;
+    this.progress.phaseDetail = phaseDetail;
+  }
+
+  // 总体进度：全部文件大小已知时按字节精确计算；否则按文件数折算并标 estimated（A1）
+  _recalcOverall() {
+    const p = this.progress;
+    p.overallBytes = this._bytesDone + p.bytes;
+    const allKnown = this._totalKnownAll != null || (p.done + (p.total > 0 ? 1 : 0) >= p.files);
+    p.overallTotal = this._totalKnownAll != null ? this._totalKnownAll : this._bytesDone + p.total;
+    p.estimated = !allKnown;
+    if (allKnown && p.overallTotal > 0) {
+      p.percent = Math.min(100, (p.overallBytes / p.overallTotal) * 100);
+      p.etaSeconds = p.speedBps > 0 && p.overallBytes < p.overallTotal
+        ? Math.round((p.overallTotal - p.overallBytes) / p.speedBps) : null;
+    } else {
+      const cur = p.total > 0 ? Math.min(1, p.bytes / p.total) : 0;
+      p.percent = p.files > 0 ? Math.min(100, ((p.done + cur) / p.files) * 100) : null;
+      p.etaSeconds = null;
+    }
+  }
+
+  _resetProgress(files) {
+    this._bytesDone = 0;
+    this.progress = { ..._emptyProgress(), files, startedAt: Date.now() };
+  }
+
+  // 任务结束（取消/失败）后按清单回探状态：旧清单仍完整则回到 ready，否则 missing
+  _restoreStateAfterTask() {
+    this._taskKind = null;
+    this._activeProc = null;
+    this.error = null;
+    this.state = (this._manifestOk('mlx') || this._manifestOk('onnx')) ? 'ready' : 'missing';
+  }
+
+  _dropRuntime() {
+    if (this._runtime?.dispose) this._runtime.dispose();
+    this._runtime = null;
+    this._loading = null;
+    this.runtime = { state: 'idle', phase: null, startedAt: null, error: null };
   }
 
   /** 本机可用后端探测：mlx（mac + venv + 权重）> onnx（权重）；env 强制指定优先 */
@@ -119,151 +172,346 @@ export class EmbedService {
       id: MODEL_ID,
       dim: DIM,
       sha: this._shaCache || null,
-      progress: this.state === 'downloading' ? this.progress : null,
+      progress: (this.state === 'downloading' || this.state === 'importing') ? { ...this.progress } : null,
+      canCancel: this.state === 'downloading' || this.state === 'importing',
+      runtime: { ...this.runtime },
       error: this.error,
     };
   }
 
-  /** 下载模型（当前平台只下所需后端）；幂等：已就绪直接返回，下载中返回 already */
-  download() {
-    if (this.state === 'downloading') return { ok: true, already: true };
-    if (this.state === 'ready') return { ok: true, ready: true };
-    const kind = process.platform === 'darwin' ? 'mlx' : 'onnx';
+  /** 下载模型（当前平台只下所需后端）；幂等：已就绪直接返回，下载中返回 already；force=true 已就绪也重下 */
+  download({ force = false } = {}) {
+    if (this.state === 'downloading' || this.state === 'importing') return { ok: true, already: true };
+    if (this.state === 'ready' && !force) return { ok: true, ready: true };
+    const forced = process.env.WORKBENCH_RAG_EMBED;
+    const kind = forced === 'onnx' || forced === 'mlx' ? forced : (process.platform === 'darwin' ? 'mlx' : 'onnx');
     const spec = REPOS[kind];
     const dir = this.modelDir(kind);
     fs.mkdirSync(dir, { recursive: true });
     this.state = 'downloading';
     this.error = null;
-    this.progress = { file: '', bytes: 0, total: 0, done: 0, files: spec.files.length, host: '', attempt: 0, speedBps: 0 };
+    this._cancelFlag = false;
+    this._taskKind = 'download';
+    this._totalKnownAll = null;
+    this._resetProgress(spec.files.length);
     this._downloadTask = this._runDownload(kind, spec, dir).catch((e) => {
-      this.state = 'error';
-      this.error = String(e.message || e);
-      console.error('[rag] 模型下载失败: ' + this.error);
+      // _runDownload 已处理取消与常规错误，这里只记录意外退出
+      console.error('[rag] 下载任务异常退出: ' + String(e?.message || e));
+      this._restoreStateAfterTask();
     });
     return { ok: true, started: true };
+  }
+
+  /** 取消下载/导入/环境置备：删除半截文件，状态回探（旧清单完整则 ready） */
+  cancel() {
+    if (this.state !== 'downloading' && this.state !== 'importing') return { ok: false, error: '没有进行中的任务' };
+    this._cancelFlag = true;
+    if (this._activeProc) {
+      try { this._activeProc.kill('SIGKILL'); } catch { /* 已退出 */ }
+    }
+    return { ok: true };
   }
 
   /** 后台下载：mac 先置备 venv → 探测可达源 → 按可达顺序逐个文件断点续传 */
   async _runDownload(kind, spec, dir) {
     const t0 = Date.now();
-    if (kind === 'mlx') await this.ensureVenv();
-    const { fetchImpl, kind: fetchKind } = pickFetch();
-    const log = (msg) => console.log('[rag] ' + msg);
-    console.log('[rag] 模型下载开始: ' + kind + '，fetch=' + fetchKind);
-    const hosts = await probeHosts(HOSTS, spec.repo, { fetchImpl, log });
-    if (!hosts.length) throw new Error('无法连接 huggingface.co 与 hf-mirror.com，请检查网络或代理');
-    const manifest = { model: MODEL_ID, kind, files: [] };
-    for (const f of spec.files) {
-      await withActivity('下载模型 ' + f, async () => {
-        const dest = path.join(dir, f);
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        const urls = hosts.map((h) => `${h}/${spec.repo}/resolve/main/${f}`);
-        this.progress.file = f;
-        this.progress.bytes = 0;
-        this.progress.total = 0;
-        this.progress.host = '';
-        this.progress.attempt = 0;
-        this.progress.speedBps = 0;
-        await downloadFile({
-          urls, dest, fetchImpl,
-          onProgress: (p) => {
-            this.progress.bytes = p.bytes;
-            this.progress.total = p.total;
-            this.progress.host = p.host;
-            this.progress.attempt = p.attempt;
-            this.progress.speedBps = p.speedBps;
-          },
-          log,
+    let curPart = null; // 正在下载的半截文件（取消时删除，失败保留供续传）
+    try {
+      if (kind === 'mlx') {
+        this._setPhase('env-install', '准备 Python 环境');
+        await this.ensureVenv((phase, detail) => this._setPhase(phase, detail));
+      }
+      const { fetchImpl, kind: fetchKind } = pickFetch();
+      const log = (msg) => console.log('[rag] ' + msg);
+      console.log('[rag] 模型下载开始: ' + kind + '，fetch=' + fetchKind);
+      this._setPhase('probe', '探测下载源');
+      const hosts = await probeHosts(HOSTS, spec.repo, { fetchImpl, log });
+      if (!hosts.length) throw new Error('无法连接 huggingface.co 与 hf-mirror.com，请检查网络或代理');
+      if (this._cancelFlag) throw new Error('已取消');
+      const manifest = { model: MODEL_ID, kind, files: [] };
+      for (const f of spec.files) {
+        await withActivity('下载模型 ' + f, async () => {
+          const dest = path.join(dir, f);
+          curPart = dest + '.part';
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          const urls = hosts.map((h) => `${h}/${spec.repo}/resolve/main/${f}`);
+          this.progress.file = f;
+          this.progress.bytes = 0;
+          this.progress.total = 0;
+          this.progress.host = '';
+          this.progress.attempt = 0;
+          this.progress.speedBps = 0;
+          this._setPhase('download', `下载 ${f}（第 ${manifest.files.length + 1}/${spec.files.length} 个文件）`);
+          await downloadFile({
+            urls, dest, fetchImpl,
+            isCancelled: () => this._cancelFlag,
+            onProgress: (p) => {
+              this.progress.bytes = p.bytes;
+              this.progress.total = p.total;
+              this.progress.host = p.host;
+              this.progress.attempt = p.attempt;
+              this.progress.speedBps = p.speedBps;
+              this._recalcOverall();
+              if (this._cancelFlag) throw new Error('已取消');
+            },
+            log,
+          });
+          curPart = null; // 已 rename 落盘
+          this._setPhase('verify', '校验 ' + f);
+          const sha = await sha256File(dest);
+          const bytes = fs.statSync(dest).size;
+          manifest.files.push({ path: f, sha256: sha, bytes });
+          this.progress.done++;
+          this.progress.bytes = bytes;
+          this.progress.total = bytes;
+          this._bytesDone += bytes;
+          this._recalcOverall();
         });
-        manifest.files.push({ path: f, sha256: await sha256File(dest), bytes: fs.statSync(dest).size });
-        this.progress.done++;
-      });
+      }
+      fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
+      this._shaCache = manifest.files.find((x) => x.path.includes('safetensors') || x.path.endsWith('.onnx'))?.sha256 || null;
+      this.state = 'ready';
+      this.backend = kind;
+      this._taskKind = null;
+      this._dropRuntime(); // 重新加载
+      console.log('[rag] 模型下载完成: ' + kind + '，耗时 ' + (Date.now() - t0) + 'ms');
+    } catch (e) {
+      const cancelled = this._cancelFlag;
+      if (cancelled && curPart) {
+        try { fs.rmSync(curPart, { force: true }); } catch { /* 忽略 */ }
+      }
+      if (cancelled) {
+        this._restoreStateAfterTask();
+        console.log('[rag] 模型下载已取消');
+        return;
+      }
+      this.state = 'error';
+      this.error = String(e.message || e);
+      this._taskKind = null;
+      console.error('[rag] 模型下载失败: ' + this.error);
     }
-    fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
-    this._shaCache = manifest.files.find((x) => x.path.includes('safetensors') || x.path.endsWith('.onnx'))?.sha256 || null;
-    this.state = 'ready';
-    this.backend = kind;
-    if (this._runtime?.dispose) this._runtime.dispose();
-    this._runtime = null; // 重新加载
-    console.log('[rag] 模型下载完成: ' + kind + '，耗时 ' + (Date.now() - t0) + 'ms');
   }
 
-  /** 手动导入模型目录（含权重文件的目录，写入清单） */
-  async importDir(dir) {
+  /** 手动导入模型目录：同步校验参数后立即返回，复制/校验在后台跑（进度走 status 轮询） */
+  importDir(dir) {
+    if (this.state === 'downloading' || this.state === 'importing') return { ok: false, error: '已有下载或导入任务进行中' };
+    if (!dir || typeof dir !== 'string' || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      return { ok: false, error: '目录不存在: ' + dir };
+    }
     const kind = process.platform === 'darwin' && fs.existsSync(path.join(dir, 'model.safetensors')) ? 'mlx' : 'onnx';
     const spec = REPOS[kind];
     const need = spec.files.filter((f) => !fs.existsSync(path.join(dir, f)));
     if (need.length) return { ok: false, error: '缺少文件: ' + need.join(', ') };
+    const sizes = new Map(spec.files.map((f) => [f, fs.statSync(path.join(dir, f)).size]));
     const dest = this.modelDir(kind);
     fs.mkdirSync(dest, { recursive: true });
-    const manifest = { model: MODEL_ID, kind, files: [] };
-    for (const f of spec.files) {
-      const dst = path.join(dest, f);
-      fs.mkdirSync(path.dirname(dst), { recursive: true }); // 嵌套子目录（onnx/ 等）
-      const src = path.join(dir, f);
-      if (path.resolve(src) !== path.resolve(dst)) fs.copyFileSync(src, dst);
-      manifest.files.push({ path: f, sha256: await sha256File(dst), bytes: fs.statSync(dst).size });
-    }
-    fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
-    this.state = 'ready';
-    this.backend = kind;
-    if (this._runtime?.dispose) this._runtime.dispose();
-    this._runtime = null;
-    return { ok: true, kind };
+    this.state = 'importing';
+    this.error = null;
+    this._cancelFlag = false;
+    this._taskKind = 'import';
+    this._totalKnownAll = [...sizes.values()].reduce((a, b) => a + b, 0);
+    this._resetProgress(spec.files.length);
+    this._setPhase('copy', '');
+    this._downloadTask = this._runImport(kind, spec, dir, dest, sizes).catch((e) => {
+      // _runImport 已处理取消与常规错误，这里只记录意外退出
+      console.error('[rag] 导入任务异常退出: ' + String(e?.message || e));
+      this._restoreStateAfterTask();
+    });
+    return { ok: true, started: true };
   }
 
-  /** 置备 sidecar venv：优先 uv（开发机）；打包版从捆绑资源离线引导（python-build-standalone + wheels） */
-  async ensureVenv() {
+  /** 后台导入：逐文件流式复制（边读边算 sha256），全部复制完重读目标文件校验，最后写清单 */
+  async _runImport(kind, spec, dir, dest, sizes) {
+    const t0 = Date.now();
+    let curPart = null; // 正在写的半截文件（取消/失败时清理）
+    const entries = [];
+    try {
+      for (const f of spec.files) {
+        const src = path.join(dir, f);
+        const dst = path.join(dest, f);
+        fs.mkdirSync(path.dirname(dst), { recursive: true }); // 嵌套子目录（onnx/ 等）
+        this.progress.file = f;
+        this.progress.total = sizes.get(f);
+        this.progress.bytes = 0;
+        this._setPhase('copy', '复制 ' + f);
+        const same = path.resolve(src) === path.resolve(dst);
+        const sha = same ? await sha256File(dst) : await this._copyStream(src, dst + '.part', () => { curPart = dst + '.part'; });
+        if (!same) {
+          await fs.promises.rename(dst + '.part', dst); // 原子替换，旧文件只在新文件完整后失效
+          curPart = null;
+        }
+        entries.push({ path: f, sha256: sha, bytes: sizes.get(f) });
+        this.progress.bytes = sizes.get(f);
+        this.progress.done++;
+        this._bytesDone += sizes.get(f);
+        this._recalcOverall();
+      }
+      for (const e of entries) {
+        if (this._cancelFlag) throw new Error('已取消');
+        this.progress.file = e.path;
+        this._setPhase('verify', '校验 ' + e.path);
+        const again = await sha256File(path.join(dest, e.path));
+        if (again !== e.sha256) throw new Error('导入校验失败：' + e.path + ' 写入内容与源不一致');
+      }
+      const manifest = { model: MODEL_ID, kind, files: entries };
+      fs.writeFileSync(this.manifestPath(kind), JSON.stringify(manifest, null, 2));
+      this._shaCache = manifest.files.find((x) => x.path.includes('safetensors') || x.path.endsWith('.onnx'))?.sha256 || null;
+      this.state = 'ready';
+      this.backend = kind;
+      this._taskKind = null;
+      this._dropRuntime();
+      console.log('[rag] 模型导入完成: ' + kind + '，耗时 ' + (Date.now() - t0) + 'ms');
+    } catch (e) {
+      if (curPart) {
+        try { fs.rmSync(curPart, { force: true }); } catch { /* 忽略 */ }
+      }
+      if (this._cancelFlag) {
+        this._restoreStateAfterTask();
+        console.log('[rag] 模型导入已取消');
+        return;
+      }
+      this.state = 'error';
+      this._taskKind = null;
+      this.error = e?.code === 'ENOSPC' || e?.code === 'EDQUOT'
+        ? '磁盘空间不足，导入中断（已清理半截文件）'
+        : String(e.message || e);
+      console.error('[rag] 模型导入失败: ' + this.error);
+    }
+  }
+
+  /** 流式复制并同步计算 sha256；每写完一块更新进度，中途可取消 */
+  async _copyStream(src, partPath, onStart) {
+    const h = crypto.createHash('sha256');
+    const total = fs.statSync(src).size;
+    const self = this;
+    let copied = 0;
+    onStart?.();
+    const tap = async function* (chunks) {
+      for await (const chunk of chunks) {
+        if (self._cancelFlag) throw new Error('已取消');
+        h.update(chunk);
+        copied += chunk.length;
+        self.progress.bytes = copied;
+        const el = self.progress.startedAt ? (Date.now() - self.progress.startedAt) / 1000 : 0;
+        self.progress.speedBps = el > 0.2 ? Math.round((self._bytesDone + copied) / el) : 0;
+        self._recalcOverall();
+        if (self._importCopyHook) await self._importCopyHook(copied, total);
+        yield chunk;
+      }
+    };
+    await pipeline(fs.createReadStream(src), tap, fs.createWriteStream(partPath));
+    return h.digest('hex');
+  }
+
+  /** 置备 sidecar venv：优先 uv（开发机）；打包版从捆绑资源离线引导（python-build-standalone + wheels）。
+   * 解压与安装都是异步 spawn，不阻塞事件循环；onPhase 上报阶段（env-extract / env-install）。
+   * 全部依赖装完写 .wb-complete 标记；无标记的旧环境先导入自检（60s），不过则删掉重备；
+   * 安装失败或被取消时删除 venvDir，不畱下半截环境 */
+  async ensureVenv(onPhase = null) {
     const py = this.venvPython();
-    if (fs.existsSync(py)) return;
-    fs.mkdirSync(path.dirname(this.venvDir), { recursive: true });
-    const run = (cmd, args, opts = {}) =>
+    const doneMark = path.join(this.venvDir, '.wb-complete');
+    const run = (cmd, args, opts = {}, timeoutMs = 0) =>
       new Promise((resolve) => {
         const p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'], ...opts });
+        this._activeProc = p; // 供 cancel 杀进程
         let err = '';
+        const timer = timeoutMs > 0 ? setTimeout(() => { try { p.kill('SIGKILL'); } catch { /* 已退出 */ } }, timeoutMs) : null;
         p.stderr.on('data', (d) => (err += d));
-        p.on('close', (c) => resolve(c === 0 ? { ok: true } : { ok: false, err: err.slice(-800) }));
-        p.on('error', (e) => resolve({ ok: false, err: String(e) }));
+        p.on('close', (c) => {
+          this._activeProc = null;
+          if (timer) clearTimeout(timer);
+          resolve(c === 0 ? { ok: true } : { ok: false, err: err.slice(-800) });
+        });
+        p.on('error', (e) => {
+          this._activeProc = null;
+          if (timer) clearTimeout(timer);
+          resolve({ ok: false, err: String(e) });
+        });
       });
-    // 路径 A：uv（开发机，联网）
-    const uvOk = await run('uv', ['--version']);
-    if (uvOk.ok) {
-      let r = await run('uv', ['venv', '--python', '3.12', this.venvDir]);
-      if (!r.ok) throw new Error('uv venv 失败: ' + r.err);
-      r = await run('uv', ['pip', 'install', '--python', py, ...MLX_REQUIREMENTS]);
-      if (!r.ok) throw new Error('uv pip install 失败: ' + r.err);
-      return;
+    if (fs.existsSync(py)) {
+      if (fs.existsSync(doneMark)) return;
+      // python 在但无完成标记：可能是安装中断的半截环境，导入自检判定
+      console.log('[rag] venv 无完成标记，执行导入自检');
+      const probe = await run(py, ['-c', 'import mlx.core, transformers, tokenizers'], {}, 60000);
+      if (probe.ok) {
+        await fs.promises.writeFile(doneMark, String(Date.now()) + '\n');
+        return;
+      }
+      console.log('[rag] 导入自检未通过，删除旧 venv 重新置备: ' + probe.err);
+      await fs.promises.rm(this.venvDir, { recursive: true, force: true });
     }
-    // 路径 B：打包版捆绑资源（离线）：python-build-standalone + wheels
-    const resources = process.resourcesPath // Electron 打包版
-      ? path.join(process.resourcesPath, 'mlx-env')
-      : path.join(this.dataDir, 'mlx-env-bundle'); // 兼容手动放置
-    const tarball = path.join(resources, 'python.tar.gz');
-    const wheels = path.join(resources, 'wheels');
-    if (!fs.existsSync(tarball) || !fs.existsSync(wheels)) {
-      throw new Error('MLX 环境不可用：无 uv 且无捆绑资源（重装应用或安装 uv 后重试）');
+    fs.mkdirSync(path.dirname(this.venvDir), { recursive: true });
+    const installPkgs = async (mk) => {
+      // 离线路径逐包安装：进度按包计数（n/N）；uv 在线路径一次性联合解析，无法逐包计数
+      for (let i = 0; i < MLX_REQUIREMENTS.length; i++) {
+        onPhase?.('env-install', `安装依赖 ${i + 1}/${MLX_REQUIREMENTS.length}`);
+        const r = await mk(MLX_REQUIREMENTS[i]);
+        if (!r.ok) throw new Error('安装依赖 ' + MLX_REQUIREMENTS[i] + ' 失败: ' + r.err);
+      }
+    };
+    try {
+      // 路径 A：uv（开发机，联网）：一次性联合解析安装，避免逐包安装相互升降级
+      const uvOk = await run('uv', ['--version']);
+      if (uvOk.ok) {
+        onPhase?.('env-install', '创建虚拟环境');
+        let r = await run('uv', ['venv', '--python', '3.12', this.venvDir]);
+        if (!r.ok) throw new Error('uv venv 失败: ' + r.err);
+        onPhase?.('env-install', `安装依赖（共 ${MLX_REQUIREMENTS.length} 个包）`);
+        r = await run('uv', ['pip', 'install', '--python', py, ...MLX_REQUIREMENTS]);
+        if (!r.ok) throw new Error('uv pip install 失败: ' + r.err);
+      } else {
+        // 路径 B：打包版捆绑资源（离线）：python-build-standalone + wheels
+        const resources = process.resourcesPath // Electron 打包版
+          ? path.join(process.resourcesPath, 'mlx-env')
+          : path.join(this.dataDir, 'mlx-env-bundle'); // 兼容手动放置
+        const tarball = path.join(resources, 'python.tar.gz');
+        const wheels = path.join(resources, 'wheels');
+        if (!fs.existsSync(tarball) || !fs.existsSync(wheels)) {
+          throw new Error('MLX 环境不可用：无 uv 且无捆绑资源（重装应用或安装 uv 后重试）');
+        }
+        // 解压可重定位 python 到 dataDir/py/runtime（tar 内顶层为 python/）
+        const runtime = path.join(path.dirname(this.venvDir), 'runtime');
+        if (!fs.existsSync(path.join(runtime, 'python', 'bin', 'python3'))) {
+          fs.mkdirSync(runtime, { recursive: true });
+          onPhase?.('env-extract', '解压 Python 运行时');
+          const r = await run('tar', ['-xzf', tarball, '-C', runtime]);
+          if (!r.ok) throw new Error('解压 Python 运行时失败: ' + r.err);
+        }
+        const basePy = path.join(runtime, 'python', 'bin', 'python3');
+        onPhase?.('env-install', '创建虚拟环境');
+        let r = await run(basePy, ['-m', 'venv', this.venvDir]);
+        if (!r.ok) throw new Error('venv 创建失败: ' + r.err);
+        await installPkgs((pkg) => run(py, ['-m', 'pip', 'install', '--no-index', '--find-links', wheels, '--no-deps', pkg]));
+      }
+      await fs.promises.writeFile(doneMark, String(Date.now()) + '\n');
+    } catch (e) {
+      // 失败或被取消：删除半截环境，避免下次被当作可用（下次从头置备）
+      await fs.promises.rm(this.venvDir, { recursive: true, force: true }).catch(() => { /* 删除失败只能报原错 */ });
+      throw e;
     }
-    // 解压可重定位 python 到 dataDir/py/runtime（tar 内顶层为 python/）
-    const runtime = path.join(path.dirname(this.venvDir), 'runtime');
-    if (!fs.existsSync(path.join(runtime, 'python', 'bin', 'python3'))) {
-      fs.mkdirSync(runtime, { recursive: true });
-      const { execFileSync } = await import('node:child_process');
-      execFileSync('tar', ['-xzf', tarball, '-C', runtime]);
-    }
-    const basePy = path.join(runtime, 'python', 'bin', 'python3');
-    let r = await run(basePy, ['-m', 'venv', this.venvDir]);
-    if (!r.ok) throw new Error('venv 创建失败: ' + r.err);
-    r = await run(py, ['-m', 'pip', 'install', '--no-index', '--find-links', wheels, '--no-deps', ...MLX_REQUIREMENTS]);
-    if (!r.ok) throw new Error('离线 pip install 失败: ' + r.err);
   }
 
-  /** 惰性加载运行时；ready 前置检查模型 */
+  /** 惰性加载运行时；ready 前置检查模型。加载期间的阶段走 this.runtime（status 可见） */
   async ensureReady() {
     if (this._runtime) return this._runtime;
+    if (this.state === 'downloading' || this.state === 'importing') throw new Error('模型正在下载或导入中');
     if (process.env.WORKBENCH_RAG_EMBED === 'mock') {
-      this._runtime = { kind: 'mock', embed: (texts) => Promise.resolve(texts.map(mockVec)) };
+      const delay = Number(process.env.WORKBENCH_RAG_MOCK_LOAD_MS) || 0; // 仅供 e2e 控制加载时长，只作用于 mock
+      if (delay > 0) {
+        this.runtime = { state: 'loading', phase: 'start', startedAt: Date.now(), error: null };
+        await new Promise((r) => setTimeout(r, delay));
+      }
+      const embedDelay = Number(process.env.WORKBENCH_RAG_MOCK_EMBED_MS) || 0; // 仅供 e2e 拉长构建，只作用于 mock
+      this._runtime = {
+        kind: 'mock',
+        embed: async (texts) => {
+          if (embedDelay > 0) await new Promise((r) => setTimeout(r, embedDelay));
+          return texts.map(mockVec);
+        },
+      };
       this.state = 'ready';
       this.backend = 'mock';
+      this.runtime = { state: 'ready', phase: null, startedAt: null, error: null };
       return this._runtime;
     }
     if (this.state !== 'ready') {
@@ -271,14 +519,21 @@ export class EmbedService {
       if (!this._manifestOk(kind)) throw new Error('模型未就绪（请先下载或导入）');
       this.state = 'ready';
     }
-    this._loading ??= this._load(this.detectBackend());
+    const kind = this.detectBackend();
+    if (!this._loading) {
+      // 运行时加载耗时不可估计（A3）：只给阶段与已用时间，不给百分比
+      this.runtime = { state: 'loading', phase: kind === 'mlx' ? 'env' : 'start', startedAt: Date.now(), error: null };
+      this._loading = this._load(kind);
+    }
     const t0 = Date.now();
     try {
       this._runtime = await this._loading;
       this.backend = this._runtime.kind;
+      this.runtime = { state: 'ready', phase: null, startedAt: null, error: null };
       console.log('[rag] 运行时加载完成: ' + this._runtime.kind + (this._runtime.ep ? ' EP=' + this._runtime.ep : '') + '，耗时 ' + (Date.now() - t0) + 'ms');
     } catch (e) {
       this._loading = null;
+      this.runtime = { state: 'error', phase: null, startedAt: null, error: String(e.message || e) };
       throw e;
     }
     return this._runtime;
@@ -320,8 +575,7 @@ export class EmbedService {
       pending.clear();
       if (settled) {
         if (this._runtime && this._runtime._worker === worker) {
-          this._runtime = null;
-          this._loading = null;
+          this._dropRuntime();
         }
       } else {
         readyReject(deadErr);
@@ -390,7 +644,11 @@ export class EmbedService {
   }
 
   async _loadMlx() {
-    await this.ensureVenv();
+    if (this.runtime.state === 'loading') this.runtime.phase = 'env';
+    await this.ensureVenv((phase) => {
+      if (this.runtime.state === 'loading') this.runtime.phase = phase === 'env-extract' || phase === 'env-install' ? 'env' : this.runtime.phase;
+    });
+    if (this.runtime.state === 'loading') this.runtime.phase = 'start';
     const py = this.venvPython();
     // 打包后本文件在 asar 内，python 读不了 asar——sidecar 脚本随 asarUnpack 放在 .unpacked
     const script = path.join(
@@ -447,8 +705,7 @@ export class EmbedService {
     await call({ cmd: 'load', dir, dim: DIM });
     proc.on('exit', () => {
       if (this._runtime && this._runtime.kind === 'mlx') {
-        this._runtime = null;
-        this._loading = null;
+        this._dropRuntime();
       }
     });
     return {
@@ -476,10 +733,17 @@ export class EmbedService {
   }
 
   dispose() {
-    if (this._runtime && this._runtime.dispose) this._runtime.dispose();
-    this._runtime = null;
-    this._loading = null;
+    this._dropRuntime();
   }
+}
+
+// 模型任务的进度快照（下载/导入共用）
+function _emptyProgress() {
+  return {
+    file: '', bytes: 0, total: 0, done: 0, files: 0, host: '', attempt: 0, speedBps: 0,
+    phase: '', phaseDetail: '', overallBytes: 0, overallTotal: 0, percent: null, estimated: false,
+    etaSeconds: null, startedAt: null,
+  };
 }
 
 // 确定性哈希向量（e2e）：对文本做字符 trigram 哈希叠加，同义近形文本向量相近

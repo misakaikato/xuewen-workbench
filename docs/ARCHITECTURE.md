@@ -203,10 +203,11 @@ chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、�
 
 ### 6.6 RAG：关键词与向量两路召回，RRF 融合
 - **切块**：md 按标题层级，txt / docx 按段落，json 按条目，超长节按段落边界二次分组；块上带文档路径、标题路径。
-- **存储**：每库一个 `rag.db`（better-sqlite3），FTS5 中文 bigram + 向量 BLOB；可暂停续建（启动时自动续建未完成索引），删除即全量重建。一致性规则：构建中的扫描结束后补跑、向量写入成功才标完成、未对账完显示“待更新”、改参数清库与写指纹在同一事务。
+- **存储**：每库一个 `rag.db`（better-sqlite3），FTS5 中文 bigram + 向量 BLOB；可暂停续建（启动时自动续建未完成索引），删除即全量重建。一致性规则：构建中的扫描结束后补跑、向量写入成功才标完成、未对账完显示“待更新”、改参数需清库——清库按批删除（批间让出事件循环，进度随 status 上报），先写「清理中」标记、清完写新指纹，中断后续建先清余量，不会新旧混杂也不会重复清已清的库。
 - **检索**：BM25 与余弦各取 top-N，RRF 融合，语义路加权；低于融合阈值不显示，查不到就明说“没有找到”。查询与切块都经繁→简归一化。全部默认值在 `server/rag/config.js`，可在 RAG 管理页按库调整。
 - **嵌入**：bge-m3（1024 维）。macOS 走 MLX Python sidecar，Python 环境先尝试 uv 在线置备，否则用安装包内捆绑的离线环境（`scripts/fetch-mlx-env.mjs` 构建期拉取）；Windows 走 onnxruntime-node，在 worker 线程里加载与推理，默认先试 DirectML、不可用时降级 CPU（原因写入 backend.log，`WORKBENCH_RAG_ONNX_EP` 可覆盖）。测试可设 `WORKBENCH_RAG_EMBED=mock`。
-- **模型获取**：首次在 RAG 管理页下载。并发探测 huggingface.co 与 hf-mirror.com，按先响应者顺序取；托管模式用 Electron `net.fetch`（Chromium 网络栈，走系统代理）；`.part` 断点续传、30 秒空闲超时、退避重试、连续失败换源；接口立即返回，进度靠轮询。也可手动导入模型目录。模型不进安装包。
+- **模型获取**：首次在 RAG 管理页下载。并发探测 huggingface.co 与 hf-mirror.com，按先响应者顺序取；托管模式用 Electron `net.fetch`（Chromium 网络栈，走系统代理）；`.part` 断点续传、30 秒空闲超时、退避重试、连续失败换源；接口立即返回，进度靠轮询。也可手动导入模型目录（流式复制边读边算 sha256，后台任务）。模型不进安装包。
+- **任务状态与取消**：模型下载/导入/环境置备共用一套 `progress`（phase：env-extract / env-install / probe / download / verify / copy，含总体字节、百分比、估算标记、速度与剩余时间），`POST /api/rag/model/cancel` 可取消，取消后删半截文件、状态按清单回探。依赖安装两条路径计数口径不同：uv 在线路径一次性联合解析安装，只报「安装依赖（共 N 个包）」（界面为不确定态进度条）；离线捆绑路径逐包安装，报「安装依赖 n/N」。运行时加载（MLX sidecar 拉起、ONNX 建会话）走 `status().runtime`（loading 时给阶段与已用时间，不给百分比）。索引构建状态含 phase（等待文本索引 / 清理旧索引 / 切块 / 嵌入 / 加载模型）、当前文件与块级进度、速度与剩余时间；暂停有 `pausing` 过渡态；构建前置检查失败返回 409 且错误进入状态。mock 后端可用 `WORKBENCH_RAG_MOCK_LOAD_MS` / `WORKBENCH_RAG_MOCK_EMBED_MS` 控制加载与嵌入时长（仅供 e2e）。
 
 ### 6.7 智能助手：内嵌 pi agent，工作台能力以工具暴露
 - **运行时**：`@earendil-works/pi-coding-agent` SDK 内嵌在后端进程；agent 资源目录为 `agents/default/`，与用户全局 `~/.pi` 隔离。端点是任意 OpenAI 兼容服务（Ollama、LM Studio 或远端），配置存 `llm-settings.json`，自动生成 pi 的 `models.json`。

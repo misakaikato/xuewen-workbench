@@ -249,8 +249,10 @@ export const api = {
   // ---- RAG ----
   ragStatus: () =>
     req<RagStatus>('/api/rag/status'),
-  ragModelDownload: () => req<{ ok: boolean; error?: string; started?: boolean; already?: boolean; ready?: boolean }>('/api/rag/model/download', json('POST', {})),
-  ragModelImport: (dir: string) => req<{ ok: boolean; error?: string; kind?: string }>('/api/rag/model/import', json('POST', { dir })),
+  ragModelDownload: (force = false) =>
+    req<{ ok: boolean; error?: string; started?: boolean; already?: boolean; ready?: boolean }>('/api/rag/model/download', json('POST', { force })),
+  ragModelImport: (dir: string) => req<{ ok: boolean; error?: string; started?: boolean; kind?: string }>('/api/rag/model/import', json('POST', { dir })),
+  ragModelCancel: () => req<{ ok: boolean; error?: string }>('/api/rag/model/cancel', json('POST', {})),
   ragIndexBuild: (rebuild: boolean) => req<{ ok: boolean }>('/api/rag/index/build', json('POST', { rebuild })),
   ragIndexPause: () => req<{ ok: boolean }>('/api/rag/index/pause', json('POST', {})),
   ragSearch: (q: string, limit = 50) => req<RagSearchResponse>('/api/rag/search', json('POST', { q, limit })),
@@ -379,21 +381,58 @@ export interface AgentStatus {
   folders?: AgentFolder[];
 }
 
+export type RagModelPhase = 'env-extract' | 'env-install' | 'probe' | 'download' | 'verify' | 'copy';
+
+export interface RagModelProgress {
+  file: string;
+  bytes: number; // 当前文件已处理字节
+  total: number; // 当前文件总量（未知为 0）
+  done: number; // 已完成文件数
+  files: number; // 总文件数
+  host: string;
+  attempt: number;
+  speedBps: number;
+  phase: RagModelPhase | '';
+  phaseDetail: string; // 给人看的一句话（如「安装依赖 3/21」）
+  overallBytes: number; // 已知总量的累计已处理字节
+  overallTotal: number; // 已知文件总大小（未开始的文件未知时不计入）
+  percent: number | null; // 后端算好的总体百分比（无法计量时 null）
+  estimated: boolean; // true=按文件数折算的估算值
+  etaSeconds: number | null;
+  startedAt: number | null;
+}
+
+export interface RagRuntimeStatus {
+  state: 'idle' | 'loading' | 'ready' | 'error';
+  phase: 'env' | 'start' | 'warmup' | null;
+  startedAt: number | null;
+  error: string | null;
+}
+
 export interface RagModelStatus {
-  state: 'missing' | 'downloading' | 'ready' | 'error';
+  state: 'missing' | 'downloading' | 'importing' | 'ready' | 'error';
   backend: 'mock' | 'onnx' | 'mlx' | string;
+  ep: string | null; // Windows 实际执行设备（dml / cpu），其他平台 null
   id: string;
   dim: number;
   sha: string | null;
-  progress: { file: string; bytes: number; total: number; done: number; files: number; host: string; attempt: number; speedBps: number } | null;
+  progress: RagModelProgress | null;
+  canCancel: boolean;
+  runtime: RagRuntimeStatus;
   error: string | null;
 }
 
 export interface RagIndexStatus {
-  state: 'none' | 'building' | 'paused' | 'ready' | 'error' | 'stale';
-  phase: string;
+  state: 'none' | 'building' | 'pausing' | 'paused' | 'ready' | 'error' | 'stale';
+  phase: string; // 等待文本索引 | 清理旧索引 | 切块 | 嵌入 | 加载模型 | 完成
   done: number;
   total: number;
+  currentFile: string | null;
+  fileChunksDone: number;
+  fileChunksTotal: number;
+  chunksPerSec: number | null;
+  etaSeconds: number | null;
+  clearing: { done: number; total: number } | null;
   files: number;
   filesDone: number;
   chunks: number;
