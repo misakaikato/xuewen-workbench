@@ -526,7 +526,23 @@ app.put('/api/ui-settings', async (req, res) => {
   res.json({ ok: true, ...next });
 });
 
-app.get('/api/status', (req, res) => {
+// 打包版的更新桥经 RPC 到主进程，state() 返回 Promise，必须等到结果再序列化
+// （直接放进 res.json 会变成 {}，前端据此判定为「开发模式」、横幅与检查更新都不出现）。
+// 单次 RPC 失败时沿用上一次的快照，避免横幅随轮询闪烁。
+let lastUpdateState = null;
+async function currentUpdateState() {
+  const bridge = getUpdateBridge();
+  if (!bridge) return disabledUpdateState();
+  try {
+    lastUpdateState = await bridge.state();
+  } catch (e) {
+    console.error('[update] 读取更新状态失败:', e?.message || e);
+  }
+  return lastUpdateState;
+}
+
+app.get('/api/status', async (req, res) => {
+  const update = await currentUpdateState();
   const active = libs.get(activeId) || null;
   const libStatuses = {};
   for (const [id, l] of libs) {
@@ -541,7 +557,6 @@ app.get('/api/status', (req, res) => {
       linksSeq: l.linkIndex.buildSeq,
     };
   }
-  const bridge = getUpdateBridge();
   res.json({
     dsId: activeId, ...(active ? active.scanner.status() : emptyStatus()),
     indexing: active ? active.indexState : { phase: null, done: 0, total: 0, startedAt: null },
@@ -549,7 +564,7 @@ app.get('/api/status', (req, res) => {
     linksReady: active ? active.linkIndex.ready : false,
     linksSeq: active ? active.linkIndex.buildSeq : 0,
     libs: libStatuses,
-    update: bridge ? bridge.state() : disabledUpdateState(),
+    update,
   });
 });
 
