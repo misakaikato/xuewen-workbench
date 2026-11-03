@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { dataDir, getState, setState, writeJsonAtomic } from './store.js';
 import { SIDECAR_SUFFIX } from './scanner.js';
 import {
-  normalizeText, isTermLike, buildAutoIndex, extractLinks, extractWikilinks, MATCH_ENGINE_VERSION,
+  normalizeText, isTermLike, buildAutoIndex, extractLinksSteps, extractWikilinks, MATCH_ENGINE_VERSION,
 } from './linkMatch.js';
 import { loadConcepts } from './derived.js';
 import { setActivity } from './lagWatch.js';
@@ -17,6 +17,17 @@ const CACHE_VERSION = 2; // +1：索引文本改走 toEditorText（换行归一�
 const HTML_DOC_EXTS = ['.md', '.json', '.txt', '.doc', '.docx', '.html', '.htm'];
 const LINKS_DIR = () => path.join(dataDir(), 'links');
 const cacheFileOf = (dsId) => path.join(LINKS_DIR(), dsId + '.json');
+
+// 时间片让出：返回的 maybeYield 自上次让出起超过 30ms 才 setImmediate 一次（结果与顺序不变）
+function sliceYielder() {
+  let sliceStart = Date.now();
+  return async () => {
+    if (Date.now() - sliceStart > 30) {
+      await new Promise((r) => setImmediate(r));
+      sliceStart = Date.now();
+    }
+  };
+}
 
 // 读取 md 文本中的 ATX 1–3 级标题（词条 + [[..#锚点]] 解析用）
 function headingsOf(text) {
@@ -159,13 +170,7 @@ export class LinkIndex {
     }
     // md 标题锚点（1–3 级）进入词条；记录各文档标题清单供 [[..#锚点]] 与预览用
     const headingDocs = new Map(); // normHeading -> Set<path>（仅统计用，不两处重复判定）
-    let sliceStart = Date.now();
-    const maybeYield = async () => {
-      if (Date.now() - sliceStart > 30) {
-        await new Promise((r) => setImmediate(r));
-        sliceStart = Date.now();
-      }
-    };
+    const maybeYield = sliceYielder();
     for (const f of snapshot.files) {
       if (f.ext !== '.md') continue;
       const raw = texts.get(f.path);
@@ -281,13 +286,16 @@ export class LinkIndex {
     return out;
   }
 
-  // 分相位让出：extractLinks 全文扫描是大头，其后让出一次再做 wikilink 解析（结果与顺序不变）
-  async extractFor(p, text) {
+  // 自动链接全文扫描是大头：按步驱动，与逐文件循环共用同一时间片让出；其后再做 wikilink 解析（结果与顺序不变）
+  async extractFor(p, text, maybeYield) {
     const out = [];
-    for (const l of extractLinks(text, this.autoIndex, { selfPath: p })) {
+    const steps = extractLinksSteps(text, this.autoIndex, { selfPath: p });
+    let step;
+    while (!(step = steps.next()).done) await maybeYield();
+    for (const l of step.value) {
       out.push({ from: l.from, to: l.to, term: l.term, norm: l.norm, kind: 'auto', target: l.target, candidates: l.candidates || null, display: null });
     }
-    if (text.length > 200000) await new Promise((r) => setImmediate(r));
+    await maybeYield();
     for (const w of extractWikilinks(text)) {
       const norm = normalizeText(w.name);
       const r = this.resolveWiki(w.name);
@@ -398,7 +406,7 @@ export class LinkIndex {
 
       const nextFiles = new Map();
       let changed = vocabChanged;
-      let sliceStart = Date.now();
+      const maybeYield = sliceYielder();
       let progressDone = 0;
       const progressTotal = snapshot.files.length;
       for (const f of snapshot.files) {
@@ -417,7 +425,7 @@ export class LinkIndex {
           const isHtml = f.ext === '.html' || f.ext === '.htm';
           nextFiles.set(f.path, {
             mtimeMs: f.mtimeMs, size: f.size,
-            links: isHtml ? this.extractHtmlFor(f.path, text) : await this.extractFor(f.path, text),
+            links: isHtml ? this.extractHtmlFor(f.path, text) : await this.extractFor(f.path, text, maybeYield),
             title: fm.title, excerpt: fm.excerpt, headings: fm.headings,
           });
           changed = true;
@@ -425,10 +433,7 @@ export class LinkIndex {
         // 每处理完一个文件检查已用时间，超过 30ms 让出事件循环（结果与顺序不变）
         progressDone++;
         if (onProgress) onProgress(progressDone, progressTotal);
-        if (Date.now() - sliceStart > 30) {
-          await new Promise((r) => setImmediate(r));
-          sliceStart = Date.now();
-        }
+        await maybeYield();
       }
       if (this.files.size !== nextFiles.size) changed = true;
       this.files = nextFiles;

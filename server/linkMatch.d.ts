@@ -46,5 +46,11 @@ export declare function extractLinks(
   autoIndex: AutoIndex | null,
   opts?: { selfPath?: string | null }
 ): ExtractedLink[];
+/** extractLinks 的分步形式：每个步长 yield 一次，生成器的返回值即链接数组 */
+export declare function extractLinksSteps(
+  text: string,
+  autoIndex: AutoIndex | null,
+  opts?: { selfPath?: string | null }
+): Generator<void, ExtractedLink[], void>;
 export declare function extractWikilinks(text: string): WikiLinkSpan[];
 export declare function wikiNameAt(text: string, pos: number): { name: string; from: number } | null;

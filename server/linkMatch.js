@@ -26,6 +26,33 @@ export function normalizeText(s) {
   return out;
 }
 
+// ---------- 分步执行：全文扫描拆成可暂停的步骤 ----------
+// 扫描写成生成器，每走一个步长 yield 一次（不带值）。同步调用方用 runSteps 一口气跑完；
+// 服务端按时间片驱动、在步骤之间让出事件循环。两种驱动跑的是同一份逻辑，结果完全相同。
+const STEP_CHARS = 1 << 16; // 归一化/跳过区扫描的步长（码元）
+const STEP_POSITIONS = 256; // 自动链接主循环的步长（扫描位置数）
+
+function runSteps(gen) {
+  for (;;) {
+    const r = gen.next();
+    if (r.done) return r.value;
+  }
+}
+
+// 分块归一化：normalizeText 逐码元映射，分块拼接与整段归一化逐字相同。
+// 逐字拼出的串在引擎里是深层拼接树，首次按下标访问时才整体展平（与长度线性的一整段同步开销）；
+// 每块拼完立即访问一次，让展平落在本块的步骤里
+function* normalizeSteps(text) {
+  let out = '';
+  for (let a = 0; a < text.length; a += STEP_CHARS) {
+    const part = normalizeText(text.slice(a, a + STEP_CHARS));
+    part.charCodeAt(0);
+    out += part;
+    yield;
+  }
+  return out;
+}
+
 const hasCJK = (s) => /\p{Script=Han}/u.test(s);
 
 // ---------- 词条可用性判定：不像名称的（纯数字/标点、日期、编号、占位名）不进词表 ----------
@@ -263,9 +290,14 @@ function mergeRanges(out) {
 // 计算不应自动加链接的区间：围栏代码、行内代码、既有 Markdown 链接（文字与目标）、
 // 图片、URL、HTML 标签、[[wikilink]]（单独处理）、YAML front matter、链接引用定义。
 export function computeSkipRanges(text) {
+  return runSteps(skipRangeSteps(text));
+}
+
+function* skipRangeSteps(text) {
   const out = [];
   const n = text.length;
   let i = 0;
+  let mark = 0; // 上次 yield 时的扫描位置
 
   // YAML front matter：文件以 --- 行开头时跳过整个块
   if (/^---[ \t]*\r?\n/.test(text)) {
@@ -281,6 +313,10 @@ export function computeSkipRanges(text) {
     if (b > a) out.push([a, b]);
   };
   while (i < n) {
+    if (i - mark >= STEP_CHARS) {
+      mark = i;
+      yield;
+    }
     let eol = text.indexOf('\n', i);
     if (eol < 0) eol = n;
     let end = eol;
@@ -293,6 +329,10 @@ export function computeSkipRanges(text) {
       let j = eol + 1;
       let close = -1;
       while (j < n) {
+        if (j - mark >= STEP_CHARS) {
+          mark = j;
+          yield;
+        }
         let e2 = text.indexOf('\n', j);
         if (e2 < 0) e2 = n;
         let en2 = e2;
@@ -308,17 +348,23 @@ export function computeSkipRanges(text) {
       i = close < 0 ? n : close + 1;
       continue;
     }
-    inlineScan(line, i, push);
+    yield* inlineScanSteps(line, i, push);
     i = eol + 1;
   }
   return mergeRanges(out);
 }
 
 // 单行内扫描：行内代码、wikilink、Markdown 链接/图片、URL、HTML 标签、引用定义
-function inlineScan(line, base, push) {
+// （压缩成一行的大 JSON 整个文件就是一行，故行内同样分步）
+function* inlineScanSteps(line, base, push) {
   const n = line.length;
   let i = 0;
+  let mark = 0;
   while (i < n) {
+    if (i - mark >= STEP_CHARS) {
+      mark = i;
+      yield;
+    }
     const ch = line[i];
     // 行内代码：等长反引号配对
     if (ch === '`') {
@@ -473,17 +519,27 @@ const isWordChar = (ch) => /[a-z0-9_]/.test(ch);
 // text: 原文；autoIndex: buildAutoIndex 的结果；opts.selfPath: 本文路径（不链自身）
 // 返回 [{from, to, term, norm, target:{path, heading?}}]（不含被忽略判定——那由服务端状态层处理）
 export function extractLinks(text, autoIndex, opts = {}) {
+  return runSteps(extractLinksSteps(text, autoIndex, opts));
+}
+
+// extractLinks 的分步形式（生成器的返回值即链接数组），供服务端按时间片驱动
+export function* extractLinksSteps(text, autoIndex, opts = {}) {
   const selfPath = opts.selfPath ?? null;
   const out = [];
   if (!autoIndex || autoIndex.byChar.size === 0) return out;
-  const norm = normalizeText(text);
+  const norm = yield* normalizeSteps(text);
   const n = norm.length;
-  const skips = computeSkipRanges(text);
+  const skips = yield* skipRangeSteps(text);
   const sections = computeSectionStarts(text);
   let skipI = 0;
   let secI = 0;
   let seen = new Set(); // 本节内已链接的词条（按 norm）
+  let step = 0;
   for (let i = 0; i < n;) {
+    if (++step === STEP_POSITIONS) {
+      step = 0;
+      yield;
+    }
     // 越过分节边界：清空已见集合
     while (secI < sections.length && i >= sections[secI]) {
       seen = new Set();

@@ -242,7 +242,7 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 - 前端全局状态 Provider value 记忆化、按内容比对；轮询统一走 `src/hooks/usePolling.ts`，窗口隐藏时暂停。
 - 编辑器：内链字段带 version，选区变化不再重建装饰与重扫引用；按键不进页面 state，updateListener 合一，格式工具栏自订阅。
 - Word 图片外置为 `/api/word/asset` 按需取（不再内嵌 data URI）；TXT 阅读按 200 行一个 `content-visibility` 块；检索结果每批 50 组续载；JSON 节点 memo + 分页。
-- 后端建文本索引与算内链每 30ms 让出事件循环（阈值 `WORKBENCH_LAG_THRESHOLD_MS` 可调，供 e2e 验证）。
+- 后端建文本索引与算内链每 30ms 让出事件循环（阈值 `WORKBENCH_LAG_THRESHOLD_MS` 可调，供 e2e 验证），单个大文件也不例外：内链全文扫描写成生成器（`server/linkMatch.js` 的 `extractLinksSteps`，同步的 `extractLinks` 跑同一个生成器），服务端在步骤之间按时间片让出。
 - 前端除概览外按页面 `React.lazy` 拆分；复制渲染管线（unified/remark）与 `@codemirror/lang-html` 按需加载。
 - 动效遵守 `DESIGN.md` §7：侧栏折叠不动画 width（主区宽度一次到位，侧栏内层 transform + opacity 过渡）；面板挂载/卸载统一走 `src/lib/presence.ts`（med 档，离场播完再移除）；阅读页查找条与阅读偏好面板为浮层，不推挤正文；拖拽调宽期间只写 CSS 变量（rAF 节流），松手才提交 state 与持久化。
 
@@ -292,6 +292,7 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 | `npx tsc -b` | 前端类型检查 |
 | `npm run lint` | ESLint |
 | `node scripts/test-linkmatch.mjs` | 内链匹配引擎回归 |
+| `node scripts/test-links-async.mjs` | 内链分步提取与 main 逐项一致；含 5M 字符大文件的库建内链期间事件循环不阻塞 |
 | `node scripts/test-diagnostics.mjs` | 日志轮转与格式、卡顿看门狗、异常事件、诊断 zip |
 | `node scripts/test-download.mjs` | 模型下载：选源、断点续传、空闲超时、失败原因、无句柄残留 |
 | `node scripts/test-onnx-worker.mjs` | ONNX worker：夹具模型（需 uv，首次需联网取分词器）比对新旧向量、推理期间主线程延迟、优雅关闭压力 |
