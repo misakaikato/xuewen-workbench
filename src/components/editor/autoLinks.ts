@@ -13,6 +13,7 @@ import { markdownLanguage } from '@codemirror/lang-markdown';
 import { api } from '@/lib/api';
 import type { DocLink } from '@/lib/api';
 import { wikiNameAt } from '../../../server/linkMatch.js';
+import { whenIndexSettled } from '@/lib/indexReady';
 
 const alDocPath = Facet.define<string, string>({ combine: (v) => (v.length ? v[v.length - 1] : '') });
 
@@ -143,9 +144,9 @@ export interface AutoLinksOptions {
   readOnly?: boolean;
 }
 
-// 拉取本文链接并注入编辑器（mount / 保存后 / 索引更新后调用）
+// 拉取本文链接并注入编辑器（mount / 保存后 / 索引更新后调用）。
+// 索引未就绪时不再固定重试：订阅全局索引就绪信号，信号到达再取一次（反馈第 4 批）。
 export async function fetchDocLinks(view: EditorView, path: string, minSeq = 0): Promise<void> {
-  let tries = 0;
   for (;;) {
     let r;
     try {
@@ -154,11 +155,11 @@ export async function fetchDocLinks(view: EditorView, path: string, minSeq = 0):
       return;
     }
     if (r.ready && r.buildSeq >= minSeq) {
+      if (!view.dom.isConnected) return; // 编辑器已卸载
       view.dispatch({ effects: setDocLinks.of({ links: r.links, seq: r.buildSeq }) });
       return;
     }
-    if (++tries > 30) return; // 索引迟迟未就绪：放弃本次（下次保存/更新会再拉）
-    await new Promise((s) => setTimeout(s, 500));
+    await whenIndexSettled();
   }
 }
 

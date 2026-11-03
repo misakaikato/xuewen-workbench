@@ -23,9 +23,19 @@ export interface ScanStatus {
   watching: boolean;
   generation: number;
   scannedAt: string | null;
+  /** 扫描进行中已遍历的文件数（反馈第 4 批） */
+  scanned?: number;
   counts: { files: number; dirs: number; md: number; json: number; txt: number; doc: number; docx: number; html: number } | null;
   dirErrors: { path: string; reason: string }[];
   fileErrors: { path: string; reason: string }[];
+}
+
+/** 后台索引进度（/api/status 的 indexing 字段）：phase 结束后回到 null，失败时 indexError 有值 */
+export interface IndexingProgress {
+  phase: 'text' | 'links' | null;
+  done: number;
+  total: number;
+  startedAt: number | null;
 }
 
 export interface UpdateProgress {

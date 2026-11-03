@@ -336,16 +336,17 @@ export class LinkIndex {
 
   // 索引构建完成后调用（snapshot 为扫描快照，indexer 提供内存文本）；
   // 串行执行避免并发重建；定期让出事件循环，不长时间阻塞请求处理。
-  async rebuild(snapshot, indexer) {
+  // onProgress(done, total) 每遍历一个文件回调一次（供 /api/status 暴露进度）。
+  async rebuild(snapshot, indexer, onProgress) {
     if (!this.dsId || !this.baseDir) return;
-    this._run = this._run.then(() => this._rebuildNow(snapshot, indexer)).catch((e) => {
+    this._run = this._run.then(() => this._rebuildNow(snapshot, indexer, onProgress)).catch((e) => {
       console.error('链接索引构建失败:', e.message);
       this.building = false;
     });
     return this._run;
   }
 
-  async _rebuildNow(snapshot, indexer) {
+  async _rebuildNow(snapshot, indexer, onProgress) {
     if (!this._textsOf) this.useTextsOf(() => indexer.texts);
     const t0 = Date.now();
     const restoreActivity = setActivity('算内链 ' + path.basename(this.baseDir || ''));
@@ -398,8 +399,14 @@ export class LinkIndex {
       const nextFiles = new Map();
       let changed = vocabChanged;
       let sliceStart = Date.now();
+      let progressDone = 0;
+      const progressTotal = snapshot.files.length;
       for (const f of snapshot.files) {
-        if (f.ext !== '.md' && f.ext !== '.json' && f.ext !== '.txt' && f.ext !== '.html' && f.ext !== '.htm') continue;
+        if (f.ext !== '.md' && f.ext !== '.json' && f.ext !== '.txt' && f.ext !== '.html' && f.ext !== '.htm') {
+          progressDone++;
+          if (onProgress) onProgress(progressDone, progressTotal);
+          continue;
+        }
         const fm = fileMeta.get(f.path);
         const prev = old?.files[f.path];
         if (prev && prev.mtimeMs === f.mtimeMs && prev.size === f.size) {
@@ -416,6 +423,8 @@ export class LinkIndex {
           changed = true;
         }
         // 每处理完一个文件检查已用时间，超过 30ms 让出事件循环（结果与顺序不变）
+        progressDone++;
+        if (onProgress) onProgress(progressDone, progressTotal);
         if (Date.now() - sliceStart > 30) {
           await new Promise((r) => setImmediate(r));
           sliceStart = Date.now();

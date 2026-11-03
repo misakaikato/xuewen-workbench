@@ -28,7 +28,7 @@ export function PageLoading({ text = '加载中…' }: { text?: string }) {
 }
 
 /** 行内加载态（面板/区块内） */
-export function InlineLoading({ text = '加载中…' }: { text?: string }) {
+export function InlineLoading({ text = '加载中…' }: { text?: ReactNode }) {
   return (
     <div className="flex items-center gap-2 text-muted-foreground" role="status">
       <Loader2 className="w-3.5 h-3.5 animate-spin" />

@@ -20,6 +20,7 @@ import { CreateEntryDialog, type CreateKind, type CreateTarget } from './CreateE
 import { extIcon } from '@/lib/extIcon';
 import { api, type MetaIssue } from '@/lib/api';
 import { runEntryAction } from '@/lib/entryOps';
+import { useWhenIndexReady } from '@/hooks/useWhenIndexReady';
 import { ActionItems, type Entry } from './EntryMenu';
 
 type OnCreate = (dir: string, kind: CreateKind) => void;
@@ -479,25 +480,26 @@ export function FileTree({
   };
 
   // 外部数据：元数据问题（徽标汇总 + 行内红点）、集合配置（集合视图 + 集合引用）、被引用计数。
-  // 三个请求并发拉一次；请求失败时重试；链接索引未就绪时只补拉 counts；
-  // tree 变化或库重扫（scannedAt 变化）后重拉。
+  // 三个请求并发拉一次；请求失败时重试；链接索引未就绪时不再定时重试，
+  // 订阅全局索引就绪信号，就绪后补拉一次（反馈第 4 批）；tree 变化或库重扫（scannedAt 变化）后重拉。
   const [metaIssues, setMetaIssues] = useState<MetaIssue[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [linkCounts, setLinkCounts] = useState<Record<string, number>>({});
   const scannedAt = config?.status.scannedAt ?? null;
+  const pullCountsRef = useRef<() => Promise<void>>(async () => {});
+  // 索引就绪信号到达：补拉一次引用计数（仅当就绪前拉到过空 counts 才有意义，多拉一次无害）
+  useWhenIndexReady(() => { void pullCountsRef.current(); });
   useEffect(() => {
     let dead = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    // 链接索引冷启动异步构建：未就绪时 counts 为空但请求并不失败，只补拉 counts 直至就绪
-    const pullCounts = async (readyRetry: number) => {
+    const pullCounts = async () => {
       try {
         const r = await api.linkCounts();
-        if (dead) return;
-        setLinkCounts(r.counts);
-        if (r.ready === false && readyRetry < 10) {
-          retryTimer = setTimeout(() => { if (!dead) void pullCounts(readyRetry + 1); }, 2500);
-        }
+        if (!dead) setLinkCounts(r.counts);
       } catch { /* 留给下一个 tree/scannedAt 信号重拉 */ }
+    };
+    pullCountsRef.current = async () => {
+      if (!dead) await pullCounts();
     };
     const pull = async (retry: number) => {
       const [mi, col, lc] = await Promise.allSettled([api.metaIssues(), api.collections(), api.linkCounts()]);
@@ -506,15 +508,16 @@ export function FileTree({
       if (col.status === 'fulfilled') setCollections(col.value.collections);
       if (lc.status === 'fulfilled') setLinkCounts(lc.value.counts);
       const failed = mi.status === 'rejected' || col.status === 'rejected' || lc.status === 'rejected';
-      const indexPending = lc.status === 'fulfilled' && lc.value.ready === false;
       if (failed && retry < 3) {
         retryTimer = setTimeout(() => { if (!dead) void pull(retry + 1); }, 2500);
-      } else if (indexPending) {
-        retryTimer = setTimeout(() => { if (!dead) void pullCounts(1); }, 2500);
       }
     };
     void pull(0);
-    return () => { dead = true; if (retryTimer) clearTimeout(retryTimer); };
+    return () => {
+      dead = true;
+      pullCountsRef.current = async () => {};
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [tree, scannedAt]);
   const metaMsgs = useMemo(() => {
     const m = new Map<string, string[]>();

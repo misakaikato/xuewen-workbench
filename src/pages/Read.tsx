@@ -16,6 +16,7 @@ import { registerUnsaved } from '@/lib/unsaved';
 import { detectLineSeparator } from '@/components/editor/lineSeparator';
 import { FormatToolbar } from '@/components/editor/FormatToolbar';
 import { pushDocLinks } from '@/components/editor/autoLinks';
+import { whenIndexSettled } from '@/lib/indexReady';
 import type { FilePayload, FileEntry } from '@/lib/types';
 import { ReadOnlyDoc } from '@/components/ReadOnlyDoc';
 import { docHeadings, scrollDocToPos } from '@/components/editor/readDocHelpers';
@@ -324,15 +325,16 @@ export default function Read() {
     [dsId, relPath]
   );
 
+  // 索引未就绪时不再固定重试：订阅全局索引就绪信号，就绪后再取一次（反馈第 4 批）
   const rePullLinks = useCallback(async () => {
-    for (let i = 0; i < 20; i++) {
+    for (;;) {
       const r = await api.linksDoc(relPath).catch(() => null);
       if (r && r.dsId === dsId && r.ready) {
         setDocLinks(r.links);
         pushDocLinks(viewRef.current, r.links, r.buildSeq);
         return;
       }
-      await new Promise((s) => setTimeout(s, 600));
+      await whenIndexSettled();
     }
   }, [dsId, relPath]);
 

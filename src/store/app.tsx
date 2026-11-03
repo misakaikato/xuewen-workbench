@@ -3,11 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, setApiScope } from '@/lib/api';
 import { usePolling } from '@/hooks/usePolling';
-import { AppCtx, type AppState } from './app-context';
-import type { ConfigResponse, TreeNode, UpdateState } from '@/lib/types';
+import { notify } from '@/lib/notify';
+import { INDEX_SETTLED_EVENT } from '@/lib/indexReady';
+import { AppCtx, type AppState, type BackendWork } from './app-context';
+import type { ConfigResponse, IndexingProgress, TreeNode, UpdateState } from '@/lib/types';
 
 // 更新状态内容相同则视为未变（服务端每次返回新对象，身份相同但字段不变不应触发整树重渲）
 function sameUpdate(a: UpdateState | null, b: UpdateState | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
   if (a === b) return true;
   if (!a || !b) return false;
   return (
@@ -29,13 +33,32 @@ function sameUpdate(a: UpdateState | null, b: UpdateState | null): boolean {
   );
 }
 
+// 后台索引进度的浅比较（轮询返回新对象，内容不变不触发重渲）
+function sameIndexing(a: IndexingProgress | null, b: IndexingProgress | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.phase === b.phase && a.done === b.done && a.total === b.total && a.startedAt === b.startedAt;
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [loading, setLoading] = useState(true);
   const [update, setUpdate] = useState<UpdateState | null>(null);
+  const [backend, setBackend] = useState<BackendWork>({ scanning: false, scanned: 0, indexing: null, indexError: null });
   const genRef = useRef(0);
   const dsRef = useRef<string | null>(null);
+  // 后台状态的对账基线：linksSeq 递增 → 广播索引就绪；新 indexError → 提示一次
+  const lastLinksSeqRef = useRef<number | null>(null);
+  const lastIndexErrorRef = useRef<string | null>(null);
+  // 外部入口（如添加知识库）预告知后台活动，轮询临时收紧
+  const [activityHintUntil, setActivityHintUntil] = useState(0);
+  const hintActivity = useCallback(() => setActivityHintUntil(Date.now() + 10000), []);
+  useEffect(() => {
+    if (!activityHintUntil) return;
+    const t = setTimeout(() => setActivityHintUntil(0), Math.max(0, activityHintUntil - Date.now()) + 100);
+    return () => clearTimeout(t);
+  }, [activityHintUntil]);
 
   const refreshConfig = useCallback(async () => {
     const cfg = await api.getConfig();
@@ -48,6 +71,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLoading(false);
     const dsChanged = cfg.configured && cfg.dsId !== prevDs;
     const genChanged = cfg.configured && cfg.generation !== prevGen;
+    if (dsChanged) {
+      // 切库：后台状态对账基线重置，旧库的进度不串到新库
+      lastLinksSeqRef.current = null;
+      lastIndexErrorRef.current = null;
+      setBackend({ scanning: false, scanned: 0, indexing: null, indexError: null });
+    }
     if (dsChanged || genChanged) {
       // 知识库或代际变化：重取目录树
       const t = await api.tree();
@@ -73,6 +102,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [scanning, setScanning] = useState(false);
   const rescan = useCallback(async () => {
     setScanning(true);
+    hintActivity();
     try {
       await api.rescan();
       const gen = genRef.current;
@@ -82,10 +112,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setConfig(cfg);
         if (t) setTree(t.tree);
       }
+    } catch (e) {
+      notify('重新扫描失败：' + (e as Error).message, { kind: 'error' });
     } finally {
       setScanning(false);
     }
-  }, []);
+  }, [hintActivity]);
 
   const activateLib = useCallback(async (id: string) => {
     await api.activateLibrary(id);
@@ -104,29 +136,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // 轮询扫描状态（文件监听触发服务端重扫后同步前端；多库时看各库 scannedAt）。
   // 页面隐藏时暂停（usePolling），回到可见立即补拉。
-  // 更新进行中（checking/downloading/installing）收紧到 1 秒：点击后界面要立即跟上状态机。
+  // 更新进行中（checking/downloading/installing）或有后台扫描/索引时收紧到 1 秒：
+  // 顶栏指示、检索「可能不完整」、反链等待都靠这班车，不新增请求循环。
   const updateBusy = !!update && ['checking', 'downloading', 'installing'].includes(update.status);
+  const backendBusy = scanning || backend.scanning || backend.indexing?.phase != null || Date.now() < activityHintUntil;
   usePolling(() => {
     (async () => {
       try {
         const st = await api.status();
         setUpdate((prev) => (sameUpdate(prev, st.update ?? null) ? prev : (st.update ?? null))); // 更新状态搭同一班车（规格：不新增请求循环）
+        const seq = st.linksSeq ?? null;
+        if (seq !== null && lastLinksSeqRef.current !== null && seq !== lastLinksSeqRef.current) {
+          window.dispatchEvent(new CustomEvent(INDEX_SETTLED_EVENT)); // 索引就绪：等待方再取一次
+        }
+        if (seq !== null) lastLinksSeqRef.current = seq;
+        const idxErr = st.indexError ?? null;
+        if (idxErr && idxErr !== lastIndexErrorRef.current) {
+          notify('索引构建失败：' + idxErr, { kind: 'error' });
+        }
+        lastIndexErrorRef.current = idxErr;
+        setBackend((prev) => {
+          const next: BackendWork = {
+            scanning: !!st.scanning,
+            scanned: st.scanned ?? 0,
+            indexing: st.indexing ?? null,
+            indexError: st.indexError ?? null,
+          };
+          return prev.scanning === next.scanning && prev.scanned === next.scanned &&
+            sameIndexing(prev.indexing, next.indexing) && prev.indexError === next.indexError
+            ? prev
+            : next;
+        });
         const active = config?.dsId ? st.libs?.[config.dsId] : null;
         if (active?.scannedAt && config?.status.scannedAt && active.scannedAt !== config.status.scannedAt) {
           await refreshConfig();
         }
       } catch { /* 后端未就绪时忽略 */ }
     })();
-  }, updateBusy ? 1000 : 5000);
+  }, updateBusy || backendBusy ? 1000 : 5000);
 
   const libraries = useMemo(() => config?.libraries ?? [], [config]);
   const dsId = config?.dsId ?? null;
   const value = useMemo<AppState>(
     () => ({
-      config, libraries, tree, loading, dsId, update, scanning, applyUpdate: setUpdate,
-      refreshConfig, refreshTree, rescan, activateLib, removeLib,
+      config, libraries, tree, loading, dsId, update, scanning, backend, applyUpdate: setUpdate,
+      refreshConfig, refreshTree, rescan, activateLib, removeLib, hintActivity,
     }),
-    [config, libraries, tree, loading, dsId, update, scanning, refreshConfig, refreshTree, rescan, activateLib, removeLib]
+    [config, libraries, tree, loading, dsId, update, scanning, backend, refreshConfig, refreshTree, rescan, activateLib, removeLib, hintActivity]
   );
 
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;

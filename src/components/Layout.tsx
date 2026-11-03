@@ -5,6 +5,7 @@ import { Outlet, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/store/app-context';
 import { UpdateBanner } from './UpdateBanner';
 import { DiagnosticsBanner } from './DiagnosticsBanner';
+import { BackgroundIndicator } from './BackgroundIndicator';
 import { FileTree } from './FileTree';
 import { setEntryContext } from '@/lib/entryOps';
 import { EmptyState } from './ui-states';
@@ -26,7 +27,7 @@ import {
 } from '@/components/ui/alert-dialog';
 
 export function Layout() {
-  const { config, libraries, tree, rescan, scanning, dsId, refreshTree, activateLib, removeLib } = useApp();
+  const { config, libraries, tree, rescan, scanning, backend, dsId, refreshTree, activateLib, removeLib } = useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -269,13 +270,15 @@ export function Layout() {
           <span className="flex-1 text-left truncate">全局检索…</span>
           <Kbd className="shrink-0">⌘K</Kbd>
         </button>
+        <BackgroundIndicator />
         <button
           className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground hover:text-primary disabled:opacity-40"
           title="重新扫描知识库"
           disabled={scanning || !config?.configured}
           onClick={() => rescan()}
         >
-          <RefreshCw className={`w-4 h-4 ${scanning || st?.scanning ? 'animate-spin' : ''}`} />
+          {/* 扫描与后续索引期间都保持转圈（后台状态来自 /api/status 轮询） */}
+          <RefreshCw className={`w-4 h-4 ${scanning || st?.scanning || backend.scanning || backend.indexing?.phase ? 'animate-spin' : ''}`} />
         </button>
         <Link to="/settings" className="p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground hover:text-primary" title="设置">
           <Settings className="w-4 h-4" />

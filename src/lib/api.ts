@@ -1,7 +1,7 @@
 // API 访问层：统一错误处理
 import type {
   ConfigResponse, FilePayload, ScanStatus, TreeNode, StatsResponse, UpdateState,
-  SearchResult, RefResolution, Collection, MetadataMapping, TopicEntry, ConceptEntry, FileEntry, LibraryInfo,
+  SearchResult, RefResolution, Collection, MetadataMapping, TopicEntry, ConceptEntry, FileEntry, LibraryInfo, IndexingProgress,
 } from './types';
 import type { Theme } from './theme-context';
 
@@ -173,7 +173,26 @@ export const api = {
   diagnosticsState: () => req<{ pending: DiagnosticsIncident | null; logsDir: string }>('/api/diagnostics/state'),
   diagnosticsAck: () => req<{ ok: boolean }>('/api/diagnostics/ack', json('POST', {})),
   exportDiagnostics: () => req<{ ok: boolean; file: string }>('/api/diagnostics/export', json('POST', {})),
-  status: () => req<ScanStatus & { libs?: Record<string, { scanning: boolean; watching: boolean; scannedAt: string | null }> } & { update: UpdateState }>('/api/status'),
+  status: () =>
+    req<
+      ScanStatus & {
+        indexing?: IndexingProgress | null;
+        indexError?: string | null;
+        linksReady?: boolean;
+        linksSeq?: number;
+        libs?: Record<
+          string,
+          {
+            scanning: boolean;
+            watching: boolean;
+            scannedAt: string | null;
+            scanned?: number;
+            indexing?: IndexingProgress | null;
+            indexError?: string | null;
+          }
+        >;
+      } & { update: UpdateState }
+    >('/api/status'),
   tree: () => req<{ dsId: string; tree: TreeNode }>('/api/tree'),
   stats: () => req<StatsResponse>('/api/stats'),
   file: (path: string) => req<FilePayload>('/api/file?path=' + encodeURIComponent(path)),

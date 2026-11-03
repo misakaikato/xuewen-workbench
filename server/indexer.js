@@ -23,12 +23,15 @@ export class Indexer {
   }
 
   // 扫描完成后重建索引文本（md/json 直接读；word 走缓存提取）
-  async build(snapshot) {
+  // onProgress(done, total) 每处理完一个文件回调一次（供 /api/status 暴露索引进度）
+  async build(snapshot, onProgress) {
     const t0 = Date.now();
     const label = '建文本索引 ' + (this.baseDir ? path.basename(this.baseDir) : '');
     await withActivity(label, async () => {
       this.files = snapshot.files;
       this.texts = new Map();
+      const total = this.files.length;
+      let done = 0;
       const CONCURRENCY = 8;
       const queue = [...this.files];
       const workers = Array.from({ length: CONCURRENCY }, async () => {
@@ -48,6 +51,8 @@ export class Indexer {
           } catch {
             // 单个文件读取失败不阻塞整体索引
           }
+          done++;
+          if (onProgress) onProgress(done, total);
           // 每处理完一个文件检查已用时间，超过 30ms 让出事件循环（结果与顺序不变）
           if (Date.now() - sliceStart > 30) {
             await new Promise((r) => setImmediate(r));

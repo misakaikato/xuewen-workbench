@@ -10,6 +10,7 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { InlineLoading } from '@/components/ui-states';
 
 declare global {
   interface Window {
@@ -22,7 +23,7 @@ declare global {
 }
 
 export default function Setup() {
-  const { config, libraries, refreshConfig, removeLib } = useApp();
+  const { config, libraries, refreshConfig, removeLib, backend, hintActivity } = useApp();
   const [baseDir, setBaseDir] = useState('');
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -47,6 +48,7 @@ export default function Setup() {
   async function save() {
     setSaving(true);
     setSaveMsg(null);
+    hintActivity(); // 扫描即将开始：让全局状态轮询收紧，下方计数才有实时性
     try {
       await api.saveConfig(baseDir);
       await refreshConfig();
@@ -133,6 +135,11 @@ export default function Setup() {
             {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />} 添加并打开
           </Button>
         </div>
+        {saving && backend.scanning && (
+          <div className="mt-3 text-xs">
+            <InlineLoading text={<>正在扫描… 已扫 <span className="stat-num">{backend.scanned}</span> 个文件</>} />
+          </div>
+        )}
         {result && (
           <div
             className={`mt-3 text-sm rounded border p-3 flex items-start gap-2 ${

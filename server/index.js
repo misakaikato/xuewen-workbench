@@ -96,18 +96,40 @@ class Lib {
     this.indexer = new Indexer();
     this.linkIndex = new LinkIndex();
     this.indexing = Promise.resolve(); // 最近一次索引构建，供需要“立即可检索”的写操作等待
-    this.scanner.on('scan-done', (snapshot) => {
-      this.indexing = (async () => {
-        try {
-          await this.indexer.build(snapshot);
-          await this.linkIndex.rebuild(snapshot, this.indexer); // 自动内链索引随文本索引之后增量更新
-        } catch (e) {
-          console.error(`[${this.name}] 索引构建失败:`, e.message);
-        }
-        // 已有 RAG 索引的库自动增量（从未建过的不自动）
-        ragManager.onScanComplete(this.id);
-      })();
-    });
+    // 索引进度（经 /api/status 下发）：phase 为 text/links/null，结束后回到 null，失败另记 indexError。
+    // 连续重扫会开新链：旧链的进度/复位都带链守卫，不覆盖新链的状态（指示不闪烁）
+    this.indexState = { phase: null, done: 0, total: 0, startedAt: null };
+    this.indexError = null;
+    this.scanner.on('scan-done', (snapshot) => this._beginIndexing(snapshot));
+  }
+
+  // 扫描完成后串行建文本索引与内链索引；进度写入 indexState（带链守卫，旧链不覆盖新链）
+  _beginIndexing(snapshot) {
+    let run;
+    run = (async () => {
+      const total = snapshot.files.length;
+      const startedAt = Date.now();
+      const isCurrent = () => this.indexing === run;
+      this.indexError = null;
+      this.indexState = { phase: 'text', done: 0, total, startedAt };
+      try {
+        await this.indexer.build(snapshot, (done) => {
+          if (isCurrent()) this.indexState = { phase: 'text', done, total, startedAt };
+        });
+        if (isCurrent()) this.indexState = { phase: 'links', done: 0, total, startedAt };
+        await this.linkIndex.rebuild(snapshot, this.indexer, (done) => {
+          if (isCurrent()) this.indexState = { phase: 'links', done, total, startedAt };
+        }); // 自动内链索引随文本索引之后增量更新
+      } catch (e) {
+        if (isCurrent()) this.indexError = String(e?.message || e);
+        console.error(`[${this.name}] 索引构建失败:`, e.message);
+      } finally {
+        if (isCurrent()) this.indexState = { phase: null, done: 0, total: 0, startedAt: null };
+      }
+      // 已有 RAG 索引的库自动增量（从未建过的不自动）
+      ragManager.onScanComplete(this.id);
+    })();
+    this.indexing = run;
   }
 
   // 绑定目录并完成首次扫描 + 开监听（目录不可达时地出异常，由调用方处理）
@@ -492,11 +514,25 @@ app.get('/api/status', (req, res) => {
   const active = libs.get(activeId) || null;
   const libStatuses = {};
   for (const [id, l] of libs) {
-    libStatuses[id] = { scanning: l.scanner.scanning, watching: !!l.scanner.watcher, scannedAt: l.scanner.snapshot?.scannedAt || null };
+    libStatuses[id] = {
+      scanning: l.scanner.scanning,
+      watching: !!l.scanner.watcher,
+      scannedAt: l.scanner.snapshot?.scannedAt || null,
+      scanned: l.scanner.scanned,
+      indexing: l.indexState,
+      indexError: l.indexError,
+      linksReady: l.linkIndex.ready,
+      linksSeq: l.linkIndex.buildSeq,
+    };
   }
   const bridge = getUpdateBridge();
   res.json({
-    dsId: activeId, ...(active ? active.scanner.status() : emptyStatus()), libs: libStatuses,
+    dsId: activeId, ...(active ? active.scanner.status() : emptyStatus()),
+    indexing: active ? active.indexState : { phase: null, done: 0, total: 0, startedAt: null },
+    indexError: active ? active.indexError : null,
+    linksReady: active ? active.linkIndex.ready : false,
+    linksSeq: active ? active.linkIndex.buildSeq : 0,
+    libs: libStatuses,
     update: bridge ? bridge.state() : disabledUpdateState(),
   });
 });
@@ -2012,13 +2048,40 @@ if (STATIC_DIR && fs.existsSync(INDEX_FILE)) {
 
 async function boot() {
   const { libraries, activeId: savedActive } = listLibs();
+  // 启动页扫描进度聚合：多库并行扫描时合并成一条文案推送 boot 步骤，250ms 节流
+  const bootScan = new Map(); // libId -> { name, scanned }
+  let bootLastPush = 0;
+  let bootTimer = null;
+  const pushBootScan = () => {
+    if (!bootScan.size) return;
+    const items = [...bootScan.values()];
+    postBoot(items.length === 1
+      ? '正在扫描资料库：' + items[0].name + '（' + items[0].scanned + ' 个文件）'
+      : '正在扫描 ' + items.length + ' 个资料库：' + items.map((it) => it.name + '（' + it.scanned + ' 个文件）').join('、'));
+    bootLastPush = Date.now();
+  };
+  const scheduleBootScan = () => {
+    if (!bootScan.size) return;
+    const wait = 250 - (Date.now() - bootLastPush);
+    if (wait <= 0) {
+      pushBootScan();
+    } else if (!bootTimer) {
+      bootTimer = setTimeout(() => { bootTimer = null; pushBootScan(); }, wait);
+      bootTimer.unref?.();
+    }
+  };
   // 各库并行恢复（扫描互相独立，串行会人为拉长多库启动时间）
   await Promise.all(libraries.map(async (meta) => {
     const lib = new Lib(meta);
     libs.set(lib.id, lib);
+    const onProgress = ({ scanned }) => {
+      bootScan.set(lib.id, { name: lib.name, scanned });
+      scheduleBootScan();
+    };
     try {
       fs.accessSync(lib.baseDir, fs.constants.R_OK);
-      postBoot('正在扫描资料库：' + lib.name);
+      bootScan.set(lib.id, { name: lib.name, scanned: 0 });
+      lib.scanner.on('scan-progress', onProgress);
       const t0 = Date.now();
       await lib.start();
       console.log('[boot] 资料库「' + lib.name + '」就绪: ' + lib.baseDir + '，' + (lib.scanner.snapshot?.files.length ?? 0) + ' 个文件，扫描耗时 ' + (Date.now() - t0) + 'ms');
@@ -2028,6 +2091,14 @@ async function boot() {
       lib.indexer.reset(lib.id, lib.baseDir);
       lib.linkIndex.reset(lib.id, lib.baseDir);
       console.error('[' + lib.name + '] 目录不可访问:', e.message);
+    } finally {
+      lib.scanner.off('scan-progress', onProgress);
+      bootScan.delete(lib.id);
+      if (!bootScan.size && bootTimer) {
+        clearTimeout(bootTimer);
+        bootTimer = null;
+      }
+      scheduleBootScan(); // 已完成的库从文案中移除
     }
   }));
   // 启动续建：对已打开且已有 RAG 索引（rag.db 存在且 files>0）的库触发一次增量构建，

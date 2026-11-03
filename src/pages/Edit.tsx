@@ -25,6 +25,7 @@ import { editorBaseExtensions, editorBaseThemeSpec } from '@/components/editor/s
 import { livePreview } from '@/components/editor/livePreview';
 import { mdLang } from '@/components/editor/mdLanguage';
 import { linksExtensionFor, pushDocLinks } from '@/components/editor/autoLinks';
+import { whenIndexSettled } from '@/lib/indexReady';
 import { corpusRefsExtension, pushCorpusNames } from '@/components/editor/corpusRefs';
 import { FormatToolbar } from '@/components/editor/FormatToolbar';
 import { CorpusRefPopover, type CorpusRefRequest } from '@/components/CorpusRefPopover';
@@ -330,7 +331,8 @@ export default function Edit() {
       };
       pullLinksAbortRef.current?.();
       pullLinksAbortRef.current = stop;
-      for (let i = 0; i < 30 && !dead; i++) {
+      // 索引未就绪时不再固定重试：订阅全局索引就绪信号，就绪后再取一次（反馈第 4 批）
+      for (;;) {
         const r = await api.linksDoc(relPath).catch(() => null);
         if (dead || !r || r.dsId !== dsId) return;
         if (r.ready && r.buildSeq >= minSeq) {
@@ -339,7 +341,7 @@ export default function Edit() {
           pushDocLinks(viewRef.current, r.links, r.buildSeq);
           return;
         }
-        await new Promise((s) => setTimeout(s, 500));
+        await whenIndexSettled();
       }
     },
     [dsId, relPath]

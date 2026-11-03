@@ -70,7 +70,7 @@ export default function Search() {
   const [params, setParams] = useSearchParams();
   const q = params.get('q') || '';
   const mode = params.get('mode') === 'exact' ? 'exact' : 'smart'; // 默认智能检索（精确用 ?mode=exact）
-  const { dsId } = useApp();
+  const { dsId, backend } = useApp();
   const [input, setInput] = useState(q);
   const [types, setTypes] = useState<string[]>([]);
   const [dir, setDir] = useState('');
@@ -238,6 +238,19 @@ export default function Search() {
     return () => ob.disconnect();
   });
 
+  // 索引重建期间精确检索结果可能不全：结果区顶部标明，索引完成后自动重查一次
+  const indexBuilding = mode === 'exact' && backend.indexing?.phase === 'text';
+  const prevPhaseRef = useRef(backend.indexing?.phase ?? null);
+  useEffect(() => {
+    const phase = backend.indexing?.phase ?? null;
+    const prev = prevPhaseRef.current;
+    prevPhaseRef.current = phase;
+    if (prev === 'text' && phase !== 'text' && mode === 'exact' && q) {
+      doSearch(input, types, dir, 'exact');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backend.indexing?.phase]);
+
   // 仅当 URL 的 q 与当前输入（trim 后）不同时才回写输入框，避免清掉用户键入的尾随空格
   useEffect(() => { setInput((prev) => (q !== prev.trim() ? q : prev)); }, [q]);
 
@@ -321,6 +334,16 @@ export default function Search() {
         <div className="text-sm text-destructive border border-destructive/40 bg-destructive/10 rounded p-3 mb-3">
           检索失败：{err}
           <button className="ml-2 underline" onClick={() => doSearch(input, types, dir, 'exact')}>重试</button>
+        </div>
+      )}
+
+      {/* 索引重建中（text 阶段）：结果可能不完整，索引结束后自动重查一次 */}
+      {indexBuilding && q && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground border border-border rounded-lg px-3 py-2.5 bg-card animate-fade-in" role="status">
+          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+          <span>
+            索引更新中（<span className="stat-num">{backend.indexing?.done ?? 0}/{backend.indexing?.total ?? 0}</span>），结果可能不完整
+          </span>
         </div>
       )}
 
