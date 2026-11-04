@@ -12,6 +12,7 @@ import { Decoration, EditorView, ViewPlugin, WidgetType } from '@codemirror/view
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import { mdLang } from './mdLanguage';
+import { frontmatterKeyValue, frontmatterRange } from './frontmatter';
 import { editorBaseThemeSpec } from './setup';
 import { getApiScope } from '@/lib/api';
 import { locateNote } from '@/lib/searchLocation';
@@ -350,6 +351,44 @@ class ImgWidget extends WidgetType {
     img.alt = this.alt;
     img.loading = 'lazy';
     return img;
+  }
+}
+
+// YAML 头信息：整块渲染为低调的元数据框（每行一项，键弱化），不再被当成分割线 + 正文
+class FrontmatterWidget extends WidgetType {
+  readonly lines: string[];
+
+  constructor(lines: string[]) {
+    super();
+    this.lines = lines;
+  }
+
+  eq(other: FrontmatterWidget): boolean {
+    return other.lines.join('\n') === this.lines.join('\n');
+  }
+
+  toDOM(): HTMLElement {
+    const box = document.createElement('div');
+    box.className = 'cm-lp-fm';
+    for (const line of this.lines) {
+      if (!line.trim()) continue;
+      const row = document.createElement('div');
+      const kv = frontmatterKeyValue(line);
+      if (kv) {
+        const key = document.createElement('span');
+        key.className = 'cm-lp-fm-key';
+        key.textContent = kv.key;
+        row.append(key, document.createTextNode(kv.value));
+      } else {
+        row.textContent = line;
+      }
+      box.appendChild(row);
+    }
+    return box;
+  }
+
+  ignoreEvent(): boolean {
+    return false; // 编辑态点击由 CM 落光标，光标进块即揭示源码
   }
 }
 
@@ -993,6 +1032,8 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
   const hide = (from: number, to: number) => {
     if (to > from) parts.push(Decoration.replace({}).range(from, to));
   };
+  // 头信息块由 StateField 整块替换（编辑态光标在块内时显示源码），块内不产出语法装饰
+  const fm = frontmatterRange(doc);
 
   for (const { from: vFrom, to: vTo } of view.visibleRanges) {
     syntaxTree(state).iterate({
@@ -1002,6 +1043,7 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
         const node = ref.node;
         const n = node.name;
         if (n === 'Table') return false; // 整表由 StateField 的块级替换接管
+        if (fm && n !== 'Document' && node.from >= fm.from && node.to <= fm.to) return false;
         if (n === 'FencedCode') {
           codeIntervals.push({ from: node.from, to: node.to });
           decorateFence(state, node, parts, vFrom, vTo);
@@ -1081,7 +1123,7 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
     const l2 = doc.lineAt(Math.min(vTo, doc.length)).number;
     for (let ln = l1; ln <= l2; ln++) {
       const line = doc.line(ln);
-      if (line.text === '' && !active.has(ln) && !inCode(line.from)) {
+      if (line.text === '' && !active.has(ln) && !inCode(line.from) && !(fm && line.from <= fm.to)) {
         parts.push(Decoration.line({ class: 'cm-lp-blank' }).range(line.from));
       }
     }
@@ -1158,6 +1200,23 @@ function buildTableDecorations(state: EditorState): DecorationSet {
   scan(syntaxTree(state).topNode);
   return Decoration.set(parts, true);
 }
+
+// 头信息块级替换（块级装饰必须来自 StateField）：只读恒渲染；编辑态选区端点在块内时显示源码
+function buildFrontmatterDecorations(state: EditorState): DecorationSet {
+  const fm = frontmatterRange(state.doc);
+  if (!fm) return Decoration.none;
+  if (!state.facet(lpReadOnly) && selectionEndpoints(state).some((p) => p >= fm.from && p <= fm.to)) return Decoration.none;
+  return Decoration.set([Decoration.replace({ widget: new FrontmatterWidget(fm.lines), block: true }).range(fm.from, fm.to)]);
+}
+
+const lpFrontmatterField = StateField.define<DecorationSet>({
+  create: buildFrontmatterDecorations,
+  update(value, tr) {
+    if (tr.docChanged || (tr.selection && !tr.state.facet(lpReadOnly))) return buildFrontmatterDecorations(tr.state);
+    return value;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
 
 const lpTableField = StateField.define<DecorationSet>({
   create(state) {
@@ -1268,6 +1327,17 @@ function makeLpTheme(card: boolean) {
   '.cm-lp-h3': { fontSize: '1.2em', fontWeight: '600', paddingTop: '0.5em' },
   '.cm-lp-h4': { fontSize: '1.08em', fontWeight: '600', paddingTop: '0.4em' },
   '.cm-lp-h5, .cm-lp-h6': { fontSize: '1em', fontWeight: '600', paddingTop: '0.35em' },
+
+  '.cm-lp-fm': {
+    margin: '0 0 0.8em',
+    padding: '0.4em 0.8em',
+    borderRadius: '6px',
+    background: 'hsl(var(--muted) / 0.5)',
+    color: 'hsl(var(--muted-foreground))',
+    fontSize: '0.85em',
+    lineHeight: '1.6',
+  },
+  '.cm-lp-fm-key': { fontWeight: '600', marginRight: '0.6em' },
 
   '.cm-lp-quote': {
     borderLeft: '3px solid hsl(var(--primary) / 0.5)',
@@ -1400,6 +1470,7 @@ export function livePreview(opts: LivePreviewOptions) {
     lpOpenDocLink.of(opts.openDocLink ?? null),
     lpOnCandidates.of(opts.onCandidates ?? null),
     lpTableField,
+    lpFrontmatterField,
     makeLpPlugin(opts.openLink, opts.openNote ?? (() => {})),
     makeLpTheme(opts.geometry === 'card'),
   ];

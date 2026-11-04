@@ -14,6 +14,8 @@ const W = (rel, s) => { fs.mkdirSync(path.dirname(path.join(corpus, rel)), { rec
 W('笔记/诗句.md', '# 诗句\n\n独有词：雪拥蓝关马不前。\n');
 W('标签/改名前.md', '# 改名前\n\n用于标签跟随的文档。\n');
 W('待改名目录/内文.md', '# 内文\n\n目录改名时标签也要跟着改。\n');
+W('头信息/带头信息.md', '---\ntitle: 带头信息\ntags: [基础, 测试]\n# 注释行\n---\n\n# 正文标题\n\n头信息之后的正文。\n');
+W('头信息/分割线开头.md', '---\n\n这不是头信息，而是一段正文\n\n---\n\n后文。\n');
 const longDoc = ['# 长文'];
 for (let i = 1; i <= 40; i++) longDoc.push(`\n## 第 ${i} 节\n\n这是第 ${i} 节的正文，内容足够长用来撑开页面。这是第 ${i} 节的正文，内容足够长用来撑开页面。\n\n- 要点：第 ${i} 节`);
 W('笔记/长文.md', longDoc.join('\n'));
@@ -145,6 +147,37 @@ async function caseTabsFollow(dsId) {
   check('4 目录改名：其下已打开文档的标签一起改', stored.includes('已改名目录/内文.md') && !stored.some((p) => p.startsWith('待改名目录/')), stored);
 }
 
+// ---------- 5 YAML 头信息渲染为元数据框 ----------
+async function caseFrontmatter() {
+  await openRead('头信息/带头信息.md', '头信息之后的正文');
+  const r = await exec(`(() => {
+    const card = document.querySelector('${CARD}');
+    const fm = card.querySelector('.cm-lp-fm');
+    const toc = [...document.querySelectorAll('aside li button')].map((b) => b.textContent.trim());
+    return { fm: fm ? fm.textContent : null, hr: card.querySelectorAll('.cm-lp-hr-w').length, toc, firstLine: card.querySelector('.cm-line')?.textContent ?? '' };
+  })()`);
+  check('5 头信息渲染为元数据框且含键值', r.fm && r.fm.includes('title') && r.fm.includes('带头信息') && r.fm.includes('tags'), r);
+  check('5 头信息不再画成分割线', r.hr === 0, r);
+  check('5 目录从第一个真标题开始、不含头信息里的注释', r.toc[0] === '正文标题' && !r.toc.includes('注释行'), r.toc);
+
+  await exec(`localStorage.setItem('wb:e2e','1')`);
+  await win.reload();
+  await until('!!window.__wbr && !!window.__wbr.editor()');
+  await exec('window.__wbr.enter()');
+  await until('window.__wbr.editing() === true');
+  await exec(`(() => { const v = window.__wbr.editor(); v.dispatch({ selection: { anchor: 6 } }); return true; })()`);
+  await pause(300);
+  const src = await exec(`(() => { const card = document.querySelector('${CARD}'); return { fm: !!card.querySelector('.cm-lp-fm'), lines: [...card.querySelectorAll('.cm-line')].slice(0, 3).map((e) => e.textContent) }; })()`);
+  check('5 编辑态光标进头信息：显示源码', !src.fm && src.lines[0] === '---' && src.lines[1].startsWith('title'), src);
+  await exec('window.__wbr.finish()');
+  await pause(500);
+  await exec(`localStorage.removeItem('wb:e2e')`);
+
+  await openRead('头信息/分割线开头.md', '后文');
+  const hr = await exec(`(() => { const card = document.querySelector('${CARD}'); return { fm: !!card.querySelector('.cm-lp-fm'), hr: card.querySelectorAll('.cm-lp-hr-w').length }; })()`);
+  check('5 首行 --- 但不是 YAML：仍按分割线渲染', !hr.fm && hr.hr >= 1, hr);
+}
+
 // ---------- 2 库目录短暂不可达：保留上次结果、如实提示，目录回来后自动恢复并继续监听 ----------
 async function caseUnreachable() {
   const moved = corpus + '-moved';
@@ -190,6 +223,7 @@ async function main() {
   if (want(1)) await caseSearch();
   if (want(3)) await caseJumpOffset();
   if (want(4)) await caseTabsFollow(dsId);
+  if (want(5)) await caseFrontmatter();
   if (want(2)) await caseUnreachable(); // 会移动语料目录，放在最后
 
   check('渲染进程无代码报错', renderErrors.length === 0, renderErrors.slice(-5));

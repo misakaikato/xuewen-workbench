@@ -4,6 +4,7 @@ import type { Range } from '@codemirror/state';
 import { Decoration, EditorView } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { findAllRanges } from '@/lib/searchLocation';
+import { frontmatterRange } from './frontmatter';
 
 // ?h= 高亮词：mark 装饰（行内命中，不跨行）
 export const setHlTerm = StateEffect.define<string>();
@@ -25,12 +26,13 @@ export const hlField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 });
 
-// 扫描源文 ATX 标题（跳过围栏代码）：TOC 与锚点定位用
+// 扫描源文 ATX 标题（跳过头信息与围栏代码）：TOC 与锚点定位用
 export function docHeadings(view: EditorView): { pos: number; text: string; level: number }[] {
   const out: { pos: number; text: string; level: number }[] = [];
   let inFence = false;
   const doc = view.state.doc;
-  for (let i = 1; i <= doc.lines; i++) {
+  const fm = frontmatterRange(doc); // 头信息里的 # 注释不是标题
+  for (let i = fm ? doc.lineAt(fm.to).number + 1 : 1; i <= doc.lines; i++) {
     const line = doc.line(i);
     const t = line.text;
     if (/^\s*(```|~~~)/.test(t)) {
