@@ -901,6 +901,12 @@ export default function Read() {
     return () => clearTimeout(t);
   }, [noteOpen, noteText, relPath]);
 
+  // 关闭笔记弹框（取消 / Esc / 点遮罩）：立即写一次草稿，防抖窗口里刚敲的字不丢
+  const closeNote = useCallback(() => {
+    try { localStorage.setItem('wb:note-draft:' + relPath, noteText); } catch { /* 存不了草稿：与自动保存一样静默，输入仍在内存里直到关页 */ }
+    setNoteOpen(false);
+  }, [noteText, relPath]);
+
   const saveNote = useCallback(async () => {
     if (!sel) return;
     setNoteSaving(true);
@@ -1479,7 +1485,17 @@ export default function Read() {
 
       {/* 划线笔记：编辑弹窗 */}
       {noteOpen && sel && (
-        <div data-wb-overlay className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setNoteOpen(false)}>
+        <div
+          data-wb-overlay
+          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+          onClick={closeNote}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.stopPropagation(); // 只关弹框，不连带关掉查找条等
+              closeNote();
+            }
+          }}
+        >
           <div className="bg-card border border-border rounded-lg p-5 max-w-2xl w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-sm font-semibold mb-2 flex items-center gap-1.5"><NotebookPen className="w-4 h-4 text-primary" />添加到阅读笔记</h3>
             <blockquote className="text-xs text-muted-foreground border-l-2 border-primary/50 pl-2 mb-3 max-h-24 overflow-auto whitespace-pre-wrap">
@@ -1496,7 +1512,7 @@ export default function Read() {
             <div className="flex items-center gap-2 mt-3">
               <span className="text-xs text-muted-foreground">{noteDraftSaved ? '草稿已自动保存（按文档隔离）' : '输入内容会自动保存草稿'}</span>
               <span className="flex-1" />
-              <Button variant="outline" size="sm" onClick={() => setNoteOpen(false)}>取消</Button>
+              <Button variant="outline" size="sm" onClick={closeNote}>取消</Button>
               <Button size="sm" disabled={noteSaving} onClick={saveNote}>{noteSaving ? '写入中…' : '保存笔记'}</Button>
             </div>
           </div>

@@ -196,6 +196,31 @@ async function caseErrorText() {
   check('7 添加失败：提示里不露错误码', t.includes('不存在或已被移走') && !/ENOENT|no such file/.test(t), t.slice(-400));
 }
 
+// ---------- 8 记笔记弹框：Esc 关闭，关闭时草稿立即落盘 ----------
+async function openNoteBox(phrase) {
+  await exec(`(() => {
+    const card = document.querySelector('${CARD}');
+    const w = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+    let n; while ((n = w.nextNode())) { const i = n.data.indexOf(${JSON.stringify(phrase)}); if (i >= 0) { const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + ${phrase.length}); const s = getSelection(); s.removeAllRanges(); s.addRange(r); break; } }
+    card.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    return true;
+  })()`);
+  await until(`[...document.querySelectorAll('[data-wb-selbar] button')].some((b) => b.textContent.includes('记笔记'))`);
+  await exec(`[...document.querySelectorAll('[data-wb-selbar] button')].find((b) => b.textContent.includes('记笔记')).click()`);
+  await until(`!!document.querySelector('textarea[placeholder^="写下你的想法"]')`);
+}
+async function caseNoteEsc() {
+  await openRead('笔记/诗句.md', '雪拥蓝关');
+  await openNoteBox('雪拥蓝关马不前');
+  const draft = '刚写下就按 Esc 的想法';
+  await exec(`(() => { const el=document.querySelector('textarea[placeholder^="写下你的想法"]'); const set=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set; set.call(el, ${JSON.stringify(draft)}); el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true; })()`);
+  await pause(300);
+  check('8 Esc 关闭记笔记弹框', !(await exec(`!!document.querySelector('textarea[placeholder^="写下你的想法"]')`)));
+  await openNoteBox('雪拥蓝关马不前');
+  const v = await exec(`document.querySelector('textarea[placeholder^="写下你的想法"]').value`);
+  check('8 关闭时草稿立即保存：重开后与输入一致', v === draft, v);
+}
+
 // ---------- 2 库目录短暂不可达：保留上次结果、如实提示，目录回来后自动恢复并继续监听 ----------
 async function caseUnreachable() {
   const moved = corpus + '-moved';
@@ -243,6 +268,7 @@ async function main() {
   if (want(4)) await caseTabsFollow(dsId);
   if (want(5)) await caseFrontmatter();
   if (want(7)) await caseErrorText();
+  if (want(8)) await caseNoteEsc();
   if (want(2)) await caseUnreachable(); // 会移动语料目录，放在最后
 
   check('渲染进程无代码报错', renderErrors.length === 0, renderErrors.slice(-5));
