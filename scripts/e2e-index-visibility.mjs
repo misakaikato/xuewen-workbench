@@ -198,7 +198,7 @@ async function phaseB() {
   await exec(pageSetupJs());
   await until('回到概览（顶栏就绪）', `!!document.querySelector('button[title="重新扫描知识库"]')`, 200);
   startAutoTick();
-  // 第一次重扫：点击后立即拨快 docx 的 mtime → chokidar 触发第二次重扫 →
+  // 第一次重扫：点击后立即拨快 docx 的 mtime → 文件监听触发第二次重扫 →
   // 新链的 text 阶段重新解析 docx（数秒），旧链仍在算 links：indexState 由新链接管（链守卫）
   await exec(`(() => {
     const btn = document.querySelector('button[title="重新扫描知识库"]');

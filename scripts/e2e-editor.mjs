@@ -700,13 +700,13 @@ async function main() {
   // ---------- E6.5 搜索会话：结果打开定位到命中处 + 返回恢复结果与滚动位置 ----------
   console.log('== E6.5 搜索会话恢复 ==');
   {
-    // 造一个多段落长文档（含标记词），chokidar 增量后智能检索出足够长的列表可滚动
+    // 造一个多段落长文档（含标记词），文件监听增量后智能检索出足够长的列表可滚动
     const LONG = '笔记/长文滚动测试.md';
     // 每段 >600 字：超出切块聚合上限，每段独立成块（90 段 → 90 块 → 长列表可滚）
     const paras = Array.from({ length: 90 }, (_, i) =>
       `长文文件段落 ${i + 1}：` + '滚动恢复验证专用填充文本，超过单块聚合上限以确保独立成块。'.repeat(22));
     fs.writeFileSync(path.join(tmpCorpus, 'ds-a', '笔记', '长文滚动测试.md'), '# 长文滚动测试\n\n' + paras.join('\n\n') + '\n');
-    await sleep(3500); // chokidar 防抖 + 增量重建 + mock 嵌入
+    await sleep(3500); // 监听防抖 + 增量重建 + mock 嵌入
     await win.loadURL(BASE + '/search?mode=smart&q=' + encodeURIComponent('长文文件'));
     await waitFor('document.querySelectorAll("li").length >= 30', '智能结果出现（≥30 段）');
     // 滚到非顶部非底部位置并记录

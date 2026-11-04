@@ -26,14 +26,17 @@ const check = (name, fn) => {
   }
 };
 
-// ---------- 旧同步版本：从固定基线取到临时目录（lagWatch 一并，chokidar 经软链解析） ----------
+// ---------- 旧同步版本：从固定基线取到临时目录（lagWatch 一并；监听用不到，chokidar 以空壳模块代替） ----------
 // 基线固定为 v0.1.7（5250c0f），它是最后一个只有同步 scanTree 的版本；不能用 main，main 已是新实现
 const BASELINE = '5250c0f';
 const oldDir = path.join(tmp, 'old-scanner');
 fs.mkdirSync(oldDir, { recursive: true });
 fs.writeFileSync(path.join(oldDir, 'scanner.js'), execFileSync('git', ['-C', ROOT, 'show', `${BASELINE}:server/scanner.js`]));
 fs.writeFileSync(path.join(oldDir, 'lagWatch.js'), execFileSync('git', ['-C', ROOT, 'show', `${BASELINE}:server/lagWatch.js`]));
-fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(oldDir, 'node_modules'), 'dir');
+// 基线 scanner.js 顶层 import chokidar；对照只用它的 scanTree，给一个空壳模块即可加载
+fs.mkdirSync(path.join(oldDir, 'node_modules', 'chokidar'), { recursive: true });
+fs.writeFileSync(path.join(oldDir, 'node_modules', 'chokidar', 'package.json'), JSON.stringify({ name: 'chokidar', type: 'module', main: 'index.js' }));
+fs.writeFileSync(path.join(oldDir, 'node_modules', 'chokidar', 'index.js'), "export default { watch() { throw new Error('基线监听不参与对照'); } };\n");
 const oldScanner = await import(pathToFileURL(path.join(oldDir, 'scanner.js')).href);
 const { scanTreeAsync } = await import(pathToFileURL(path.join(ROOT, 'server', 'scanner.js')).href);
 

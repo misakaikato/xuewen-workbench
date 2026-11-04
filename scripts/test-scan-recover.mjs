@@ -1,5 +1,5 @@
 // 知识库根目录短暂不可达：保留上次快照、不发 scan-done、关掉失效监听；目录回来后自动重扫并重开监听。
-// 真实临时目录 + 真实 chokidar 监听（不 mock 文件系统）。
+// 真实临时目录 + 真实文件监听（不 mock 文件系统）。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';

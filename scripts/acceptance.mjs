@@ -1030,7 +1030,7 @@ console.log('== 16. 自动内链与反向链接 ==');
       check('重启后链接结果一致', d.links.some((l) => l.term === '孔子家语' && l.kind === 'auto'));
     }
 
-    // (h) 增量更新：磁盘追加提及 → chokidar → 反向链接在秒级更新
+    // (h) 增量更新：磁盘追加提及 → 文件监听 → 反向链接在秒级更新
     {
       fs.appendFileSync(N16('讲稿1.md'), '\n## 追加节\n\n孔子在新节里又出现一次。\n');
       const t0 = Date.now();
@@ -1045,7 +1045,7 @@ console.log('== 16. 自动内链与反向链接 ==');
       }
       const ms = Date.now() - t0;
       check('磁盘追加提及后反向链接秒级更新（≈3s 内）', count === 2 && ms <= 4000, `count=${count} ${ms}ms`);
-      console.log(`  ℹ 监听增量更新耗时=${ms}ms（含 chokidar 去抖）`);
+      console.log(`  ℹ 监听增量更新耗时=${ms}ms（含监听防抖）`);
     }
 
     // (i) 改名：链接/反链跟随新路径；忽略记录迁移

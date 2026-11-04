@@ -1,10 +1,9 @@
-// 扫描模块：递归发现目录与文件，符号链接循环保护，chokidar 监听 + 防抖重扫。
+// 扫描模块：递归发现目录与文件，符号链接循环保护，原生递归监听 + 防抖重扫。
 // 逐项处理在 createScanWalk 的帧栈驱动器里（深度优先、按 readdir 顺序），
 // scanTreeAsync 按时间片推进它，扫描期间不阻塞事件循环。
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import chokidar from 'chokidar';
 import { EventEmitter } from 'node:events';
 import { withActivity, SLOW_FS_OP_MS } from './lagWatch.js';
 import { fsErrorText } from './fsErrors.js';
@@ -19,16 +18,20 @@ export const isAnnotations = (name) => /\.annotations\.json$/i.test(name);
 export const isMetaFile = (name) => isSidecar(name) || isAnnotations(name);
 
 /**
- * 监听事件是否可能改变扫描结果：目录增删、支持的扩展名文件、.derived/ 内的文件才算；
- * 回收站内的变动与其他类型文件（下载中的临时文件、压缩包、安装包等）不触发重扫。
+ * 监听到的变动（相对库根的路径，可为 null）对扫描结果的影响：
+ * - 'scan'：支持的扩展名文件、.derived/ 内的文件，或路径未知 → 重扫；
+ * - 'ignore'：回收站内的变动；
+ * - 'dir?'：其他类型 —— 只有它是目录（或曾是目录）时才影响目录树，由调用方判定；
+ *   普通文件（下载中的临时文件、压缩包、安装包等）不触发重扫。
  */
-export function watchEventAffectsScan(baseDir, event, absPath) {
-  const rel = toRel(baseDir, absPath);
-  const parts = rel.split('/');
-  if (parts[0] === TRASH_DIR) return false;
-  if (event === 'addDir' || event === 'unlinkDir') return true;
-  if (parts.includes('.derived')) return true;
-  return SUPPORTED_EXTS.includes(path.extname(rel).toLowerCase());
+export function classifyWatchPath(rel) {
+  if (rel == null) return 'scan';
+  const parts = rel.split(/[\\/]/).filter(Boolean);
+  if (!parts.length) return 'scan';
+  if (parts[0] === TRASH_DIR) return 'ignore';
+  if (parts.includes('.derived')) return 'scan';
+  if (SUPPORTED_EXTS.includes(path.extname(parts[parts.length - 1]).toLowerCase())) return 'scan';
+  return 'dir?';
 }
 
 // 异步扫描的单片时间预算：每处理约 30ms 用 setImmediate 让出一次事件循环
@@ -376,22 +379,33 @@ export class Scanner extends EventEmitter {
     this._probe = null;
   }
 
+  // 整棵目录树只用一个系统监听（macOS FSEvents、Windows ReadDirectoryChangesW）：逐文件逐目录各开一个监听，
+  // 在文件很多的目录（如下载目录）上要同步打开成千上万个句柄，主线程会卡住数分钟。
+  // 写入过程中的多次变动由 600ms 防抖合并；符号链接指向的目录不在监听范围内，其中的变动需手动重扫。
   _openWatcher() {
     this._closeWatcher();
     if (!this.baseDir) return;
+    const baseDir = this.baseDir;
+    const trigger = () => {
+      clearTimeout(this._debounce);
+      this._debounce = setTimeout(() => this.rescan(), 600);
+    };
     try {
-      this.watcher = chokidar.watch(this.baseDir, {
-        ignoreInitial: true,
-        depth: 30,
-        awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
-      });
-      const trigger = () => {
-        clearTimeout(this._debounce);
-        this._debounce = setTimeout(() => this.rescan(), 600);
-      };
-      const baseDir = this.baseDir;
-      this.watcher.on('all', (event, p) => {
-        if (watchEventAffectsScan(baseDir, event, p)) trigger();
+      this.watcher = fs.watch(baseDir, { recursive: true }, (_event, filename) => {
+        const rel = filename == null ? null : String(filename).split(path.sep).join('/');
+        const kind = classifyWatchPath(rel);
+        if (kind === 'scan') trigger();
+        else if (kind === 'dir?') {
+          // 曾是目录（删除、改名走）看上一次快照；新出现的看它现在是不是目录。
+          // 路径已不存在时再看库根还在不在：根目录被改名或移走时，macOS 只报一个以根目录名为名的事件
+          if (this.snapshot?.dirs?.includes(rel)) trigger();
+          else {
+            fs.promises.lstat(path.join(baseDir, rel)).then(
+              (st) => { if (st.isDirectory()) trigger(); },
+              () => fs.promises.access(baseDir).catch(() => trigger()),
+            );
+          }
+        }
       });
       // 监听出错（如 Windows 上根目录被删）也重扫一次：由扫描结果判断是否已不可达
       this.watcher.on('error', (e) => {
