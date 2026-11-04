@@ -9,7 +9,10 @@ import { chunkFile, embedTextOf } from './chunk.js';
 import { EmbedService, t2s, DIM } from './embed.js';
 import { loadRagConfig, saveRagConfig, mergeRagConfig, indexConfigFingerprint, DEFAULT_RAG_CONFIG } from './config.js';
 import { readJson, writeJsonAtomic } from '../store.js';
-import { setActivity } from '../lagWatch.js';
+import { setActivity, sliceYielder } from '../lagWatch.js';
+
+// 构建时每批写入的块数：批间让出事件循环
+const CHUNK_WRITE_BATCH = 200;
 
 // 检索参数来自按库配置（loadRagConfig），以下仅为回退默认
 const { rrfK: RRF_K, topN: TOPN } = DEFAULT_RAG_CONFIG.search;
@@ -207,7 +210,14 @@ class RagIndex {
           const chunks = chunkFile(f.ext || '.md', text, this.cfg.chunk);
           if (chunks.length) chunks[0] = { ...chunks[0], text: f.name + '\n\n' + chunks[0].text }; // 文件名进入正文索引与定位
           const eOpts = { headingContext: this.cfg.chunk.headingContext, fileName: this.cfg.chunk.fileNameContext ? f.name : '' };
-          store.replaceChunks(f.path, f.contentHash, chunks, kindOf(f.ext), (c) => ftsIndexText(t2s(embedTextOf(c, eOpts))));
+          // 分批写块（含全文检索文本归一化），批间让出事件循环：长文一次写完会卡住后端上百毫秒
+          const textSOf = (c) => ftsIndexText(t2s(embedTextOf(c, eOpts)));
+          store.clearFile(f.path);
+          for (let i = 0; i < chunks.length; i += CHUNK_WRITE_BATCH) {
+            store.appendChunks(f.path, chunks.slice(i, i + CHUNK_WRITE_BATCH), i, kindOf(f.ext), textSOf);
+            await new Promise((r) => setImmediate(r));
+          }
+          store.finishFile(f.path, f.contentHash, chunks.length);
           // 立即嵌入该文件全部块（文件级完成粒度；分批上报块级进度）
           this.fileChunksTotal = chunks.length;
           this.fileChunksDone = 0;
@@ -446,11 +456,13 @@ export class RagManager {
 
     // ② 余弦 + 统计阈值（诚实空结果：无关查询的余弦分布无离群点，整体压掉）
     const qv = (await this.embed.embed([qs], { maxLength: cfg.embed.maxLength }))[0];
-    const { ids, mat, dim } = store.vecMatrix();
+    const { ids, mat, dim } = await store.vecMatrix();
+    const maybeYield = sliceYielder(); // 全量余弦与定位计算量随块数增长，按时间片让出
     let cos = [];
     if (ids.length && dim === qv.length) {
       const all = [];
       for (let i = 0; i < ids.length; i++) {
+        if ((i & 1023) === 0) await maybeYield();
         let s = 0;
         const off = i * dim;
         for (let j = 0; j < dim; j++) s += mat[off + j] * qv[j];
@@ -507,6 +519,29 @@ export class RagManager {
     const total = fused.length + filler.length + weakCos.length;
     const top = [...fused, ...weakCos, ...filler].slice(0, limit);
     const chunks = store.getChunksByIds(top.map((x) => x.id));
+    // 定位：命中块前 160 字（去空白）在同文件更早的块里出现的次数。同一文件的更早块只查一次、只去一次空白
+    const occurrence = new Map(); // chunk id -> 次数
+    const hitsByPath = new Map();
+    for (const x of top) {
+      const c = chunks.get(x.id);
+      if (!c) continue;
+      if (!hitsByPath.has(c.path)) hitsByPath.set(c.path, []);
+      hitsByPath.get(c.path).push(c);
+    }
+    const earlier = store.db.prepare('SELECT ordinal, text FROM chunks WHERE path=? AND ordinal<? ORDER BY ordinal');
+    for (const [p, cs] of hitsByPath) {
+      const rows = earlier.all(p, Math.max(...cs.map((c) => c.ordinal))).map((r) => ({ ordinal: r.ordinal, flat: r.text.replace(/\s/g, '') }));
+      for (const c of cs) {
+        const needle = c.text.slice(0, 160).replace(/\s/g, '');
+        let n = 0;
+        for (const r of rows) {
+          if (r.ordinal >= c.ordinal) break;
+          n += r.flat.split(needle).length - 1;
+          await maybeYield();
+        }
+        occurrence.set(c.id, n);
+      }
+    }
     const bm25Ids = new Set([...fts, ...lexicalByFile].map((r) => r.id));
     const cosIds = new Map(cos.map((r) => [r.id, r.score]));
     const hits = top
@@ -521,12 +556,7 @@ export class RagManager {
           kind: c.kind,
           snippet: snippetOf(c.text, qs),
           // 定位使用索引里的原文片段，不能使用可能不在正文中的语义查询词。
-          location: {
-            text: c.text.slice(0, 160),
-            occurrence: store.db.prepare('SELECT text FROM chunks WHERE path=? AND ordinal<? ORDER BY ordinal')
-              .all(c.path, c.ordinal)
-              .reduce((n, row) => n + row.text.replace(/\s/g, '').split(c.text.slice(0, 160).replace(/\s/g, '')).length - 1, 0),
-          },
+          location: { text: c.text.slice(0, 160), occurrence: occurrence.get(c.id) },
           score: x.score,
           bm25: bm25Ids.has(c.id),
           cos: cosIds.has(c.id) ? Math.round(cosIds.get(c.id) * 1e4) / 1e4 : null,

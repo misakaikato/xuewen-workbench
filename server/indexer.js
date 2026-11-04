@@ -7,10 +7,24 @@ import { withActivity, SLOW_FS_OP_MS } from './lagWatch.js';
 import { decodeText } from './textDecode.js';
 import { toEditorText } from './editorText.js';
 
+// 正文大小上限：超过的文件不读正文，只按文件名收录（文件树、文件名检索照常可见）。环境变量供测试覆盖
+export const TEXT_INDEX_MAX_BYTES = Number(process.env.WORKBENCH_TEXT_INDEX_MAX_BYTES) || 16 * 1024 * 1024;
+export const WORD_INDEX_MAX_BYTES = Number(process.env.WORKBENCH_WORD_INDEX_MAX_BYTES) || 64 * 1024 * 1024;
+const MB = (n) => Math.round((n / 1048576) * 10) / 10;
+// 小写正文：建索引时算一次，检索不再逐次对全文 toLowerCase（耗时与总正文量成正比）
+// 与原文相同（如纯中文）时丢掉副本、复用原串，不多占内存
+const lowerOf = (text) => {
+  const low = text.toLowerCase();
+  return low === text ? text : low;
+};
+
 export class Indexer {
   constructor() {
     this.files = []; // 扫描快照
     this.texts = new Map(); // relPath -> 可检索文本
+    this.lower = new Map(); // relPath -> 小写正文（检索用；与原文相同时就是同一个字符串，不多占内存）
+    this.stamps = new Map(); // relPath -> 'mtimeMs:size'，下一轮构建据此复用未变文件的正文
+    this._buildSeq = 0;
     this.dsId = null;
     this.baseDir = null;
   }
@@ -20,19 +34,39 @@ export class Indexer {
     this.baseDir = baseDir;
     this.files = [];
     this.texts = new Map();
+    this.lower = new Map();
+    this.stamps = new Map();
   }
 
-  // 扫描完成后重建索引文本（md/json 直接读；word 走缓存提取）
+  // 扫描完成后重建索引文本（md/json 直接读；word 走缓存提取）。mtime 与大小都没变的文件直接复用上一轮的正文。
+  // 新一轮构建开始后，进行中的旧一轮立即停下并返回 false（连续重扫时不做白工）；正常建完返回 true。
   // onProgress(done, total) 每处理完一个文件回调一次（供 /api/status 暴露索引进度）
-  // 单个文件读取或解析超过 SLOW_FS_OP_MS 记 WARN，每次构建最多逐条记 SLOW_LOG_LIMIT 条，其余汇总一行
+  // 单个文件读取或解析超过 SLOW_FS_OP_MS 记 WARN，每次构建最多逐条记 SLOW_LOG_LIMIT 条，其余汇总一行；
+  // 超过正文大小上限的文件跳过正文，结束时汇总一行
   async build(snapshot, onProgress) {
+    const seq = ++this._buildSeq;
     const t0 = Date.now();
     const label = '建文本索引 ' + (this.baseDir ? path.basename(this.baseDir) : '');
     const SLOW_LOG_LIMIT = 20;
     let slowCount = 0;
+    let oversized = 0;
+    let largest = null; // 跳过的文件中最大的一个
+    let reused = 0;
     await withActivity(label, async () => {
+      const prev = { texts: this.texts, lower: this.lower, stamps: this.stamps };
+      // 本轮写进自己的表：被取代的旧一轮即使还有在途读取，也写不进新一轮的表
+      const texts = new Map();
+      const lower = new Map();
+      const stamps = new Map();
+      const put = (f, text, low) => {
+        texts.set(f.path, text);
+        lower.set(f.path, low ?? lowerOf(text));
+        stamps.set(f.path, f.mtimeMs + ':' + f.size);
+      };
       this.files = snapshot.files;
-      this.texts = new Map();
+      this.texts = texts;
+      this.lower = lower;
+      this.stamps = stamps;
       const total = this.files.length;
       let done = 0;
       const CONCURRENCY = 8;
@@ -40,17 +74,33 @@ export class Indexer {
       const workers = Array.from({ length: CONCURRENCY }, async () => {
         let sliceStart = Date.now();
         while (queue.length) {
+          if (seq !== this._buildSeq) return;
           const f = queue.shift();
           const fileStart = Date.now();
+          if (prev.stamps.get(f.path) === f.mtimeMs + ':' + f.size && prev.texts.has(f.path)) {
+            put(f, prev.texts.get(f.path), prev.lower.get(f.path));
+            reused++;
+            done++;
+            if (onProgress) onProgress(done, total);
+            continue;
+          }
+          const isText = f.ext === '.md' || f.ext === '.json' || f.ext === '.txt' || f.ext === '.html' || f.ext === '.htm';
+          if (f.size > (isText ? TEXT_INDEX_MAX_BYTES : WORD_INDEX_MAX_BYTES)) {
+            oversized++;
+            if (!largest || f.size > largest.size) largest = f;
+            done++;
+            if (onProgress) onProgress(done, total);
+            continue;
+          }
           try {
-            if (f.ext === '.md' || f.ext === '.json' || f.ext === '.txt' || f.ext === '.html' || f.ext === '.htm') {
+            if (isText) {
               // 与前端 CodeMirror 的文档表示逐字符对齐：剥 BOM、纯 CRLF 归一为 LF、
               // 孤立 \r 与混用文档里的 \r 保留；非 UTF-8 经 decodeText 正确解码。
               const { content } = decodeText(await fs.promises.readFile(path.join(this.baseDir, f.path)));
-              this.texts.set(f.path, toEditorText(content));
+              put(f, toEditorText(content));
             } else {
               const t = await extractWordText(this.dsId, path.join(this.baseDir, f.path), f.path, f.mtimeMs);
-              if (t !== null) this.texts.set(f.path, t);
+              if (t !== null) put(f, t);
             }
           } catch {
             // 单个文件读取失败不阻塞整体索引
@@ -70,10 +120,15 @@ export class Indexer {
       });
       await Promise.all(workers);
     });
+    if (seq !== this._buildSeq) return false;
     if (slowCount > SLOW_LOG_LIMIT) {
       console.warn(`[index] 慢文件：另有 ${slowCount - SLOW_LOG_LIMIT} 个文件读取或解析超过 ${SLOW_FS_OP_MS}ms 未逐条记录（本次共 ${slowCount} 个）`);
     }
-    console.log('[index] 文本索引构建完成: ' + this.files.length + ' 个文件，耗时 ' + (Date.now() - t0) + 'ms');
+    if (oversized) {
+      console.warn(`[index] 跳过正文：${oversized} 个文件超过大小上限（文本 ${MB(TEXT_INDEX_MAX_BYTES)}MB / Word ${MB(WORD_INDEX_MAX_BYTES)}MB），只按文件名收录；最大的是 ${largest.path}（${MB(largest.size)}MB）`);
+    }
+    console.log('[index] 文本索引构建完成: ' + this.files.length + ' 个文件（复用未变 ' + reused + ' 个），耗时 ' + (Date.now() - t0) + 'ms');
+    return true;
   }
 
   byName() {
@@ -202,7 +257,7 @@ export class Indexer {
 
       const text = this.texts.get(f.path);
       if (text) {
-        const lower = text.toLowerCase();
+        const lower = this.lower.get(f.path);
         const ok = all.every((t) => lower.includes(t.toLowerCase()));
         if (ok) {
           // 最多取 3 个片段

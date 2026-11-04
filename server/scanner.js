@@ -18,6 +18,19 @@ export const isSidecar = (name) => String(name).toLowerCase().endsWith(SIDECAR_S
 export const isAnnotations = (name) => /\.annotations\.json$/i.test(name);
 export const isMetaFile = (name) => isSidecar(name) || isAnnotations(name);
 
+/**
+ * 监听事件是否可能改变扫描结果：目录增删、支持的扩展名文件、.derived/ 内的文件才算；
+ * 回收站内的变动与其他类型文件（下载中的临时文件、压缩包、安装包等）不触发重扫。
+ */
+export function watchEventAffectsScan(baseDir, event, absPath) {
+  const rel = toRel(baseDir, absPath);
+  const parts = rel.split('/');
+  if (parts[0] === TRASH_DIR) return false;
+  if (event === 'addDir' || event === 'unlinkDir') return true;
+  if (parts.includes('.derived')) return true;
+  return SUPPORTED_EXTS.includes(path.extname(rel).toLowerCase());
+}
+
 // 异步扫描的单片时间预算：每处理约 30ms 用 setImmediate 让出一次事件循环
 export const SCAN_SLICE_MS = 30;
 
@@ -376,7 +389,10 @@ export class Scanner extends EventEmitter {
         clearTimeout(this._debounce);
         this._debounce = setTimeout(() => this.rescan(), 600);
       };
-      this.watcher.on('all', trigger);
+      const baseDir = this.baseDir;
+      this.watcher.on('all', (event, p) => {
+        if (watchEventAffectsScan(baseDir, event, p)) trigger();
+      });
       // 监听出错（如 Windows 上根目录被删）也重扫一次：由扫描结果判断是否已不可达
       this.watcher.on('error', (e) => {
         this.emit('watch-error', e);

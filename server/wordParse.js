@@ -1,0 +1,167 @@
+// Word 纯解析：docx 用 mammoth；doc 优先 LibreOffice 转换，缺失时回退 word-extractor 纯文本。
+// 只依赖参数，不读写解析缓存、不碰数据目录，可在 worker 线程里运行（server/wordWorker.js）。
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import mammoth from 'mammoth';
+import WordExtractor from 'word-extractor';
+
+const extractor = new WordExtractor();
+
+let sofficePathCache;
+
+export async function findSoffice() {
+  if (sofficePathCache !== undefined) return sofficePathCache;
+  const candidates = [
+    'soffice',
+    'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+    'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe',
+    '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+    '/usr/bin/soffice',
+  ];
+  for (const c of candidates) {
+    const ok = await new Promise((resolve) => {
+      execFile(c, ['--version'], { timeout: 8000 }, (err) => resolve(!err));
+    });
+    if (ok) {
+      sofficePathCache = c;
+      return c;
+    }
+  }
+  sofficePathCache = null;
+  return null;
+}
+
+function escapeHtml(s) {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// 图片外置：不内嵌 data URI（26MB docx 会产生 36MB JSON 响应），写到
+// cacheDir(dsId)/word-assets/<路径哈希>-<mtime>/img-<n>.<ext>，HTML 中引用 /api/word/asset。
+// SVG 例外：直接打开 SVG 文件可执行其中的脚本，不从应用源站提供，保持 data URI 内嵌。
+const IMG_EXT_BY_TYPE = { 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' };
+
+function makeImageSink(dsId, cacheRoot, dirKey, mtimeMs) {
+  const base = path.join(cacheRoot, 'word-assets');
+  const dir = path.join(base, `${dirKey}-${mtimeMs}`);
+  let n = 0;
+  let prepared = null; // 首张图片时清理旧资产目录并建目录，只做一次
+  const prepare = async () => {
+    try {
+      await fs.promises.mkdir(base, { recursive: true });
+      // 同一路径哈希只保留最新 mtime 的资产目录
+      for (const d of await fs.promises.readdir(base)) {
+        if (d.startsWith(dirKey + '-') && d !== path.basename(dir)) {
+          await fs.promises.rm(path.join(base, d), { recursive: true, force: true });
+        }
+      }
+      await fs.promises.mkdir(dir, { recursive: true });
+    } catch { /* 资产目录不可写时退回 data URI */ }
+  };
+  return {
+    convertImage: mammoth.images.imgElement(async (image) => {
+      if (!prepared) prepared = prepare();
+      await prepared;
+      const b64 = await image.readAsBase64String();
+      if (image.contentType === 'image/svg+xml') {
+        return { src: `data:${image.contentType};base64,${b64}` };
+      }
+      const ext = IMG_EXT_BY_TYPE[image.contentType] || 'png';
+      const name = `img-${++n}.${ext}`;
+      try {
+        await fs.promises.writeFile(path.join(dir, name), Buffer.from(b64, 'base64'));
+        return {
+          src: `/api/word/asset?ds=${encodeURIComponent(dsId)}&key=${encodeURIComponent(path.basename(dir))}&name=${encodeURIComponent(name)}`,
+          loading: 'lazy',
+          decoding: 'async',
+        };
+      } catch {
+        return { src: `data:${image.contentType};base64,${b64}` };
+      }
+    }),
+  };
+}
+
+function textToHtml(text) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => (line.trim() ? `<p>${escapeHtml(line)}</p>` : ''))
+    .join('\n');
+}
+
+async function docxToHtml(absPath, sink = null) {
+  const [htmlRes, textRes] = await Promise.all([
+    mammoth.convertToHtml({ path: absPath }, sink ? { convertImage: sink.convertImage } : {}),
+    mammoth.extractRawText({ path: absPath }),
+  ]);
+  return { html: htmlRes.value, text: textRes.value, engine: 'mammoth' };
+}
+
+async function docViaSoffice(absPath, cacheRoot, sink = null) {
+  // 每次转换独立临时目录：并发同名文件互不串扰，只读本次新产生的 docx，用完即删。
+  const workDir = await fs.promises.mkdtemp(path.join(cacheRoot, 'convert-'));
+  try {
+    await new Promise((resolve, reject) => {
+      execFile(
+        sofficePathCache,
+        ['--headless', '--convert-to', 'docx', '--outdir', workDir, absPath],
+        { timeout: 60000 },
+        (err, _stdout, stderr) => (err ? reject(new Error(stderr || String(err))) : resolve())
+      );
+    });
+    const converted = path.join(
+      workDir,
+      path.basename(absPath, path.extname(absPath)) + '.docx'
+    );
+    // 正常退出但没有产物 → 视为失败（由 parseWord 回退 word-extractor）
+    try {
+      await fs.promises.access(converted);
+    } catch {
+      throw new Error('LibreOffice 转换未产生输出文件');
+    }
+    return await docxToHtml(converted, sink);
+  } finally {
+    await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => { /* 清理失败不影响结果 */ });
+  }
+}
+
+async function docViaExtractor(absPath) {
+  const doc = await extractor.extract(absPath);
+  const text = doc.getBody() || '';
+  return { html: textToHtml(text), text, engine: 'word-extractor' };
+}
+
+/**
+ * 解析一个 Word 文件为 { html, text, engine, warning? }；图片写入 cacheRoot/word-assets。
+ * 只依赖参数，不读写解析缓存。cacheKey 是图片目录名前缀（与解析缓存同一个键）。
+ */
+export async function convertWord({ dsId, absPath, cacheRoot, cacheKey, mtimeMs }) {
+  const ext = path.extname(absPath).toLowerCase();
+  let result;
+  const sink = makeImageSink(dsId, cacheRoot, cacheKey, mtimeMs);
+  if (ext === '.docx') {
+    result = await docxToHtml(absPath, sink);
+  } else if (ext === '.doc') {
+    const soffice = await findSoffice();
+    if (soffice) {
+      try {
+        result = await docViaSoffice(absPath, cacheRoot, sink);
+        result.engine = 'libreoffice+mammoth';
+      } catch (e) {
+        result = await docViaExtractor(absPath);
+        result.warning = 'LibreOffice 转换失败（' + e.message + '），已回退为纯文本提取。';
+      }
+    } else {
+      result = await docViaExtractor(absPath);
+      result.warning =
+        '未检测到 LibreOffice，.doc 以纯文本方式展示。安装 LibreOffice 并重启应用后可获得完整排版。';
+    }
+  } else {
+    throw new Error('不支持的 Word 格式: ' + ext);
+  }
+  return result;
+}

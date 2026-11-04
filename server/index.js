@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, dataDir, renameWithRetryAsync, tmpPathFor, cacheDir } from './store.js';
+import { listLibs, upsertLib, removeLib as removeLibFromStore, setActiveLib as setActiveLibInStore, getState, setState, backupDir, getUiSettings, saveUiSettings, isWordConcurrency, dataDir, renameWithRetryAsync, tmpPathFor, cacheDir } from './store.js';
 import { isWithin } from './paths.js';
 import { preserveCorrupt } from './atomicFile.js';
 import { caseRenameAction } from './renamePlan.js';
@@ -25,6 +25,7 @@ import { AgentHub } from './agent/manager.js';
 import { mountAgent } from './agent/routes.js';
 import { Indexer } from './indexer.js';
 import { parseWord, wordCapability, reclaimWordCache, WORD_ASSET_KEY } from './word.js';
+import { setWordPoolSize } from './wordPool.js';
 import { scheduleStartupSweep } from './startupSweep.js';
 import { LinkIndex } from './links.js';
 import { loadDerived, loadTopics, DERIVED_DIR } from './derived.js';
@@ -117,10 +118,12 @@ class Lib {
       this.indexError = null;
       this.indexState = { phase: 'text', done: 0, total, startedAt };
       try {
-        await this.indexer.build(snapshot, (done) => {
+        const built = await this.indexer.build(snapshot, (done) => {
           if (isCurrent()) this.indexState = { phase: 'text', done, total, startedAt };
         });
-        if (isCurrent()) this.indexState = { phase: 'links', done: 0, total, startedAt };
+        // 被新一轮扫描取代：后续内链、缓存回收、RAG 增量都交给新一轮
+        if (!built || !isCurrent()) return;
+        this.indexState = { phase: 'links', done: 0, total, startedAt };
         await this.linkIndex.rebuild(snapshot, this.indexer, (done) => {
           if (isCurrent()) this.indexState = { phase: 'links', done, total, startedAt };
         }); // 自动内链索引随文本索引之后增量更新
@@ -249,23 +252,26 @@ function requireLib(res, req) {
 }
 
 // 路径安全：限制在指定资料库 baseDir 内（跟随符号链接校验真实路径）
-function resolveWithin(lib, rel) {
+// 路径存在（含悬空符号链接本身）；文件系统调用走线程池，慢盘上不卡主线程
+const pathExists = (p) => fs.promises.lstat(p).then(() => true, () => false);
+
+async function resolveWithin(lib, rel) {
   const abs = path.resolve(lib.scanner.baseDir, rel);
   const baseNorm = path.resolve(lib.scanner.baseDir);
   if (!isWithin(abs, baseNorm)) {
     throw Object.assign(new Error('路径越界'), { status: 403 });
   }
   try {
-    const realBase = fs.realpathSync(baseNorm);
+    const realBase = await fs.promises.realpath(baseNorm);
     // 目标存在则校验目标 realpath；不存在则向上找最近存在的祖先目录校验，
     // 防止「库内符号链接目录 + 新建文件」把文件写进库外。
     let probe = abs;
-    while (!fs.existsSync(probe)) {
+    while (!(await fs.promises.access(probe).then(() => true, () => false))) {
       const parent = path.dirname(probe);
       if (parent === probe) break;
       probe = parent;
     }
-    const real = fs.realpathSync(probe);
+    const real = await fs.promises.realpath(probe);
     if (!isWithin(real, realBase)) {
       throw Object.assign(new Error('符号链接指向数据源之外'), { status: 403 });
     }
@@ -281,19 +287,22 @@ function findFile(lib, rel) {
   return snap.files.find((f) => f.path === rel) || snap.derivedFiles?.find((f) => f.path === rel) || null;
 }
 
-function readTextPreserve(abs) {
-  return decodeText(fs.readFileSync(abs));
+async function readTextPreserve(abs) {
+  return decodeText(await fs.promises.readFile(abs));
 }
+
+// 应用内打开文本文件的大小上限：再大的文件整篇读入、解码、发给编辑器都会长时间卡住，编辑器也难以承载
+const OPEN_TEXT_MAX_BYTES = 32 * 1024 * 1024;
 
 // 原子写回：目标被占用时改名异步退避重试，最终失败删临时文件并抛错（原文件不动）。
 // 临时文件名带序号：同一文件的并发保存在重试等待期间互不覆盖临时文件。
 async function writeTextAtomic(abs, content, bom) {
   const tmp = tmpPathFor(abs, '.wb-tmp-');
-  fs.writeFileSync(tmp, (bom ? '﻿' : '') + content, 'utf8');
+  await fs.promises.writeFile(tmp, (bom ? '﻿' : '') + content, 'utf8');
   try {
     await renameWithRetryAsync(tmp, abs);
   } catch (e) {
-    try { fs.unlinkSync(tmp); } catch { /* 忽略 */ }
+    await fs.promises.unlink(tmp).catch(() => { /* 忽略 */ });
     throw e;
   }
 }
@@ -304,7 +313,7 @@ async function syncSidecarHash(abs, wroteBuf) {
   const metaAbs = abs + SIDECAR_SUFFIX;
   let raw;
   try {
-    raw = fs.readFileSync(metaAbs, 'utf8');
+    raw = await fs.promises.readFile(metaAbs, 'utf8');
   } catch {
     return; // 无旁注
   }
@@ -487,7 +496,7 @@ app.get('/api/ui-settings', (req, res) => {
 });
 
 app.put('/api/ui-settings', async (req, res) => {
-  const { theme, autoUpdate, notesDir, showMetaFiles, agentEnabled } = req.body || {};
+  const { theme, autoUpdate, notesDir, showMetaFiles, agentEnabled, wordConcurrency } = req.body || {};
   const patch = {};
   if (theme !== undefined) {
     if (!['A', 'B', 'C'].includes(theme)) {
@@ -510,6 +519,12 @@ app.put('/api/ui-settings', async (req, res) => {
   if (showMetaFiles !== undefined) {
     patch.showMetaFiles = !!showMetaFiles;
   }
+  if (wordConcurrency !== undefined) {
+    if (!isWordConcurrency(wordConcurrency)) {
+      return res.status(400).json({ error: 'Word 解析并发数必须是 1 到 8 的整数' });
+    }
+    patch.wordConcurrency = wordConcurrency;
+  }
   if (notesDir !== undefined) {
     const dir = String(notesDir).trim();
     if (!dir || dir.includes('..') || /[\\/]/.test(dir)) {
@@ -518,12 +533,13 @@ app.put('/api/ui-settings', async (req, res) => {
     patch.notesDir = dir;
   }
   if (Object.keys(patch).length === 0) {
-    return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate / notesDir / showMetaFiles / agentEnabled）' });
+    return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate / notesDir / showMetaFiles / agentEnabled / wordConcurrency）' });
   }
   const next = saveUiSettings(patch);
   // 助手开关：先落盘（此后新的生成请求即被拒），关闭时再中止进行中的生成，中止完成才返回，
   // 前端据此先停生成、后隐藏入口；打开时按需做启动期推迟的初始化
   if (agentEnabled !== undefined) await agentHub.setEnabled(next.agentEnabled);
+  if (wordConcurrency !== undefined) setWordPoolSize(next.wordConcurrency);
   // showMetaFiles 变化：同步到各库 scanner 并重扫，与其他写操作一样等到重扫与索引完成才返回，
   // 前端据此提示「已显示」；重扫失败如实返回（设置本身已保存）
   if (showMetaFiles !== undefined) {
@@ -670,12 +686,19 @@ app.get('/api/file', async (req, res) => {
   if (!lib) return;
   const rel = String(req.query.path || '');
   try {
-    const abs = resolveWithin(lib, rel);
+    const abs = await resolveWithin(lib, rel);
     const f = findFile(lib, rel);
     if (!f) return res.status(404).json({ error: '文件不在当前扫描结果中（可能已被移动或删除）', missing: true });
     const ext = f.ext;
     if (ext === '.md' || ext === '.json' || ext === '.txt' || ext === '.html' || ext === '.htm' || ext === '.jsonl' || ext === '.graphml') {
-      const { content, bom, encoding } = readTextPreserve(abs);
+      if (f.size > OPEN_TEXT_MAX_BYTES) {
+        const mb = (n) => Math.round(n / 1048576);
+        return res.status(413).json({
+          error: `文件过大（${mb(f.size)} MB），超过 ${mb(OPEN_TEXT_MAX_BYTES)} MB 的文本文件无法在应用内打开，请用其他程序打开。`,
+          tooLarge: true,
+        });
+      }
+      const { content, bom, encoding } = await readTextPreserve(abs);
       const isDerived = ext === '.jsonl' || ext === '.graphml';
       const nonUtf8 = encoding !== 'utf-8';
       return res.json({
@@ -687,7 +710,7 @@ app.get('/api/file', async (req, res) => {
         readonlyReason: nonUtf8 ? `此文件为 ${encodingLabel(encoding)} 编码，为避免损坏原文只读显示` : undefined,
       });
     }
-    const parsed = await parseWord(lib.id, abs, rel, f.mtimeMs);
+    const parsed = await parseWord(lib.id, abs, rel, f.mtimeMs, { force: true });
     res.json({
       dsId: lib.id, path: rel, name: f.name, ext, type: 'word',
       html: parsed.html, text: parsed.text, engine: parsed.engine, warning: parsed.warning || null,
@@ -698,11 +721,11 @@ app.get('/api/file', async (req, res) => {
   }
 });
 
-app.get('/api/file/raw', (req, res) => {
+app.get('/api/file/raw', async (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;
   try {
-    const abs = resolveWithin(lib, String(req.query.path || ''));
+    const abs = await resolveWithin(lib, String(req.query.path || ''));
     res.download(abs);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
@@ -752,7 +775,7 @@ app.post('/api/reveal', async (req, res) => {
   if (!lib) return;
   const rel = String(req.body?.path || '');
   try {
-    const abs = resolveWithin(lib, rel);
+    const abs = await resolveWithin(lib, rel);
     try {
       fs.statSync(abs);
     } catch {
@@ -779,11 +802,11 @@ app.put('/api/file', async (req, res) => {
     return res.status(400).json({ error: '该格式不支持直接写回，请使用另存副本' });
   }
   try {
-    const abs = resolveWithin(lib, rel);
+    const abs = await resolveWithin(lib, rel);
     const exists = fs.existsSync(abs);
     if (exists) {
       const cur = fs.statSync(abs);
-      const existing = readTextPreserve(abs);
+      const existing = await readTextPreserve(abs);
       if (existing.encoding !== 'utf-8') {
         return res.status(409).json({
           error: 'non-utf8',
@@ -819,10 +842,10 @@ app.put('/api/file', async (req, res) => {
 
 // 读取划线记录：不存在为空；解析失败或不是数组时把坏文件改名为 .corrupt-<时间戳> 保留后从空开始，
 // 不让下一次写入用只含新条目的数组覆盖掉原有记录
-function readAnnotations(annAbs) {
+async function readAnnotations(annAbs) {
   let raw;
   try {
-    raw = fs.readFileSync(annAbs, 'utf8');
+    raw = await fs.promises.readFile(annAbs, 'utf8');
   } catch (e) {
     if (e.code === 'ENOENT') return [];
     throw e;
@@ -850,10 +873,10 @@ app.post('/api/notes/append', async (req, res) => {
     const source = String(sourcePath);
     const stem = path.posix.basename(source).replace(/\.(md|txt|json|docx?|html?)$/i, '') || '未命名';
     const rel = path.posix.join(notesDir, stem + '.md');
-    const abs = resolveWithin(lib, rel);
+    const abs = await resolveWithin(lib, rel);
     const first = !fs.existsSync(abs);
     if (!first) {
-      const existing = readTextPreserve(abs);
+      const existing = await readTextPreserve(abs);
       if (existing.encoding !== 'utf-8') {
         return res.status(409).json({ error: 'non-utf8', message: `笔记文件为 ${encodingLabel(existing.encoding)} 编码，为避免损坏原文不追加` });
       }
@@ -865,7 +888,7 @@ app.post('/api/notes/append', async (req, res) => {
     const quoted = String(quote || '').trim().split(/\r?\n/).map((line) => '> ' + line).join('\n');
     // 逐条划线记录（独立 annotations 文件，避免污染 meta schema）；坏文件先改名保留再从空开始
     const annAbs = path.join(path.dirname(abs), `.${path.basename(abs, '.md')}.annotations.json`);
-    const ann = readAnnotations(annAbs);
+    const ann = await readAnnotations(annAbs);
     // 锚点：标题文本即锚点（阅读页按标题文本定位），加短随机后缀避免同分钟冲突
     const anchor = `${stamp} · ${String(ann.length + 1)}`;
     const block = [first ? `# ${stem} 阅读笔记\n` : '', `## ${anchor}`, quoted, body ? `\n${body}` : '', `\n来源：[${source}](${encodeURI(source)})\n`, ''].filter(Boolean).join('\n');
@@ -896,34 +919,36 @@ app.get('/api/notes/for', async (req, res) => {
   const notesAbs = path.join(lib.baseDir, notesDir);
   const out = [];
   try {
-    if (fs.existsSync(notesAbs)) {
-      for (const f of fs.readdirSync(notesAbs)) {
-        if (!f.startsWith('.') || !f.endsWith('.annotations.json')) continue;
+    const names = await fs.promises.readdir(notesAbs).catch((e) => {
+      if (e.code === 'ENOENT') return [];
+      throw e;
+    });
+    for (const f of names) {
+      if (!f.startsWith('.') || !f.endsWith('.annotations.json')) continue;
+      try {
+        const ann = JSON.parse(await fs.promises.readFile(path.join(notesAbs, f), 'utf8'));
+        if (!Array.isArray(ann)) continue;
+        const hits = ann.filter((a) => a && a.source === target);
+        if (!hits.length) continue;
+        // 对应的笔记文件名：.<笔记名>.annotations.json → <笔记名>.md
+        const noteName = f.slice(1, -'.annotations.json'.length) + '.md';
+        const noteAbs = path.join(notesAbs, noteName);
+        // 旧版笔记没有 anchor 字段：按「annotations 顺序 ↔ 笔记文件里 ## 标题顺序」推断
+        const headings = [];
         try {
-          const ann = JSON.parse(fs.readFileSync(path.join(notesAbs, f), 'utf8'));
-          if (!Array.isArray(ann)) continue;
-          const hits = ann.filter((a) => a && a.source === target);
-          if (!hits.length) continue;
-          // 对应的笔记文件名：.<笔记名>.annotations.json → <笔记名>.md
-          const noteName = f.slice(1, -'.annotations.json'.length) + '.md';
-          const noteAbs = path.join(notesAbs, noteName);
-          // 旧版笔记没有 anchor 字段：按「annotations 顺序 ↔ 笔记文件里 ## 标题顺序」推断
-          const headings = [];
-          try {
-            const md = fs.readFileSync(noteAbs, 'utf8');
-            for (const line of md.split(/\r?\n/)) {
-              const m = /^##\s+(.+?)\s*$/.exec(line);
-              if (m) headings.push(m[1]);
-            }
-          } catch { /* 笔记文件不存在则无法推断 */ }
-          out.push({
-            notePath: path.posix.join(notesDir, noteName),
-            count: hits.length,
-            latest: hits[hits.length - 1]?.at || null,
-            quotes: hits.map((h, i) => ({ quote: h.quote, anchor: h.anchor || headings[i] || null })),
-          });
-        } catch { /* 坏文件跳过 */ }
-      }
+          const md = await fs.promises.readFile(noteAbs, 'utf8');
+          for (const line of md.split(/\r?\n/)) {
+            const m = /^##\s+(.+?)\s*$/.exec(line);
+            if (m) headings.push(m[1]);
+          }
+        } catch { /* 笔记文件不存在则无法推断 */ }
+        out.push({
+          notePath: path.posix.join(notesDir, noteName),
+          count: hits.length,
+          latest: hits[hits.length - 1]?.at || null,
+          quotes: hits.map((h, i) => ({ quote: h.quote, anchor: h.anchor || headings[i] || null })),
+        });
+      } catch { /* 坏文件跳过 */ }
     }
     res.json({ ok: true, notes: out });
   } catch (e) {
@@ -944,7 +969,7 @@ app.post('/api/file/save-as', async (req, res) => {
     return res.status(400).json({ error: '副本仅支持保存为 .md 或 .json' });
   }
   try {
-    const abs = resolveWithin(lib, rel);
+    const abs = await resolveWithin(lib, rel);
     if (fs.existsSync(abs)) return res.status(409).json({ error: '目标文件已存在', exists: true });
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     await writeTextAtomic(abs, String(content ?? ''), false);
@@ -1008,7 +1033,7 @@ app.post('/api/file/create', async (req, res) => {
   try {
     if (!['md', 'folder'].includes(kind)) throw badRequest('不支持的类型: ' + kind);
     const dir = validateRelDir(b.dir);
-    const dirAbs = resolveWithin(lib, dir);
+    const dirAbs = await resolveWithin(lib, dir);
     let st;
     try { st = fs.statSync(dirAbs); } catch { return res.status(404).json({ error: '目标目录不存在: ' + (dir || '/') }); }
     if (!st.isDirectory()) throw badRequest('目标不是目录');
@@ -1016,7 +1041,7 @@ app.post('/api/file/create', async (req, res) => {
     if (kind === 'folder') {
       const name = validateEntryName(b.name);
       const rel = dir ? dir + '/' + name : name;
-      const abs = resolveWithin(lib, rel);
+      const abs = await resolveWithin(lib, rel);
       if (pathTaken(abs)) return res.status(409).json({ error: '同名文件或文件夹已存在', exists: true, path: rel });
       fs.mkdirSync(abs);
       await lib.rescanAndIndex();
@@ -1028,7 +1053,7 @@ app.post('/api/file/create', async (req, res) => {
     if (!/\.md$/i.test(name)) name = validateEntryName(name + '.md');
     const title = String(b.title ?? '').replace(/[\r\n]+/g, ' ').trim() || name.replace(/\.md$/i, '');
     const rel = dir ? dir + '/' + name : name;
-    const abs = resolveWithin(lib, rel);
+    const abs = await resolveWithin(lib, rel);
     const metaAbs = abs + SIDECAR_SUFFIX;
     if (pathTaken(abs) || pathTaken(metaAbs)) {
       return res.status(409).json({ error: pathTaken(abs) ? '同名文档已存在' : '同名元数据文件已存在（' + name + SIDECAR_SUFFIX + '）', exists: true, path: rel });
@@ -1105,13 +1130,13 @@ app.post('/api/file/duplicate', async (req, res) => {
   if (b.dsId && b.dsId !== lib.id) return res.status(409).json({ error: '数据源已切换，请刷新后重试', stale: true });
   try {
     const rel = validateEntryPath(String(b.path || ''));
-    const srcAbs = resolveWithin(lib, rel);
+    const srcAbs = await resolveWithin(lib, rel);
     let st;
     try { st = fs.statSync(srcAbs); } catch { return res.status(404).json({ error: '源路径不存在（可能已被移动或删除）', missing: true }); }
     const isDir = st.isDirectory();
     const srcDir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
     const targetDir = b.targetDir != null ? validateRelDir(String(b.targetDir)) : srcDir;
-    const dstDirAbs = resolveWithin(lib, targetDir);
+    const dstDirAbs = await resolveWithin(lib, targetDir);
     const dstDirStat = fs.statSync(dstDirAbs);
     if (!dstDirStat.isDirectory()) throw badRequest('目标不是目录');
     if (targetDir === rel || targetDir.startsWith(rel + '/')) throw badRequest('不能复制到自身内部');
@@ -1188,9 +1213,9 @@ function checkDsId(lib, b, res) {
 }
 
 // 读取条目：{ rel, abs, isDir, metaAbs|null }
-function loadEntry(lib, raw) {
+async function loadEntry(lib, raw) {
   const rel = validateEntryPath(raw);
-  const abs = resolveWithin(lib, rel);
+  const abs = await resolveWithin(lib, rel);
   let st;
   try { st = fs.lstatSync(abs); } catch { throw Object.assign(new Error('条目不存在: ' + rel), { status: 404 }); }
   const isDir = st.isDirectory();
@@ -1217,9 +1242,9 @@ function renameAll(steps) {
 const sameCaseInsensitive = (a, b) => a !== b && a.toLowerCase() === b.toLowerCase();
 
 // 将条目（及旁注）移动到 newRel；处理仅大小写变化的重命名
-function relocate(lib, entry, newRel) {
+async function relocate(lib, entry, newRel) {
   if (newRel === entry.rel) throw badRequest('名称或位置未改变');
-  const newAbs = resolveWithin(lib, newRel);
+  const newAbs = await resolveWithin(lib, newRel);
   const caseOnly = sameCaseInsensitive(entry.rel, newRel);
   const newMeta = newAbs + SIDECAR_SUFFIX;
   if (caseOnly) {
@@ -1326,7 +1351,7 @@ app.post('/api/file/rename', async (req, res) => {
   const b = req.body || {};
   if (!checkDsId(lib, b, res)) return;
   try {
-    const entry = loadEntry(lib, b.path);
+    const entry = await loadEntry(lib, b.path);
     const oldName = path.posix.basename(entry.rel);
     let newName = validateEntryName(b.newName);
     if (!entry.isDir) {
@@ -1336,7 +1361,7 @@ app.post('/api/file/rename', async (req, res) => {
     if (isSidecar(newName)) throw badRequest('名称不能以 .meta.json 结尾', { invalidName: true });
     const dir = path.posix.dirname(entry.rel);
     const newRel = dir === '.' ? newName : dir + '/' + newName;
-    const moved = relocate(lib, entry, newRel);
+    const moved = await relocate(lib, entry, newRel);
     let titleUpdated = false;
     if (moved.newMeta) {
       // 旧标题等于旧文件名主体时，标题随新名称更新；id 永不改变
@@ -1375,19 +1400,19 @@ app.post('/api/file/move', async (req, res) => {
   const b = req.body || {};
   if (!checkDsId(lib, b, res)) return;
   try {
-    const entry = loadEntry(lib, b.path);
+    const entry = await loadEntry(lib, b.path);
     const targetDir = validateRelDir(b.targetDir);
     if (targetDir.split('/')[0] === TRASH_DIR) throw badRequest('不能移动到回收站，请使用删除');
     if (entry.isDir && (targetDir === entry.rel || targetDir.startsWith(entry.rel + '/'))) {
       throw badRequest('不能把文件夹移动到它自身或其子文件夹中');
     }
-    const dirAbs = resolveWithin(lib, targetDir);
+    const dirAbs = await resolveWithin(lib, targetDir);
     let st;
     try { st = fs.statSync(dirAbs); } catch { return res.status(404).json({ error: '目标目录不存在: ' + (targetDir || '/') }); }
     if (!st.isDirectory()) throw badRequest('目标不是目录');
     const name = path.posix.basename(entry.rel);
     const newRel = targetDir ? targetDir + '/' + name : name;
-    const moved = relocate(lib, entry, newRel);
+    const moved = await relocate(lib, entry, newRel);
     try {
       moveBackups(lib.id, entry.rel, newRel, entry.isDir);
     } catch (be) {
@@ -1414,7 +1439,7 @@ app.post('/api/file/delete', async (req, res) => {
   const b = req.body || {};
   if (!checkDsId(lib, b, res)) return;
   try {
-    const entry = loadEntry(lib, b.path);
+    const entry = await loadEntry(lib, b.path);
     const name = path.posix.basename(entry.rel);
     const trashRoot = path.join(lib.scanner.baseDir, TRASH_DIR);
     fs.mkdirSync(trashRoot, { recursive: true });
@@ -1454,8 +1479,13 @@ app.post('/api/file/delete', async (req, res) => {
 
 const metaIssueCache = new WeakMap(); // snapshot -> issues
 
+// 同一快照只算一次（缓存 Promise，并发请求共用）；旁注逐个异步读取
 function computeMetaIssues(lib, snapshot) {
-  if (metaIssueCache.has(snapshot)) return metaIssueCache.get(snapshot);
+  if (!metaIssueCache.has(snapshot)) metaIssueCache.set(snapshot, collectMetaIssues(lib, snapshot));
+  return metaIssueCache.get(snapshot);
+}
+
+async function collectMetaIssues(lib, snapshot) {
   const issues = [];
   const sidecarSet = new Set(snapshot.sidecars || []);
   const byId = new Map();
@@ -1463,7 +1493,7 @@ function computeMetaIssues(lib, snapshot) {
     const target = sc.slice(0, sc.length - SIDECAR_SUFFIX.length);
     let id = null;
     try {
-      const meta = JSON.parse(fs.readFileSync(path.join(lib.scanner.baseDir, sc), 'utf8'));
+      const meta = JSON.parse(await fs.promises.readFile(path.join(lib.scanner.baseDir, sc), 'utf8'));
       if (meta && typeof meta.id === 'string') id = meta.id;
     } catch {
       issues.push({ kind: 'invalid', sidecar: sc, target, message: '元数据文件不是合法 JSON' });
@@ -1472,7 +1502,7 @@ function computeMetaIssues(lib, snapshot) {
       if (!byId.has(id)) byId.set(id, []);
       byId.get(id).push(sc);
     }
-    if (!pathTaken(path.join(lib.scanner.baseDir, target))) {
+    if (!(await pathExists(path.join(lib.scanner.baseDir, target)))) {
       // 同名文档在别处且自身没有旁注：很可能是在应用外被移动/重命名
       const targetName = path.posix.basename(target);
       const candidates = snapshot.files
@@ -1486,21 +1516,20 @@ function computeMetaIssues(lib, snapshot) {
   for (const [id, list] of byId) {
     if (list.length > 1) issues.push({ kind: 'duplicateId', id, sidecars: list, message: '多个元数据文件使用了相同 id' });
   }
-  metaIssueCache.set(snapshot, issues);
   return issues;
 }
 
-app.get('/api/meta/issues', (req, res) => {
+app.get('/api/meta/issues', async (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;
-  const issues = computeMetaIssues(lib, lib.scanner.snapshot);
+  const issues = await computeMetaIssues(lib, lib.scanner.snapshot);
   res.json({ dsId: lib.id, scannedAt: lib.scanner.snapshot.scannedAt, total: issues.length, issues });
 });
 
 // ---------- AI 元数据导入（JSONL → 旁注） ----------
 
 // 导入行 path 校验：拒绝反斜杠/绝对路径/../盘符，且必须与规范化相对路径完全一致，再限制在数据源内
-function resolveDocPathFor(lib, raw) {
+async function resolveDocPathFor(lib, raw) {
   const s = String(raw);
   if (s.includes('\\')) throw badRequest('path 越界');
   const rel = validateRelDir(s);
@@ -1522,7 +1551,7 @@ app.post('/api/meta/import', async (req, res) => {
   if (nonEmpty > 20000) return res.status(400).json({ error: '非空行数超过上限 20000' });
   try {
     const args = { baseDir: lib.scanner.baseDir, text: b.jsonl, overwrite: b.overwrite === true, resolveDocPath: (raw) => resolveDocPathFor(lib, raw) };
-    const { summary, items, errors } = mode === 'apply' ? applyImport(args) : planImport(args);
+    const { summary, items, errors } = mode === 'apply' ? await applyImport(args) : await planImport(args);
     if (mode === 'apply') await lib.rescanAndIndex();
     res.json({ dsId: lib.id, mode, overwrite: b.overwrite === true, summary, items, errors });
   } catch (e) {
@@ -1745,12 +1774,12 @@ app.put('/api/metadata', (req, res) => {
 });
 
 // 预览某个 JSON 文件的结构，辅助配置映射
-app.get('/api/metadata/inspect', (req, res) => {
+app.get('/api/metadata/inspect', async (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;
   try {
-    const abs = resolveWithin(lib, String(req.query.path || ''));
-    const { content } = readTextPreserve(abs);
+    const abs = await resolveWithin(lib, String(req.query.path || ''));
+    const { content } = await readTextPreserve(abs);
     const data = JSON.parse(content);
     const shape = (v, depth) => {
       if (depth > 3) return Array.isArray(v) ? '[...]' : typeof v;
@@ -1767,7 +1796,7 @@ app.get('/api/metadata/inspect', (req, res) => {
 });
 
 // 主题/概念聚合：基于用户配置的元数据映射
-app.get('/api/topics', (req, res) => {
+app.get('/api/topics', async (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;
   const mappings = getState(lib.id, 'metadata', []);
@@ -1776,8 +1805,8 @@ app.get('/api/topics', (req, res) => {
   const errors = [];
   for (const m of mappings) {
     try {
-      const abs = resolveWithin(lib, m.file);
-      const data = JSON.parse(readTextPreserve(abs).content);
+      const abs = await resolveWithin(lib, m.file);
+      const data = JSON.parse((await readTextPreserve(abs)).content);
       const items = m.itemPath
         ? m.itemPath.split('.').reduce((o, k) => (o ? o[k] : undefined), data)
         : data;
@@ -1848,33 +1877,30 @@ app.get('/api/concept', (req, res) => {
 });
 
 // 主题标签：合并 .meta.json 的人工 tags 与 .derived/topics.jsonl 的 AI 标注
-app.get('/api/tags', (req, res) => {
+app.get('/api/tags', async (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;
   const snap = lib.scanner.snapshot || { files: [], sidecars: [] };
   const ai = loadTopics(lib.baseDir);
   const byTag = new Map(); // tag -> { tag, files: [{path, title, source}] }
   const counts = { manual: 0, ai: 0 };
+  const sidecars = new Set(snap.sidecars || []);
   for (const f of snap.files || []) {
     if (f.ext !== '.md' && f.ext !== '.json' && f.ext !== '.txt') continue;
     const manual = [];
     const metaRel = f.path + SIDECAR_SUFFIX;
-    if ((snap.sidecars || []).includes(metaRel)) {
+    let meta = null; // 旁注只读一次：tags 与 title 共用
+    if (sidecars.has(metaRel)) {
       try {
-        const m = JSON.parse(fs.readFileSync(path.join(lib.baseDir, metaRel), 'utf8'));
-        if (Array.isArray(m?.tags)) for (const t of m.tags) if (typeof t === 'string' && t.trim()) manual.push(t.trim());
+        meta = JSON.parse(await fs.promises.readFile(path.join(lib.baseDir, metaRel), 'utf8'));
+        if (Array.isArray(meta?.tags)) for (const t of meta.tags) if (typeof t === 'string' && t.trim()) manual.push(t.trim());
       } catch { /* 非法旁注跳过 */ }
     }
     const auto = ai.byPath.get(f.path)?.topics || [];
     if (!manual.length && !auto.length) continue;
-    const title = (() => {
-      try {
-        const m = JSON.parse(fs.readFileSync(path.join(lib.baseDir, metaRel), 'utf8'));
-        if (typeof m?.title === 'string' && m.title.trim()) return m.title.trim();
-      } catch { /* 忽略 */ }
-      const base = f.name;
-      return base.slice(0, base.length - f.ext.length);
-    })();
+    const title = typeof meta?.title === 'string' && meta.title.trim()
+      ? meta.title.trim()
+      : f.name.slice(0, f.name.length - f.ext.length);
     const push = (tag, source) => {
       if (!byTag.has(tag)) byTag.set(tag, { tag, files: [] });
       const e = byTag.get(tag);
@@ -1898,14 +1924,14 @@ app.get('/api/tags', (req, res) => {
 });
 
 // 单文档的主题：人工 tags + AI 标注
-app.get('/api/tags/doc', (req, res) => {
+app.get('/api/tags/doc', async (req, res) => {
   const lib = requireLib(res, req);
   if (!lib) return;
   const target = String(req.query.path || '');
   if (!target) return res.status(400).json({ error: '缺少 path' });
   let manual = [];
   try {
-    const m = JSON.parse(fs.readFileSync(path.join(lib.baseDir, target + SIDECAR_SUFFIX), 'utf8'));
+    const m = JSON.parse(await fs.promises.readFile(path.join(lib.baseDir, target + SIDECAR_SUFFIX), 'utf8'));
     if (Array.isArray(m?.tags)) manual = m.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim());
   } catch { /* 无旁注 */ }
   const ai = loadTopics(lib.baseDir);
@@ -2132,6 +2158,7 @@ if (STATIC_DIR && fs.existsSync(INDEX_FILE)) {
 // ---------- 启动 ----------
 
 async function boot() {
+  setWordPoolSize(getUiSettings().wordConcurrency);
   const { libraries, activeId: savedActive } = listLibs();
   // 启动页扫描进度聚合：多库并行扫描时合并成一条文案推送 boot 步骤，250ms 节流
   const bootScan = new Map(); // libId -> { name, scanned }

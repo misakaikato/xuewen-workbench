@@ -64,16 +64,29 @@ export default function Settings() {
     }
   };
 
-  // 界面设置：自动更新、阅读笔记目录（默认「阅读笔记」）、元数据文件开关
+  // 界面设置：自动更新、阅读笔记目录（默认「阅读笔记」）、元数据文件开关、Word 解析并发数
   useEffect(() => {
     api.getUiSettings()
       .then((cfg) => {
         setAutoUpdate(cfg.autoUpdate);
         setNotesDir(cfg.notesDir || '阅读笔记');
         setShowMetaFiles(!!cfg.showMetaFiles);
+        setWordConcurrency(cfg.wordConcurrency);
       })
       .catch(loadFail('界面设置'));
   }, []);
+  const saveWordConcurrency = async (n: number) => {
+    setWordConcurrency(n);
+    try {
+      const r = await api.saveUiSettings({ wordConcurrency: n });
+      setWordConcurrency(r.wordConcurrency);
+      setMsg('Word 解析并发数已保存：' + r.wordConcurrency);
+      setTimeout(() => setMsg(''), 2500);
+    } catch (e) {
+      notify('Word 解析并发数保存失败：' + errorMessage(e), { kind: 'error' });
+      await api.getUiSettings().then((c) => setWordConcurrency(c.wordConcurrency)).catch(loadFail('界面设置'));
+    }
+  };
   const saveNotesDir = async (dir: string) => {
     try {
       const r = await api.saveUiSettings({ notesDir: dir });
@@ -89,6 +102,7 @@ export default function Settings() {
   const [msg, setMsg] = useState('');
   const [notesDir, setNotesDir] = useState('阅读笔记');
   const [showMetaFiles, setShowMetaFiles] = useState(false);
+  const [wordConcurrency, setWordConcurrency] = useState(2);
   const [inspect, setInspect] = useState<Record<string, string>>({});
   const [blocklistRaw, setBlocklistRaw] = useState('');
   const [ignoredCount, setIgnoredCount] = useState<number | null>(null);
@@ -358,6 +372,20 @@ export default function Settings() {
             包含 <code className="text-[11px]">.meta.json</code>（文档元数据）与{' '}
             <code className="text-[11px]">.annotations.json</code>（划线与笔记记录）；默认隐藏，改动后自动重扫
           </span>
+        </div>
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
+          <span className="w-24 text-sm text-muted-foreground">Word 解析</span>
+          <UISelect value={String(wordConcurrency)} onValueChange={(v) => { void saveWordConcurrency(Number(v)); }}>
+            <SelectTrigger className="h-8 w-32 text-sm" aria-label="Word 解析并发数">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                <SelectItem key={n} value={String(n)}>同时 {n} 个</SelectItem>
+              ))}
+            </SelectContent>
+          </UISelect>
+          <span className="text-xs text-muted-foreground">建索引时同时解析的 Word 文档数，默认 2；调大更快但更占 CPU</span>
         </div>
         <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
           <label className="flex items-center gap-2">

@@ -208,5 +208,83 @@ console.log('== L2 建内链不阻塞事件循环 ==');
   console.log(`  （对照：同步提取 5M 字符 JSON 期间计时器最大延迟 ${syncDelay}ms，分步建内链 ${maxDelay}ms）`);
 }
 
+// ---------- L3：JSON 与 HTML 很多的库（如下载目录里解开的应用包）建内链不阻塞 ----------
+console.log('== L3 大量 JSON 与 HTML 的库建内链不阻塞 ==');
+{
+  const { LinkIndex } = await import(pathToFileURL(path.join(ROOT, 'server', 'links.js')).href);
+  const base = path.join(tmp, 'corpus-l3');
+  fs.mkdirSync(base, { recursive: true });
+  const texts = new Map();
+  const files = [];
+  const add = (p, text) => {
+    texts.set(p, text);
+    files.push({ path: p, name: path.posix.basename(p), ext: path.posix.extname(p), mtimeMs: 1, size: Buffer.byteLength(text) });
+  };
+  for (let i = 0; i < 30; i++) {
+    const rows = Array.from({ length: 30000 }, (_, j) => ({ id: j, name: '条目' + j, note: 'x'.repeat(60) }));
+    add(`包/数据${i}.json`, JSON.stringify({ title: '数据表' + i, rows }));
+  }
+  for (let i = 0; i < 5; i++) {
+    const links = Array.from({ length: 120000 }, (_, j) => `<a href="页${j % 50}.html">第${j}项</a>`).join('');
+    add(`包/页面${i}.html`, `<html><body>${links}</body></html>`);
+  }
+  for (let i = 0; i < 50; i++) add(`包/页${i}.html`, `<p>页${i}</p>`);
+
+  const li = new LinkIndex();
+  li.reset('links-l3', base);
+  const measure = async (fn) => {
+    let max = 0;
+    let last = Date.now();
+    const iv = setInterval(() => {
+      const now = Date.now();
+      max = Math.max(max, now - last - 10);
+      last = now;
+    }, 10);
+    await fn();
+    await new Promise((r) => setTimeout(r, 30));
+    clearInterval(iv);
+    return max;
+  };
+  const d1 = await measure(() => li.rebuild({ files, sidecars: [] }, { texts }));
+  console.log(`  （约 ${Math.round([...texts.values()].reduce((s, t) => s + t.length, 0) / 1e6)}M 字符；首次建内链期间计时器最大延迟 ${d1}ms）`);
+  check('L3 首次建内链期间 10ms 计时器最大回调延迟 ≤ 100ms', () => assert.ok(li.ready && d1 <= 100, `最大延迟 ${d1}ms`));
+  check('L3 JSON 的 title 仍作为词条', () => assert.ok(li.vocab.some((v) => v.term === '数据表7'), '缺少「数据表7」'));
+  check('L3 HTML 链接照常提取', () => assert.ok(li.linksOf('包/页面0.html').length > 0, '页面0 没有链接'));
+
+  // 文件没变的第二次重建：不再整篇解析 JSON
+  const parse = JSON.parse;
+  let bigParses = 0;
+  JSON.parse = (s, ...a) => {
+    if (typeof s === 'string' && s.length > 1e6) bigParses++;
+    return parse(s, ...a);
+  };
+  try {
+    await li.rebuild({ files, sidecars: [] }, { texts });
+  } finally {
+    JSON.parse = parse;
+  }
+  check('L3 文件未变时重建不再整篇解析 JSON', () => assert.ok(bigParses === 0, `整篇解析 ${bigParses} 次`));
+
+  // 重启：新实例从磁盘缓存恢复（逐行读取），期间同样不阻塞，结果与缓存前一致
+  const li2 = new LinkIndex();
+  li2.reset('links-l3', base);
+  let extracted = 0;
+  for (const m of ['extractFor', 'extractHtmlFor']) {
+    const orig = li2[m].bind(li2);
+    li2[m] = (...a) => { extracted++; return orig(...a); };
+  }
+  const d2 = await measure(() => li2.rebuild({ files, sidecars: [] }, { texts }));
+  check('L3 重启后复用磁盘缓存，不重新提取', () => assert.ok(extracted === 0, `重新提取 ${extracted} 个文件`));
+  console.log(`  （重启后从缓存恢复期间计时器最大延迟 ${d2}ms）`);
+  check('L3 重启后从缓存恢复期间最大回调延迟 ≤ 100ms', () => assert.ok(li2.ready && d2 <= 100, `最大延迟 ${d2}ms`));
+  check('L3 重启后链接与缓存前一致', () => {
+    for (const p of ['包/页面0.html', '包/数据3.json']) assert.deepStrictEqual(li2.linksOf(p), li.linksOf(p), p);
+  });
+  extracted = 0;
+  li2.invalidate();
+  await li2.rebuild({ files, sidecars: [] }, { texts });
+  check('L3 「重新扫描」（invalidate）后全量重算', () => assert.ok(extracted === files.length, `重新提取 ${extracted}/${files.length}`));
+}
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
 process.exit(fail ? 1 : 0);

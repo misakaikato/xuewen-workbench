@@ -85,9 +85,10 @@ function reorderMeta(obj) {
   return out;
 }
 
-// 解析并规划一次 JSONL 导入：不写任何文件。
-// resolveDocPath(rel) 由调用方注入（validateRelDir + resolveWithin），越界/非法时抛错。
-export function planImport({ baseDir, text, overwrite, resolveDocPath }) {
+// 解析并规划一次 JSONL 导入：不写任何文件。文件系统操作走异步，每行之间超过 30ms 让出一次事件循环
+// （最多两万行、每行都要读文档算摘要，同步做会长时间卡住后端）。
+// resolveDocPath(rel) 由调用方注入（validateRelDir + resolveWithin），返回 Promise，越界/非法时 reject。
+export async function planImport({ baseDir, text, overwrite, resolveDocPath }) {
   const lines = String(text ?? '').split(/\r?\n/);
   const items = [];
   const errors = [];
@@ -95,7 +96,12 @@ export function planImport({ baseDir, text, overwrite, resolveDocPath }) {
   const seen = new Set();
   const summary = { lines: 0, valid: 0, errors: 0, create: 0, update: 0, skip: 0 };
 
+  let sliceStart = Date.now();
   for (let i = 0; i < lines.length; i++) {
+    if (Date.now() - sliceStart > 30) {
+      await new Promise((r) => setImmediate(r));
+      sliceStart = Date.now();
+    }
     const raw = lines[i];
     if (!raw.trim()) continue; // 空白行跳过（仍占行号）
     const line = i + 1;
@@ -115,7 +121,7 @@ export function planImport({ baseDir, text, overwrite, resolveDocPath }) {
     const p = obj.path;
     let abs;
     try {
-      abs = resolveDocPath(p);
+      abs = await resolveDocPath(p);
     } catch {
       fail('path 越界', p);
       continue;
@@ -128,7 +134,7 @@ export function planImport({ baseDir, text, overwrite, resolveDocPath }) {
     const ext = path.posix.extname(p).toLowerCase();
     if (!DOC_EXTS.includes(ext)) { fail('path 不是受支持的文档（.md/.txt/.docx/.doc）', p); continue; }
     let st;
-    try { st = fs.statSync(abs); } catch { fail('文件不存在', p); continue; }
+    try { st = await fs.promises.stat(abs); } catch { fail('文件不存在', p); continue; }
     if (!st.isFile()) { fail('不是常规文件', p); continue; }
 
     const provided = {};
@@ -138,7 +144,7 @@ export function planImport({ baseDir, text, overwrite, resolveDocPath }) {
     if (obj.notes !== undefined) extra.notes = obj.notes;
     const sidecarAbs = abs + SIDECAR_SUFFIX;
     let hasSidecar = false;
-    try { fs.lstatSync(sidecarAbs); hasSidecar = true; } catch { /* 尚无旁注 */ }
+    try { await fs.promises.lstat(sidecarAbs); hasSidecar = true; } catch { /* 尚无旁注 */ }
 
     if (!hasSidecar) {
       // 新建：默认值上覆盖提供的字段；标题缺省取文件名主体
@@ -152,7 +158,7 @@ export function planImport({ baseDir, text, overwrite, resolveDocPath }) {
         source_url: provided.source_url ?? '',
         aliases: provided.aliases ?? [],
         tags: provided.tags ?? [],
-        content_hash: contentHash(fs.readFileSync(abs)),
+        content_hash: contentHash(await fs.promises.readFile(abs)),
         created_at: new Date().toISOString(),
       };
       const mv = validateMeta(meta);
@@ -169,7 +175,7 @@ export function planImport({ baseDir, text, overwrite, resolveDocPath }) {
       // 覆盖更新：只合并提供的字段；id 与 created_at 永不改变；content_hash 按当前文档字节重算
       let existing;
       try {
-        existing = JSON.parse(fs.readFileSync(sidecarAbs, 'utf8'));
+        existing = JSON.parse(await fs.promises.readFile(sidecarAbs, 'utf8'));
       } catch (e) {
         fail('已有元数据不是合法 JSON，未修改' + (e instanceof SyntaxError ? ': ' + e.message : ''), p);
         continue;
@@ -179,7 +185,7 @@ export function planImport({ baseDir, text, overwrite, resolveDocPath }) {
         continue;
       }
       const merged = reorderMeta({ ...existing, ...provided });
-      merged.content_hash = contentHash(fs.readFileSync(abs));
+      merged.content_hash = contentHash(await fs.promises.readFile(abs));
       const mv = validateMeta(merged);
       if (!mv.ok) { fail(mv.errors.join('；'), p); continue; }
       const changed = {};
@@ -205,45 +211,45 @@ export function planImport({ baseDir, text, overwrite, resolveDocPath }) {
 
 // 原子且不覆盖地写入旁注：临时文件 + 硬链接（目标已存在则 EEXIST → 跳过）；
 // 硬链接不可用的文件系统（EPERM/ENOTSUP/EXDEV）退化为「存在即跳过 + 改名」
-function writeSidecarNoOverwrite(sidecar, content) {
+async function writeSidecarNoOverwrite(sidecar, content) {
   const tmp = sidecar + '.wb-tmp-' + process.pid;
   try {
-    fs.writeFileSync(tmp, content, 'utf8');
+    await fs.promises.writeFile(tmp, content, 'utf8');
     try {
-      fs.linkSync(tmp, sidecar);
+      await fs.promises.link(tmp, sidecar);
     } finally {
-      fs.unlinkSync(tmp);
+      await fs.promises.unlink(tmp);
     }
     return true;
   } catch (e) {
-    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    await fs.promises.unlink(tmp).catch(() => { /* ignore */ });
     if (e.code === 'EEXIST') return false;
     if (['EPERM', 'ENOTSUP', 'EXDEV'].includes(e.code)) {
-      if (fs.existsSync(sidecar)) return false;
-      fs.writeFileSync(tmp, content, 'utf8');
-      fs.renameSync(tmp, sidecar); // rename 不会覆盖（上面已确认不存在）
+      if (await fs.promises.access(sidecar).then(() => true, () => false)) return false;
+      await fs.promises.writeFile(tmp, content, 'utf8');
+      await fs.promises.rename(tmp, sidecar); // rename 不会覆盖（上面已确认不存在）
       return true;
     }
     throw e;
   }
 }
 
-function writeTextAtomic(abs, content) {
+async function writeTextAtomic(abs, content) {
   const tmp = abs + '.wb-tmp-' + process.pid;
-  fs.writeFileSync(tmp, content, 'utf8');
-  fs.renameSync(tmp, abs);
+  await fs.promises.writeFile(tmp, content, 'utf8');
+  await fs.promises.rename(tmp, abs);
 }
 
 // 应用导入：与预览同参重新计算计划（无状态），逐行写入；单行失败只计入 errors，不影响其余行。
 // 返回值与 planImport 相同（items/summary/errors），另加 summary.written。
-export function applyImport(args) {
-  const plan = planImport(args);
+export async function applyImport(args) {
+  const plan = await planImport(args);
   let written = 0;
   const byLine = new Map(plan.items.map((it) => [it.line, it]));
   for (const op of plan.ops) {
     try {
       if (op.kind === 'create') {
-        if (writeSidecarNoOverwrite(op.sidecarAbs, op.content)) {
+        if (await writeSidecarNoOverwrite(op.sidecarAbs, op.content)) {
           written++;
         } else {
           // 规划后到写入前出现了旁注（竞态）：转记为跳过
@@ -253,7 +259,7 @@ export function applyImport(args) {
           plan.summary.skip++;
         }
       } else {
-        writeTextAtomic(op.sidecarAbs, op.content);
+        await writeTextAtomic(op.sidecarAbs, op.content);
         written++;
       }
     } catch (e) {

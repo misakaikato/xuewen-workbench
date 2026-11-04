@@ -23,6 +23,8 @@ const REV = revAt > 0 ? process.argv[revAt + 1] : null;
 if (revAt > 0 && !REV) throw new Error('--rev 需要一个 git 版本');
 
 const STATUS_LIMIT_MS = 400;
+const OPEN_DOC = '卷0/册0/篇目000.md';
+const HUGE_NAME = '超大文本.txt';
 const INDEX_LIMIT_MS = 120000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -186,6 +188,19 @@ const TEXT_COUNT = 300;
   fs.copyFileSync(path.join(fixtures, '旧文档.doc'), path.join(word, '旧文档-副本.doc'));
   fs.writeFileSync(path.join(word, '甲讲义.docx'), makeDocx('慢盘检索标记甲一：温故而知新。'));
   fs.writeFileSync(path.join(word, '乙讲义.docx'), makeDocx('慢盘检索标记乙二：可以为师矣。', true));
+  // 旁注（带标签）、阅读笔记与划线记录：标签、元数据问题、笔记反查等接口逐个读这些文件
+  for (let i = 0; i < 60; i += 6) {
+    const rel = `卷${i % 10}/册${i % 3}/篇目${String(i).padStart(3, '0')}.md`;
+    fs.writeFileSync(path.join(corpus, rel + '.meta.json'), JSON.stringify({ id: 'doc_' + i, title: '篇目' + i, tags: ['慢盘标签'] }));
+  }
+  const notes = path.join(corpus, '阅读笔记');
+  fs.mkdirSync(notes, { recursive: true });
+  for (let n = 0; n < 30; n++) {
+    fs.writeFileSync(path.join(notes, `.笔记${n}.annotations.json`), JSON.stringify([{ source: OPEN_DOC, quote: '学而时习之', at: '2026-11-04T00:00:00Z' }]));
+    fs.writeFileSync(path.join(notes, `笔记${n}.md`), '# 笔记\n\n## 学而时习之\n');
+  }
+  // 超过应用内打开上限的文本（建索引按大小上限跳过正文，打开时返回 413）
+  fs.writeFileSync(path.join(corpus, HUGE_NAME), Buffer.alloc(33 * 1024 * 1024, 'a'));
 }
 // 精确检索的期望：词 -> 必须命中的 Word 文件
 const WORD_MARKERS = [
@@ -310,6 +325,48 @@ try {
     walk(dataDir);
     ok(left.length === 0, '存在：' + left.join('，'));
   });
+
+  // ---------- 读接口不阻塞：标签、元数据问题、笔记反查、打开文件（每个都要逐个读多份文件） ----------
+  {
+    const samples = [];
+    let polling = true;
+    const poller = (async () => {
+      while (polling) {
+        const t0 = performance.now();
+        let okRes = false;
+        try { okRes = (await fetch(base + '/api/status')).ok; } catch { /* 记为失败样本 */ }
+        const ms = performance.now() - t0;
+        samples.push({ ms, ok: okRes });
+        if (ms < 100) await sleep(100 - ms);
+      }
+    })();
+    const q = encodeURIComponent(OPEN_DOC);
+    const urls = ['/api/tags', '/api/meta/issues', '/api/notes/for?path=' + q, '/api/file?path=' + q, '/api/tags/doc?path=' + q];
+    const results = {};
+    for (let round = 0; round < 3; round++) {
+      await Promise.all(urls.map(async (u) => {
+        const r = await fetch(base + u);
+        results[u] = { status: r.status, body: await r.json() };
+      }));
+    }
+    polling = false;
+    await poller;
+    const max = Math.max(...samples.map((x) => x.ms));
+    console.log(`  （读接口并发 3 轮期间 /api/status 采样 ${samples.length} 次，最大 ${max.toFixed(0)}ms）`);
+    check(`读接口进行中 /api/status 单次 ≤ ${STATUS_LIMIT_MS}ms`, () => {
+      ok(samples.length >= 3 && samples.every((x) => x.ok), '采样失败');
+      ok(max <= STATUS_LIMIT_MS, `最大 ${max.toFixed(0)}ms`);
+    });
+    check('读接口结果正确（标签、笔记反查、打开文件）', () => {
+      const tag = results['/api/tags'].body.tags?.find((t) => t.tag === '慢盘标签');
+      ok(tag && tag.count === 10, '标签：' + JSON.stringify(tag));
+      ok(results['/api/notes/for?path=' + q].body.notes?.length === 30, '笔记反查：' + results['/api/notes/for?path=' + q].body.notes?.length);
+      ok(results['/api/file?path=' + q].body.content?.includes('学而时习之'), '打开文件失败');
+    });
+    const huge = await fetch(base + '/api/file?path=' + encodeURIComponent(HUGE_NAME));
+    const hugeBody = await huge.json();
+    check('超过打开上限的文本返回 413 与中文原因', () => ok(huge.status === 413 && hugeBody.tooLarge && /文件过大/.test(hugeBody.error), `${huge.status} ${hugeBody.error}`));
+  }
 
   // ---------- 后端日志 ----------
   const log = fs.readFileSync(path.join(dataDir, 'logs', 'backend.log'), 'utf8');

@@ -52,6 +52,18 @@ export function setActivity(label) {
   return () => { active.delete(token); };
 }
 
+// 时间片让出：返回的 maybeYield 自上次让出起超过 budgetMs 才 setImmediate 一次（结果与顺序不变）。
+// 长循环每步调一次，既不阻塞事件循环，也不在每步都付出让出的开销。
+export function sliceYielder(budgetMs = 30) {
+  let sliceStart = Date.now();
+  return async () => {
+    if (Date.now() - sliceStart > budgetMs) {
+      await new Promise((r) => setImmediate(r));
+      sliceStart = Date.now();
+    }
+  };
+}
+
 export async function withActivity(label, fn) {
   const done = setActivity(label);
   try {

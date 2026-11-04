@@ -243,11 +243,13 @@ export function saveConfig(baseDir) {
   return { baseDir: lib.baseDir, dsId: lib.id, savedAt: lib.addedAt };
 }
 
-// 界面设置：{ theme: 'A'|'B'|'C', autoUpdate?: boolean, agentEnabled?: boolean, ... }，theme 缺省 A、autoUpdate 缺省 true、
-// agentEnabled 缺省 false（旧数据没有该字段即视为关闭）；文件损坏时回退默认值
+// 界面设置：{ theme: 'A'|'B'|'C', autoUpdate?: boolean, agentEnabled?: boolean, wordConcurrency?: number, ... }，theme 缺省 A、
+// autoUpdate 缺省 true、agentEnabled 缺省 false（旧数据没有该字段即视为关闭）、wordConcurrency 缺省 2；文件损坏时回退默认值
 export function getUiSettings() {
   const s = readJson(UI_SETTINGS_FILE, null);
-  if (!s || typeof s !== 'object') return { theme: 'A', autoUpdate: true, notesDir: '阅读笔记', showMetaFiles: false, agentEnabled: false };
+  if (!s || typeof s !== 'object') {
+    return { theme: 'A', autoUpdate: true, notesDir: '阅读笔记', showMetaFiles: false, agentEnabled: false, wordConcurrency: 2 };
+  }
   return {
     theme: UI_THEMES.includes(s.theme) ? s.theme : 'A',
     autoUpdate: typeof s.autoUpdate === 'boolean' ? s.autoUpdate : true,
@@ -256,7 +258,13 @@ export function getUiSettings() {
     showMetaFiles: typeof s.showMetaFiles === 'boolean' ? s.showMetaFiles : false,
     // 智能助手总开关：关闭时前端隐藏全部助手入口，/api/agent 的生成与写接口返回 409
     agentEnabled: typeof s.agentEnabled === 'boolean' ? s.agentEnabled : false,
+    // 建索引时同时解析的 Word 文档数（worker 线程数），1–8
+    wordConcurrency: isWordConcurrency(s.wordConcurrency) ? s.wordConcurrency : 2,
   };
+}
+
+export function isWordConcurrency(n) {
+  return Number.isInteger(n) && n >= 1 && n <= 8;
 }
 
 export function saveUiSettings(patch) {

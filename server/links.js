@@ -4,32 +4,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { dataDir, getState, setState, readJsonAsync, writeJsonAtomicAsync } from './store.js';
+import readline from 'node:readline';
+import { dataDir, getState, setState } from './store.js';
+import { writeChunksAtomicAsync } from './atomicFile.js';
 import { SIDECAR_SUFFIX } from './scanner.js';
 import {
   normalizeText, isTermLike, buildAutoIndex, extractLinksSteps, extractWikilinks, MATCH_ENGINE_VERSION,
 } from './linkMatch.js';
 import { loadConcepts } from './derived.js';
-import { setActivity } from './lagWatch.js';
+import { setActivity, sliceYielder } from './lagWatch.js';
 
-const CACHE_VERSION = 2; // +1：索引文本改走 toEditorText（换行归一口径变化），旧缓存偏移失效
+const CACHE_VERSION = 3; // +1：改为逐行布局（首行头部、每个文件一行、末行收尾），旧缓存重建一次
 // HTML 链接图只跟踪这些文档扩展名的 href 目标（与 scanner.SUPPORTED_EXTS 对齐）
 const HTML_DOC_EXTS = ['.md', '.json', '.txt', '.doc', '.docx', '.html', '.htm'];
 const LINKS_DIR = () => path.join(dataDir(), 'links');
 const cacheFileOf = (dsId) => path.join(LINKS_DIR(), dsId + '.json');
 // wikilink 解析规则版本：凡是改变 resolveWiki 结果的改动都要 +1（参与缓存签名，老库据此重算）
 const WIKI_RESOLVE_VERSION = 2;
-
-// 时间片让出：返回的 maybeYield 自上次让出起超过 30ms 才 setImmediate 一次（结果与顺序不变）
-function sliceYielder() {
-  let sliceStart = Date.now();
-  return async () => {
-    if (Date.now() - sliceStart > 30) {
-      await new Promise((r) => setImmediate(r));
-      sliceStart = Date.now();
-    }
-  };
-}
 
 // 读取 md 文本中的 ATX 1–3 级标题（词条 + [[..#锚点]] 解析用）
 function headingsOf(text) {
@@ -117,6 +108,8 @@ export class LinkIndex {
     this._vocabSig = null;
     this._everBuilt = false;
     this._pendingMeta = null; // 构建期间的 fileMeta（供 extractFor 查新标题锚点）
+    this._forceFull = false; // invalidate 置位：下一次构建忽略一切缓存全量重算
+    this._jsonTitles = new Map(); // JSON 文档 path -> { stamp: 'mtimeMs:size', title }，文件不变时不再整篇解析
   }
 
   // 索引器文本访问器（indexer.build 每次会换 Map，故存取值函数）
@@ -147,6 +140,8 @@ export class LinkIndex {
       } catch { /* 非法旁注跳过 */ }
     }
     const stemOf = (name) => name.slice(0, name.length - path.extname(name).length);
+    const maybeYield = sliceYielder();
+    const jsonTitles = new Map(); // 只留本轮快照里的 JSON，删掉的文件随之淘汰
     for (const f of snapshot.files) {
       const meta = sidecarData.get(f.path);
       let title = null;
@@ -154,10 +149,17 @@ export class LinkIndex {
       if (f.ext === '.json') {
         const t = texts.get(f.path);
         if (t) {
-          try {
-            const data = JSON.parse(t.startsWith('\uFEFF') ? t.slice(1) : t);
-            if (data && typeof data.title === 'string' && data.title.trim()) title = data.title.trim();
-          } catch { /* 非法 JSON 跳过 */ }
+          const stamp = f.mtimeMs + ':' + f.size;
+          let hit = this._jsonTitles.get(f.path);
+          if (!hit || hit.stamp !== stamp) {
+            hit = { stamp, title: null };
+            try {
+              const data = JSON.parse(t.startsWith('\uFEFF') ? t.slice(1) : t);
+              if (data && typeof data.title === 'string' && data.title.trim()) hit.title = data.title.trim();
+            } catch { /* 非法 JSON 跳过 */ }
+          }
+          jsonTitles.set(f.path, hit);
+          if (hit.title) title = hit.title;
         }
       }
       if (title == null) title = stemOf(f.name);
@@ -169,10 +171,11 @@ export class LinkIndex {
           if (typeof a === 'string' && a.trim()) entries.push({ term: a.trim(), path: f.path, kind: 'alias' });
         }
       }
+      await maybeYield();
     }
+    this._jsonTitles = jsonTitles;
     // md 标题锚点（1–3 级）进入词条；记录各文档标题清单供 [[..#锚点]] 与预览用
     const headingDocs = new Map(); // normHeading -> Set<path>（仅统计用，不两处重复判定）
-    const maybeYield = sliceYielder();
     for (const f of snapshot.files) {
       if (f.ext !== '.md') continue;
       const raw = texts.get(f.path);
@@ -204,6 +207,7 @@ export class LinkIndex {
     this._cache = null;
     this._vocabSig = null;
     this._dirty = true;
+    this._forceFull = true;
   }
 
   vocabSignature(entries, blocklist) {
@@ -246,7 +250,8 @@ export class LinkIndex {
 
   // HTML 的 <a href="...">：指向库内文档的相对链接进链接图（反链 + 阅读页断链标记）。
   // 协议绝对链接（http/mailto 等）、纯锚点、指向非文档资源（图片等）的链接不进图。
-  extractHtmlFor(p, text) {
+  // 逐个 <a> 处理，每步经 maybeYield 按时间片让出（大页面链接很多时不一口气跑完）
+  async extractHtmlFor(p, text, maybeYield = async () => {}) {
     const out = [];
     const dir = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
     const joinRel = (base, rel) => {
@@ -287,6 +292,7 @@ export class LinkIndex {
         target: hit ? { path: hit, heading } : null,
         display: null,
       });
+      await maybeYield();
     }
     out.sort((a, b) => a.from - b.from);
     return out;
@@ -405,16 +411,17 @@ export class LinkIndex {
         if (e) this.vocab.push({ term: e.term, path: null, heading: null, ambiguous: true });
       }
 
-      // 缓存：词表未变且 mtime/size 一致的文件复用旧结果
+      // 缓存：词表签名与缓存一致且 mtime/size 一致的文件复用旧结果（含重启后的磁盘缓存）；「重新扫描」强制全量
       let cache = this._cache;
       if (!cache || cache.dsId !== this.dsId || cache.vocabSig !== sig) {
         cache = await this._readCache();
         this._cache = cache;
       }
-      const old = vocabChanged ? null : cache;
+      const old = !this._forceFull && cache && cache.vocabSig === sig ? cache : null;
+      this._forceFull = false;
 
       const nextFiles = new Map();
-      let changed = vocabChanged;
+      let changed = !old;
       const maybeYield = sliceYielder();
       let progressDone = 0;
       const progressTotal = snapshot.files.length;
@@ -434,7 +441,7 @@ export class LinkIndex {
           const isHtml = f.ext === '.html' || f.ext === '.htm';
           nextFiles.set(f.path, {
             mtimeMs: f.mtimeMs, size: f.size,
-            links: isHtml ? this.extractHtmlFor(f.path, text) : await this.extractFor(f.path, text, maybeYield),
+            links: isHtml ? await this.extractHtmlFor(f.path, text, maybeYield) : await this.extractFor(f.path, text, maybeYield),
             title: fm.title, excerpt: fm.excerpt, headings: fm.headings,
           });
           changed = true;
@@ -490,24 +497,58 @@ export class LinkIndex {
   // ---------- 缓存 ----------
 
   // 无缓存或损坏返回 null（重建）
+  // 缓存逐行布局（整体仍是合法 JSON）：首行是头部加 `"files":{`，之后每个文件一行，末行 `}}`。
+  // 流式逐行解析并按时间片让出，链接很多时也不会一次性解析整个大文件。
   async _readCache() {
-    const c = await readJsonAsync(cacheFileOf(this.dsId), null);
-    if (c && c.version === CACHE_VERSION && c.dsId === this.dsId && c.baseDir === this.baseDir) return c;
-    return null;
+    const maybeYield = sliceYielder();
+    const input = fs.createReadStream(cacheFileOf(this.dsId), { encoding: 'utf8' });
+    const rl = readline.createInterface({ input, crlfDelay: Infinity });
+    let head = null;
+    const files = {};
+    try {
+      for await (const line of rl) {
+        if (!head) {
+          head = JSON.parse(line + '}}');
+          if (head.version !== CACHE_VERSION || head.dsId !== this.dsId || head.baseDir !== this.baseDir) return null;
+          continue;
+        }
+        if (line === '}}') return { ...head, files };
+        Object.assign(files, JSON.parse('{' + (line.startsWith(',') ? line.slice(1) : line) + '}'));
+        await maybeYield();
+      }
+      return null; // 没有收尾行：写到一半的缓存
+    } catch {
+      return null; // 不存在或无法解析：重建
+    } finally {
+      rl.close();
+      input.destroy();
+    }
   }
 
-  // 写缓存：失败只记 WARN（缓存可随时重建），返回是否写成
+  // 写缓存：失败只记 WARN（缓存可随时重建），返回是否写成。布局见 _readCache。
+  // 逐文件序列化、逐块写盘并按时间片让出（链接很多时整表一次 JSON.stringify 会卡住主线程）；
+  // 写成后内存副本即为最新缓存，下次构建不必再从磁盘读回解析。
   async writeCache() {
     if (!this.dsId) return true;
+    const head = { version: CACHE_VERSION, dsId: this.dsId, baseDir: this.baseDir, vocabSig: this._vocabSig, writtenAt: new Date().toISOString() };
     const files = {};
-    for (const [p, d] of this.files) {
-      files[p] = { mtimeMs: d.mtimeMs, size: d.size, links: d.links, title: d.title, excerpt: d.excerpt, headings: d.headings };
+    const entries = this.files;
+    async function* chunks() {
+      const maybeYield = sliceYielder();
+      yield JSON.stringify(head).slice(0, -1) + ',"files":{\n';
+      let first = true;
+      for (const [p, d] of entries) {
+        const entry = { mtimeMs: d.mtimeMs, size: d.size, links: d.links, title: d.title, excerpt: d.excerpt, headings: d.headings };
+        files[p] = entry;
+        yield (first ? '' : ',') + JSON.stringify(p) + ':' + JSON.stringify(entry) + '\n';
+        first = false;
+        await maybeYield();
+      }
+      yield '}}';
     }
     try {
-      await writeJsonAtomicAsync(cacheFileOf(this.dsId), {
-        version: CACHE_VERSION, dsId: this.dsId, baseDir: this.baseDir,
-        vocabSig: this._vocabSig, writtenAt: new Date().toISOString(), files,
-      });
+      await writeChunksAtomicAsync(cacheFileOf(this.dsId), chunks());
+      this._cache = { ...head, files };
       return true;
     } catch (e) {
       console.warn(`[links] 内链缓存写入失败：${cacheFileOf(this.dsId)}：${e.code || e.message}`);

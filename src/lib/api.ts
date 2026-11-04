@@ -139,6 +139,8 @@ export interface UiSettings {
   notesDir: string;
   showMetaFiles: boolean;
   agentEnabled: boolean;
+  /** 建索引时同时解析的 Word 文档数，1–8，缺省 2 */
+  wordConcurrency: number;
 }
 
 export const api = {

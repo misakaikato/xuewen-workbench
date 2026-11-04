@@ -85,10 +85,21 @@ export function writeFileAtomic(file, data) {
 
 // 异步原子写（热路径用）：写临时文件后改名；改名最终失败则删临时文件并抛错
 export async function writeFileAtomicAsync(file, data) {
+  await writeChunksAtomicAsync(file, [data]);
+}
+
+// 分块异步原子写：chunks 为字符串的（异步）可迭代对象，逐块编码写入临时文件后改名。
+// 大文件不必先拼成一个大字符串再整体编码（那一步是同步的，会卡住主线程）。
+export async function writeChunksAtomicAsync(file, chunks) {
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   const tmp = tmpPathFor(file);
-  await fs.promises.writeFile(tmp, data, 'utf8');
   try {
+    const fh = await fs.promises.open(tmp, 'w');
+    try {
+      for await (const chunk of chunks) await fh.write(chunk, null, 'utf8');
+    } finally {
+      await fh.close();
+    }
     await renameWithRetryAsync(tmp, file);
   } catch (e) {
     await fs.promises.unlink(tmp).catch(() => { /* 忽略 */ });

@@ -29,6 +29,9 @@ export function ftsIndexText(text) {
 
 // ---- 存储 ----
 
+// vecMatrix 每页读取的向量数（1024 维 float32 一页约 8MB）
+const VEC_PAGE = 2000;
+
 export class RagStore {
   constructor(dbPath) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -106,26 +109,47 @@ export class RagStore {
 
   /** 替换一个文件的全部切块（不含向量；向量由 writeVecs 补）。
    * textSOf(chunk) 由调用方提供（统一走 chunk.js 的 embedTextOf + t2s + bigram） */
+  // 一个文件的块整体替换 = clearFile + appendChunks + finishFile。replaceChunks 在一个事务里做完；
+  // 大文件由调用方分批 appendChunks、批间让出事件循环（finishFile 之前该文件没有 files 记录，中断后会整体重切）。
   replaceChunks(filePath, contentHash, chunks, kind, textSOf) {
-    const txn = this.db.transaction((chs) => {
+    this.db.transaction(() => {
+      this.clearFile(filePath);
+      this.appendChunks(filePath, chunks, 0, kind, textSOf);
+      this.finishFile(filePath, contentHash, chunks.length);
+    })();
+  }
+
+  /** 删除一个文件的全部块、向量与进度记录 */
+  clearFile(filePath) {
+    this.db.transaction(() => {
       this.db.prepare('DELETE FROM vecs WHERE chunk_id IN (SELECT id FROM chunks WHERE path=?)').run(filePath);
       this.db.prepare('DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE path=?)').run(filePath);
       this.db.prepare('DELETE FROM chunks WHERE path=?').run(filePath);
       this.db.prepare('DELETE FROM files WHERE path=?').run(filePath);
-      const insChunk = this.db.prepare(
-        'INSERT INTO chunks(path, heading_path, ordinal, kind, text, text_s, prefix_hash) VALUES(?,?,?,?,?,?,?)'
-      );
-      const insFts = this.db.prepare('INSERT INTO chunks_fts(rowid, text_s) VALUES(?,?)');
-      chs.forEach((c, i) => {
+    })();
+    this._bump();
+  }
+
+  /** 追加一批块（ordinal 从 startOrdinal 起），textSOf(c) 给出全文检索用的归一化文本 */
+  appendChunks(filePath, chunks, startOrdinal, kind, textSOf) {
+    const insChunk = this.db.prepare(
+      'INSERT INTO chunks(path, heading_path, ordinal, kind, text, text_s, prefix_hash) VALUES(?,?,?,?,?,?,?)'
+    );
+    const insFts = this.db.prepare('INSERT INTO chunks_fts(rowid, text_s) VALUES(?,?)');
+    this.db.transaction(() => {
+      chunks.forEach((c, i) => {
         const textS = textSOf(c);
-        const r = insChunk.run(filePath, c.headingPath || '', i, kind, c.text, textS, prefixHash(c.text));
+        const r = insChunk.run(filePath, c.headingPath || '', startOrdinal + i, kind, c.text, textS, prefixHash(c.text));
         insFts.run(Number(r.lastInsertRowid), textS);
       });
-      // 向量由 writeVecs 补完后经 markFileDone 置 done=1；无块（空文本）直接完成
-      this.db.prepare('INSERT INTO files(path, content_hash, chunk_count, done, updated_at) VALUES(?,?,?,?,?)')
-        .run(filePath, contentHash, chs.length, chs.length ? 0 : 1, Date.now());
-    });
-    txn(chunks);
+    })();
+    this._bump();
+  }
+
+  /** 登记文件的块已写全：向量由 writeVecs 补完后经 markFileDone 置 done=1；无块（空文本）直接完成 */
+  finishFile(filePath, contentHash, chunkCount) {
+    this.db.prepare('INSERT INTO files(path, content_hash, chunk_count, done, updated_at) VALUES(?,?,?,?,?)')
+      .run(filePath, contentHash, chunkCount, chunkCount ? 0 : 1, Date.now());
     this._bump();
   }
 
@@ -250,23 +274,45 @@ export class RagStore {
     }
   }
 
-  /** 全量向量矩阵（惰性缓存；写操作后失效） */
-  vecMatrix() {
+  /**
+   * 全量向量矩阵（惰性缓存；写操作后失效）。按 chunk_id 分页读取、页间让出事件循环（向量多时一次读完会卡住后端）；
+   * 读取期间若有写入（构建中检索），本次返回读到的那一刻的内容，缓存记的是开始时的代际，下次检索重读。
+   */
+  async vecMatrix() {
     if (this._vecCache && this._vecCache.gen === this._gen) return this._vecCache;
-    const rows = this.db.prepare('SELECT chunk_id, vec FROM vecs').all();
+    const gen = this._gen;
     const dim = this.metaGet('dim') ? Number(this.metaGet('dim')) : 0;
-    if (!rows.length || !dim) {
-      this._vecCache = { gen: this._gen, ids: new Int32Array(0), mat: new Float32Array(0), dim };
-      return this._vecCache;
+    const page = this.db.prepare('SELECT chunk_id, vec FROM vecs WHERE chunk_id > ? ORDER BY chunk_id LIMIT ?');
+    const idParts = [];
+    const matParts = [];
+    let total = 0;
+    let last = -1;
+    if (dim) {
+      for (;;) {
+        const rows = page.all(last, VEC_PAGE);
+        if (!rows.length) break;
+        const ids = new Int32Array(rows.length);
+        const mat = new Float32Array(rows.length * dim);
+        rows.forEach((r, i) => {
+          ids[i] = r.chunk_id;
+          mat.set(new Float32Array(r.vec.buffer, r.vec.byteOffset, dim), i * dim);
+        });
+        idParts.push(ids);
+        matParts.push(mat);
+        total += rows.length;
+        last = rows[rows.length - 1].chunk_id;
+        await new Promise((r) => setImmediate(r));
+      }
     }
-    const ids = new Int32Array(rows.length);
-    const mat = new Float32Array(rows.length * dim);
-    rows.forEach((r, i) => {
-      ids[i] = r.chunk_id;
-      mat.set(new Float32Array(r.vec.buffer, r.vec.byteOffset, dim), i * dim);
-    });
-    this._vecCache = { gen: this._gen, ids, mat, dim };
-    return this._vecCache;
+    const ids = new Int32Array(total);
+    const mat = new Float32Array(total * dim);
+    for (let i = 0, off = 0; i < idParts.length; off += idParts[i].length, i++) {
+      ids.set(idParts[i], off);
+      mat.set(matParts[i], off * dim);
+    }
+    const out = { gen, ids, mat, dim };
+    if (this._gen === gen) this._vecCache = out;
+    return out;
   }
 
   getChunksByIds(ids) {
