@@ -577,6 +577,8 @@ app.get('/api/status', async (req, res) => {
     linksReady: active ? active.linkIndex.ready : false,
     linksSeq: active ? active.linkIndex.buildSeq : 0,
     libs: libStatuses,
+    ragModel: ragManager.embed.task(),
+    ragIndex: active ? ragManager.indexTask(active.id) : null,
     update,
   });
 });

@@ -3,6 +3,7 @@
 // Provider 组件在 app.tsx。
 import { createContext, useContext } from 'react';
 import type { ConfigResponse, IndexingProgress, LibraryInfo, TreeNode, UpdateState } from '@/lib/types';
+import type { RagIndexTask, RagModelTask } from '@/lib/api';
 
 /** 当前知识库的后台扫描/索引状态（来自 /api/status 轮询，反馈第 4 批） */
 export interface BackendWork {
@@ -13,6 +14,10 @@ export interface BackendWork {
   indexing: IndexingProgress | null;
   /** 最近一次索引构建失败原因 */
   indexError: string | null;
+  /** 进行中的嵌入模型下载/导入（全局任务，不分知识库）；空闲为 null */
+  ragModel: RagModelTask | null;
+  /** 当前知识库进行中的 RAG 索引构建；空闲为 null */
+  ragIndex: RagIndexTask | null;
 }
 
 export interface AppState {
@@ -39,7 +44,7 @@ export interface AppState {
 
 export const AppCtx = createContext<AppState>({
   config: null, libraries: [], tree: null, loading: true, dsId: null, update: null, scanning: false, switchingLib: false,
-  backend: { scanning: false, scanned: 0, indexing: null, indexError: null },
+  backend: { scanning: false, scanned: 0, indexing: null, indexError: null, ragModel: null, ragIndex: null },
   applyUpdate: () => {},
   refreshConfig: async () => {}, refreshTree: async () => {}, rescan: async () => {},
   activateLib: async () => {}, removeLib: async () => {}, hintActivity: () => {},

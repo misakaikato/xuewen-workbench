@@ -7,6 +7,7 @@ import { notify } from '@/lib/notify';
 import { INDEX_SETTLED_EVENT } from '@/lib/indexReady';
 import { AppCtx, type AppState, type BackendWork } from './app-context';
 import type { ConfigResponse, IndexingProgress, TreeNode, UpdateState } from '@/lib/types';
+import type { RagIndexTask, RagModelTask } from '@/lib/api';
 
 // 更新状态内容相同则视为未变（服务端每次返回新对象，身份相同但字段不变不应触发整树重渲）
 function sameUpdate(a: UpdateState | null, b: UpdateState | null): boolean {
@@ -40,12 +41,29 @@ function sameIndexing(a: IndexingProgress | null, b: IndexingProgress | null): b
   return a.phase === b.phase && a.done === b.done && a.total === b.total && a.startedAt === b.startedAt;
 }
 
+// 模型任务只比顶栏用得到的字段（百分比取整），字节数每秒都变但不必重渲整树
+function sameRagModel(a: RagModelTask | null, b: RagModelTask | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.state === b.state &&
+    a.progress.phase === b.progress.phase &&
+    Math.round(a.progress.percent ?? -1) === Math.round(b.progress.percent ?? -1)
+  );
+}
+
+function sameRagIndex(a: RagIndexTask | null, b: RagIndexTask | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.state === b.state && a.phase === b.phase && a.done === b.done && a.total === b.total;
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [loading, setLoading] = useState(true);
   const [update, setUpdate] = useState<UpdateState | null>(null);
-  const [backend, setBackend] = useState<BackendWork>({ scanning: false, scanned: 0, indexing: null, indexError: null });
+  const [backend, setBackend] = useState<BackendWork>({ scanning: false, scanned: 0, indexing: null, indexError: null, ragModel: null, ragIndex: null });
   const genRef = useRef(0);
   const dsRef = useRef<string | null>(null);
   // 后台状态的对账基线：linksSeq 递增 → 广播索引就绪；新 indexError → 提示一次
@@ -75,7 +93,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // 切库：后台状态对账基线重置，旧库的进度不串到新库；旧库目录树立即撤下，不在新库名下显示
       lastLinksSeqRef.current = null;
       lastIndexErrorRef.current = null;
-      setBackend({ scanning: false, scanned: 0, indexing: null, indexError: null });
+      setBackend((prev) => ({ scanning: false, scanned: 0, indexing: null, indexError: null, ragModel: prev.ragModel, ragIndex: null }));
       setTree(null);
     }
     if (dsChanged || genChanged) {
@@ -146,10 +164,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // 轮询扫描状态（文件监听触发服务端重扫后同步前端；多库时看各库 scannedAt）。
   // 页面隐藏时暂停（usePolling），回到可见立即补拉。
-  // 更新进行中（checking/downloading/installing）或有后台扫描/索引时收紧到 1 秒：
+  // 更新进行中（checking/downloading/installing）或有后台扫描/索引/模型下载/RAG 构建时收紧到 1 秒：
   // 顶栏指示、检索「可能不完整」、反链等待都靠这班车，不新增请求循环。
   const updateBusy = !!update && ['checking', 'downloading', 'installing'].includes(update.status);
-  const backendBusy = scanning || backend.scanning || backend.indexing?.phase != null || Date.now() < activityHintUntil;
+  const backendBusy =
+    scanning || backend.scanning || backend.indexing?.phase != null || backend.ragModel !== null || backend.ragIndex !== null || Date.now() < activityHintUntil;
   usePolling(() => {
     (async () => {
       try {
@@ -171,9 +190,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             scanned: st.scanned ?? 0,
             indexing: st.indexing ?? null,
             indexError: st.indexError ?? null,
+            ragModel: st.ragModel ?? null,
+            ragIndex: st.ragIndex ?? null,
           };
           return prev.scanning === next.scanning && prev.scanned === next.scanned &&
-            sameIndexing(prev.indexing, next.indexing) && prev.indexError === next.indexError
+            sameIndexing(prev.indexing, next.indexing) && prev.indexError === next.indexError &&
+            sameRagModel(prev.ragModel, next.ragModel) && sameRagIndex(prev.ragIndex, next.ragIndex)
             ? prev
             : next;
         });

@@ -53,6 +53,13 @@ class RagIndex {
     return this.store;
   }
 
+  /** 进行中的构建（全局 /api/status 每秒带一次，只读内存不碰库）；空闲为 null */
+  task() {
+    return this.state === 'building' || this.state === 'pausing'
+      ? { state: this.state, phase: this.phase, done: this.done, total: this.total }
+      : null;
+  }
+
   status() {
     const store = this._ensureStore();
     const st = store.stats();
@@ -364,6 +371,11 @@ export class RagManager {
       if (ix.store) ix.store.close();
       this.indices.delete(dsId);
     }
+  }
+
+  /** 某库进行中的构建；该库的索引还没建立过对象时直接返回 null，不为此打开数据库 */
+  indexTask(dsId) {
+    return this.indices.get(dsId)?.task() ?? null;
   }
 
   status(dsId) {

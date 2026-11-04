@@ -2,7 +2,7 @@
 // 阶段与进度全部来自后端 status；模型任务、运行时加载、索引构建期间 1s 轮询，其余 5s。
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '@/lib/api';
+import { api, measurablePhase } from '@/lib/api';
 import type { RagStatus, RagConfig, RagModelProgress } from '@/lib/api';
 import { useApp } from '@/store/app-context';
 import { usePolling } from '@/hooks/usePolling';
@@ -39,9 +39,6 @@ function modelPhaseText(p: RagModelProgress): string {
   }
 }
 
-// 阶段能否按字节计量：只有下载/复制/校验有量可算，解压/装依赖/探测没有
-const measurablePhase = (p: RagModelProgress) => ['download', 'copy', 'verify'].includes(p.phase) && p.percent != null;
-
 const EP_LABEL: Record<string, string> = { dml: 'DirectML（GPU）', cpu: 'CPU' };
 
 function Highlight({ text, terms }: { text: string; terms: string[] }) {
@@ -73,7 +70,7 @@ function Highlight({ text, terms }: { text: string; terms: string[] }) {
 const BACKEND_LABEL: Record<string, string> = { mlx: 'MLX（Apple GPU）', onnx: 'ONNX runtime', mock: 'Mock（测试）' };
 
 export default function RagManage() {
-  const { dsId } = useApp();
+  const { dsId, hintActivity } = useApp();
   const [st, setSt] = useState<RagStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -127,6 +124,12 @@ export default function RagManage() {
     } finally {
       setBusy(null);
     }
+  };
+
+  // 模型下载/导入、索引构建都在后台跑：先让全局状态轮询收紧，离开本页后顶栏指示能立刻接上进度
+  const startTask = (label: string, fn: () => Promise<unknown>) => {
+    hintActivity();
+    return run(label, fn);
   };
 
   const doSmart = async () => {
@@ -249,7 +252,7 @@ export default function RagManage() {
                 </AlertDialogHeader>
                 <AlertDialogFooter>
                   <AlertDialogCancel>取消</AlertDialogCancel>
-                  <AlertDialogAction onClick={() => run('download', () => api.ragModelDownload(true))}>重新下载</AlertDialogAction>
+                  <AlertDialogAction onClick={() => startTask('download', () => api.ragModelDownload(true))}>重新下载</AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
@@ -260,7 +263,7 @@ export default function RagManage() {
               className="text-xs"
               loading={busy === 'download'}
               disabled={busy !== null || m?.state === 'downloading' || m?.state === 'importing'}
-              onClick={() => run('download', () => api.ragModelDownload())}
+              onClick={() => startTask('download', () => api.ragModelDownload())}
             >
               <Download className="w-3.5 h-3.5" />下载模型（约 1.1 GB，hf-mirror 自动回退）
             </Button>
@@ -279,7 +282,7 @@ export default function RagManage() {
               className="text-xs"
               loading={busy === 'import'}
               disabled={!importDir.trim() || busy !== null || m?.state === 'downloading' || m?.state === 'importing'}
-              onClick={() => { run('import', () => api.ragModelImport(importDir.trim())); }}
+              onClick={() => { startTask('import', () => api.ragModelImport(importDir.trim())); }}
             >导入</Button>
           </span>
         </div>
@@ -342,14 +345,14 @@ export default function RagManage() {
           <div className="text-xs border border-warning/40 bg-warning-soft text-warning-foreground rounded p-2 mb-3 flex items-center gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             索引与当前文件不完全一致，有待更新。
-            <Button variant="link" className="text-xs h-auto p-0" loading={busy === 'update'} disabled={busy !== null} onClick={() => run('update', () => api.ragIndexBuild(false))}>立即更新</Button>
+            <Button variant="link" className="text-xs h-auto p-0" loading={busy === 'update'} disabled={busy !== null} onClick={() => startTask('update', () => api.ragIndexBuild(false))}>立即更新</Button>
           </div>
         )}
         {ix?.configChanged && (
           <div className="text-xs border border-warning/40 bg-warning-soft text-warning-foreground rounded p-2 mb-3 flex items-center gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             切块/嵌入参数与建库时不同，现有索引按旧参数生成。
-            <Button variant="link" className="text-xs h-auto p-0" loading={busy === 'rebuild'} disabled={busy !== null} onClick={() => run('rebuild', () => api.ragIndexBuild(true))}>立即重建</Button>
+            <Button variant="link" className="text-xs h-auto p-0" loading={busy === 'rebuild'} disabled={busy !== null} onClick={() => startTask('rebuild', () => api.ragIndexBuild(true))}>立即重建</Button>
           </div>
         )}
         <div className="flex items-center gap-2 flex-wrap">
@@ -359,7 +362,7 @@ export default function RagManage() {
             loading={busy === 'build'}
             disabled={busy !== null || ix?.state === 'building' || ix?.state === 'pausing' || !modelReady}
             title={modelReady ? undefined : '请先就绪嵌入模型'}
-            onClick={() => run('build', () => api.ragIndexBuild(false))}
+            onClick={() => startTask('build', () => api.ragIndexBuild(false))}
           >
             <Play className="w-3.5 h-3.5" />{ix?.files ? '继续构建 / 增量更新' : '构建索引'}
           </Button>
@@ -382,7 +385,7 @@ export default function RagManage() {
               className="text-xs"
               loading={busy === 'rebuild'}
               disabled={busy !== null || ix.state === 'building' || ix.state === 'pausing'}
-              onClick={() => { if (window.confirm('清空当前库的语义索引并全量重建？')) run('rebuild', () => api.ragIndexBuild(true)); }}
+              onClick={() => { if (window.confirm('清空当前库的语义索引并全量重建？')) startTask('rebuild', () => api.ragIndexBuild(true)); }}
             >
               <RotateCcw className="w-3.5 h-3.5" />重建
             </Button>

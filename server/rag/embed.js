@@ -185,6 +185,11 @@ export class EmbedService {
     return path.join(this.venvDir, 'bin', 'python');
   }
 
+  /** 进行中的下载/导入任务（全局 /api/status 每秒带一次，只读内存不碰磁盘）；空闲为 null */
+  task() {
+    return this.busy() ? { state: this.state, progress: { ...this.progress } } : null;
+  }
+
   status() {
     const backend = this.backend || this.detectBackend();
     return {

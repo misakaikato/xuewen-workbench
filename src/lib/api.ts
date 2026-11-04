@@ -200,6 +200,8 @@ export const api = {
             indexError?: string | null;
           }
         >;
+        ragModel?: RagModelTask | null;
+        ragIndex?: RagIndexTask | null;
       } & { update: UpdateState }
     >('/api/status'),
   tree: () => req<{ dsId: string; tree: TreeNode }>('/api/tree'),
@@ -432,6 +434,15 @@ export interface RagModelProgress {
   startedAt: number | null;
 }
 
+/** 阶段能否按字节计量：只有下载/复制/校验有量可算，解压/装依赖/探测没有 */
+export const measurablePhase = (p: RagModelProgress) => ['download', 'copy', 'verify'].includes(p.phase) && p.percent != null;
+
+/** 进行中的模型下载/导入任务（/api/status 全局带出，不分知识库） */
+export interface RagModelTask {
+  state: 'downloading' | 'importing';
+  progress: RagModelProgress;
+}
+
 export interface RagRuntimeStatus {
   state: 'idle' | 'loading' | 'ready' | 'error';
   phase: 'env' | 'start' | 'warmup' | null;
@@ -450,6 +461,14 @@ export interface RagModelStatus {
   canCancel: boolean;
   runtime: RagRuntimeStatus;
   error: string | null;
+}
+
+/** 当前知识库进行中的 RAG 索引构建（/api/status 带出） */
+export interface RagIndexTask {
+  state: 'building' | 'pausing';
+  phase: string;
+  done: number;
+  total: number;
 }
 
 export interface RagIndexStatus {
