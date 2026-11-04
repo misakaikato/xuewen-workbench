@@ -265,8 +265,11 @@ async function main() {
       if (!c.querySelector('[data-idx="' + Math.floor(c.scrollTop / 28) + '"]')) blank++;
     }
     c.scrollTop = 0;
+    c.dispatchEvent(new Event('scroll'));
     return { moves, blank };
   })()`);
+  // 滚回顶部后等渲染窗口跟上，后续步骤要聚焦顶部的行
+  await until(`!!document.querySelector('[data-tpath="docs"]')`);
   check('逐像素滚动时渲染窗口只整段移动（1400px 内 ≤ 6 次）', scrollProbe.moves >= 1 && scrollProbe.moves <= 6, JSON.stringify(scrollProbe));
   check('滚动中可视区顶行始终已渲染', scrollProbe.blank === 0, JSON.stringify(scrollProbe));
   await exec(`document.querySelector('[data-tpath="docs"]').focus(); true`);
