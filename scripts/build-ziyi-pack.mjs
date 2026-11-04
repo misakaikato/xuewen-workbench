@@ -3,7 +3,8 @@
 //   --ai <目录>       AI 推导（每字一个 json）→ origin: ai
 //   --out <文件>      输出 { format: 'xuewen-ziyi', version: 1, entries: [...] }
 // 同一字两边都有时以课堂讲解为准；课堂那边释义为空或「待定」时用 AI 推导的。
-// 「同一字」含繁简与异体：AI 目录的字头若是某条课堂讲解的异体字或繁简对应字，并入那条课堂讲解的字头。
+// 「同一字」指繁简归一后相同（如课堂「億」与 AI「亿」、课堂「体-體」与 AI「體」），并入课堂字头，AI 字头记为异体字；
+// 课堂字头括号里的其他字（可能是通假、古今字，如「藉（籍）」）不算同一字，不合并，各自保留。
 // 只打印计数与文件名，不输出任何字义内容。
 // 运行：node scripts/build-ziyi-pack.mjs --lecture <hans 目录> --ai <annotations 目录> --out <字义库.json>
 import fs from 'node:fs';
@@ -82,7 +83,7 @@ function readDir(dir) {
     const source = richToText(source0).trim();
     if (meaning !== meaning0.trim() || source !== source0.trim()) rich++;
     if (out.has(head)) dup.push(f);
-    out.set(head, { variants: chars.slice(1), meaning, source, file: f });
+    out.set(head, { head, variants: chars.slice(1), meaning, source, file: f });
   }
   return { map: out, bad, noHead, dup, headMismatch, rich };
 }
@@ -93,18 +94,17 @@ const outFile = arg('--out');
 const L = readDir(lectureDir);
 const A = readDir(aiDir);
 
-// AI 目录的字头若是某条课堂讲解的异体字或繁简对应字，改挂到那条课堂讲解的字头上
+// AI 目录的字头与某条课堂字头繁简归一后相同：改挂到那条课堂字头上
 const alias = new Map();
-for (const [h, l] of L.map) {
-  for (const x of [h, ...l.variants]) {
-    for (const k of [x, normalizeText(x)]) if (!alias.has(k)) alias.set(k, h);
-  }
+for (const h of L.map.keys()) {
+  const k = normalizeText(h);
+  if (!alias.has(k)) alias.set(k, h);
 }
 const aiMap = new Map();
 const aliased = [];
 const aliasClash = [];
 for (const [a, e] of A.map) {
-  const target = L.map.has(a) ? a : alias.get(a) ?? alias.get(normalizeText(a)) ?? a;
+  const target = L.map.has(a) ? a : alias.get(normalizeText(a)) ?? a;
   if (target !== a) aliased.push(e.file);
   if (aiMap.has(target)) {
     // 同一课堂字头下有两条 AI：字头完全相同的那条优先
@@ -129,13 +129,14 @@ for (const han of heads) {
   const a = aiMap.get(han);
   const lectureOk = l && !isPending(l.meaning);
   if (l && a) stat.overlap++;
+  // 并入的 AI 字头（繁简不同写法）记为异体字，查它也落到本条
+  const variants = [...new Set([...(l ? l.variants : []), ...(a ? a.variants : []), ...(a && a.head !== han ? [a.head] : [])])].filter((v) => v !== han);
   if (lectureOk) {
     if (a) stat.overlapLecture++;
-    entries.push({ han, ...(l.variants.length ? { variants: l.variants } : {}), origin: 'lecture', meaning: l.meaning, source: l.source });
+    entries.push({ han, ...(variants.length ? { variants } : {}), origin: 'lecture', meaning: l.meaning, source: l.source });
     stat.lecture++;
   } else if (a && !isPending(a.meaning)) {
     if (l) stat.overlapPendingUsedAi++;
-    const variants = l ? l.variants : a.variants;
     entries.push({ han, ...(variants.length ? { variants } : {}), origin: 'ai', meaning: a.meaning, source: a.source });
     stat.ai++;
   } else {
@@ -149,7 +150,7 @@ fs.writeFileSync(outFile, JSON.stringify({ format: PACK_FORMAT, version: 1, gene
 const list = (xs) => (xs.length ? `${xs.length}（${xs.slice(0, 10).join('、')}${xs.length > 10 ? ' …' : ''}）` : '0');
 console.log(`课堂讲解目录：${L.map.size} 字；解析失败 ${list(L.bad)}；无字头 ${list(L.noHead)}；同字多文件 ${list(L.dup)}；文件名与 han 字段首字不一致 ${list(L.headMismatch)}；富文本转纯文本 ${L.rich}`);
 console.log(`AI 推导目录：${A.map.size} 字；解析失败 ${list(A.bad)}；无字头 ${list(A.noHead)}；同字多文件 ${list(A.dup)}；文件名与 han 字段首字不一致 ${list(A.headMismatch)}；富文本转纯文本 ${A.rich}`);
-console.log(`AI 字头按异体或繁简并入课堂字头：${list(aliased)}；并入时同一课堂字头下已有 AI 条目而舍去：${list(aliasClash)}`);
+console.log(`AI 字头按繁简并入课堂字头：${list(aliased)}；并入时同一课堂字头下已有 AI 条目而舍去：${list(aliasClash)}`);
 console.log(`两边都有：${stat.overlap} 字，其中用课堂讲解 ${stat.overlapLecture}，课堂释义为空或「待定」改用 AI 推导 ${stat.overlapPendingUsedAi}`);
 console.log(`请核对异体字：一个字头带 ≥2 个异体字 ${list(manyVariants)}；异体字本身也是字头 ${list(variantIsHead)}`);
 console.log(`两边都没有可用释义而跳过：${list(stat.pendingSkipped)}`);

@@ -141,6 +141,7 @@ export class ZiyiStore {
     this.meta = { importedAt: null, sourceName: null };
     this.entries = new Map(); // han -> { meaning, source, origin, variants, editedAt }
     this.variantOf = new Map(); // 异体字 -> 字头
+    this.normHeadOf = new Map(); // 繁转简后的字头 -> 原字头（字头是繁体时，查简体也能落到它）
     this.norm = new Map(); // han -> { han, meaning, source }（归一化，与原文等长）
     this.order = []; // 按码点排序的 han
     this._loading = null;
@@ -214,12 +215,15 @@ export class ZiyiStore {
     this.norm.set(han, normEntry(han, e));
   }
 
-  /** 码点序与异体字索引（字头本身优先，异体字不覆盖已有字头） */
+  /** 码点序、异体字索引与繁转简字头索引（字头本身优先，索引都不覆盖已有字头） */
   _resort() {
     this.order = [...this.entries.keys()].sort(cmpHan);
     this.variantOf = new Map();
+    this.normHeadOf = new Map();
     for (const han of this.order) {
       for (const v of this.entries.get(han).variants) if (!this.variantOf.has(v)) this.variantOf.set(v, han);
+      const k = normalizeText(han);
+      if (k !== han && !this.entries.has(k) && !this.normHeadOf.has(k)) this.normHeadOf.set(k, han);
     }
   }
 
@@ -241,13 +245,15 @@ export class ZiyiStore {
     return { han, unicode: unicodeOf(han), variants: e.variants, origin: e.origin, meaning: e.meaning, source: e.source, editedAt: e.editedAt };
   }
 
-  /** 字头 → 明确声明的异体字 → 繁简归一后的字头 → 归一后的异体字 */
+  /** 字头 → 明确声明的异体字 → 繁简归一后的字头 → 繁体字头（查简体「亿」落到字头「億」）→ 归一后的异体字 */
   _resolve(han) {
     if (this.entries.has(han)) return { han, resolvedFrom: null };
     const v = this.variantOf.get(han);
     if (v) return { han: v, resolvedFrom: han };
     const n = normalizeText(han);
     if (n !== han && this.entries.has(n)) return { han: n, resolvedFrom: han };
+    const t = this.normHeadOf.get(n);
+    if (t) return { han: t, resolvedFrom: han };
     const vn = n !== han ? this.variantOf.get(n) : null;
     if (vn) return { han: vn, resolvedFrom: han };
     return null;
@@ -457,6 +463,7 @@ export class ZiyiStore {
       this.norm = new Map();
       this.order = [];
       this.variantOf = new Map();
+      this.normHeadOf = new Map();
       return backup;
     });
   }
