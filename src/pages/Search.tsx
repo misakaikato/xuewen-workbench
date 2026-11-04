@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { InlineLoading } from '@/components/ui-states';
 import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import type { RagRuntimeStatus } from '@/lib/api';
-import { normalizeText } from '../../server/linkMatch.js';
+import { Highlight } from '@/components/Highlight';
 
 // 搜索会话缓存：路由离开 Search 后返回时恢复结果与滚动位置，免去重新检索。
 // key = dsId|mode|q；筛选与智能 limit 一并随缓存恢复（不在 URL 里的状态也不丢）
@@ -41,30 +41,6 @@ const TYPE_OPTIONS = [
   { v: '.doc', label: 'DOC' },
   { v: '.html', label: 'HTML' },
 ];
-
-function Highlight({ text, terms, emphasis }: { text: string; terms: string[]; emphasis?: boolean }) {
-  const normalized = normalizeText(text).toLowerCase();
-  const matches: { from: number; to: number }[] = [];
-  for (const term of terms.filter(Boolean)) {
-    const needle = normalizeText(term).toLowerCase();
-    for (let at = normalized.indexOf(needle); at >= 0; at = normalized.indexOf(needle, at + needle.length)) {
-      matches.push({ from: at, to: at + needle.length });
-    }
-  }
-  matches.sort((a, b) => a.from - b.from || b.to - a.to);
-  const merged: typeof matches = [];
-  for (const hit of matches) {
-    const prev = merged[merged.length - 1];
-    if (prev && hit.from <= prev.to) prev.to = Math.max(prev.to, hit.to);
-    else merged.push({ ...hit });
-  }
-  let from = 0;
-  return <>{merged.map((hit) => {
-    const before = text.slice(from, hit.from);
-    from = hit.to;
-    return <span key={hit.from}>{before}<mark className={emphasis ? 'bg-warning/30 text-foreground rounded-sm px-0.5' : undefined}>{text.slice(hit.from, hit.to)}</mark></span>;
-  })}{text.slice(from)}</>;
-}
 
 export default function Search() {
   const [params, setParams] = useSearchParams();

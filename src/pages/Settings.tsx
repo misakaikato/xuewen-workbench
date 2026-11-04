@@ -1,6 +1,8 @@
-// 设置页：阅读与外观（与阅读页快捷面板共用配置）、逻辑集合映射、元数据来源映射、智能助手总开关。
+// 设置页：阅读与外观（与阅读页快捷面板共用配置）、逻辑集合映射、元数据来源映射、字义库、智能助手总开关。
+// ?tab=<id> 直达某个分页（如字义库页的「去导入」）。
 // 各项保存：按钮转圈（Button loading），失败经 notify 提示；成功沿用页内的一行提示。
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { errorMessage, notify } from '@/lib/notify';
 import { WRITE_SLOW_MS, WRITE_SLOW_TEXT, runWriteOp } from '@/lib/writeOp';
@@ -21,6 +23,7 @@ import {
 import { useTheme, type Theme } from '@/lib/theme-context';
 import { updateStatusLine } from '@/lib/updateText';
 import RagManage from './RagManage';
+import ZiyiSettings from '@/components/ZiyiSettings';
 
 function collectDirs(node: TreeNode, out: string[]) {
   if (node.path) out.push(node.path);
@@ -41,7 +44,8 @@ const THEME_CARDS: { id: Theme; name: string; desc: string; side: string; paper:
 const loadFail = (what: string) => (e: unknown) => notify(`读取${what}失败：${errorMessage(e)}`, { kind: 'error' });
 
 export default function Settings() {
-  const [tab, setTab] = useState<string>('appearance');
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState<string>(() => searchParams.get('tab') || 'appearance');
   const { prefs, update, reset } = useReadingPrefs();
   const { tree, dsId, hintActivity, update: updateState, applyUpdate } = useApp();
   const [autoUpdate, setAutoUpdate] = useState(true);
@@ -201,7 +205,7 @@ export default function Settings() {
   return (
     <div className="max-w-3xl mx-auto py-6 px-4 space-y-6">
       <div className="flex items-center gap-1 mb-4 border-b border-border pb-2 flex-wrap">
-        {[['appearance','外观'],['reading','阅读'],['collections','集合'],['metadata','元数据'],['rag','RAG 检索'],['agent','智能助手'],['about','关于']].map(([id,label]) => (
+        {[['appearance','外观'],['reading','阅读'],['collections','集合'],['metadata','元数据'],['ziyi','字义库'],['rag','RAG 检索'],['agent','智能助手'],['about','关于']].map(([id,label]) => (
           <button key={id} className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${tab === id ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`} onClick={() => setTab(id)}>
             {label}
           </button>
@@ -256,6 +260,8 @@ export default function Settings() {
         </RadioGroup>
       </section>
       )}
+
+      {tab === 'ziyi' && <ZiyiSettings />}
 
       {tab === 'rag' && <RagManage />}
 

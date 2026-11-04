@@ -12,6 +12,9 @@ out/
 
 # app runtime data (confidential, per-machine)
 server/data/
+# 字义包（用户私有数据，不入库）
+ziyi*.zip
+字义*.zip
 .derived/
 **/.derived/
 

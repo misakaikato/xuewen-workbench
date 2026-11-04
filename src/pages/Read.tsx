@@ -34,6 +34,8 @@ import { TxtReadBody } from '@/components/TxtReadBody';
 import { PathListPopover, type PathListRequest } from '@/components/CorpusRefPopover';
 import { BacklinksPanel } from '@/components/BacklinksPanel';
 import { ReadAgentPanel } from '@/components/ReadAgentPanel';
+import { ZiyiPanel, type ZiyiQuery } from '@/components/ZiyiPanel';
+import { charAtPoint, isHanChar, useZiyiInstalled } from '@/lib/ziyi';
 import { ConceptCard } from '@/components/ConceptCard';
 import { TagChips } from '@/components/TagChips';
 import { DocTabs } from '@/components/DocTabs';
@@ -47,7 +49,7 @@ import type { DocLink } from '@/lib/api';
 import type { EditorView as EditorViewType } from '@codemirror/view';
 import {
   Pencil, Pin, PinOff, ListTree, Link2, Search, X, Settings2, ChevronUp, NotebookPen,
-  Save, AlertTriangle, CheckCircle2, Columns2, ArrowLeft, ArrowRight, Loader2,
+  Save, AlertTriangle, CheckCircle2, Columns2, ArrowLeft, ArrowRight, Loader2, BookA,
 } from 'lucide-react';
 
 type EditSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -264,6 +266,18 @@ export default function Read() {
     setAiOpen(false);
     setAiQuote(null);
   }
+  // 字义侧栏：导入字义库后才有入口；与 AI 面板互斥（开一个关另一个）。移除字义库时同样渲染期收起
+  const ziyiInstalled = useZiyiInstalled();
+  const ziyiInstalledRef = useRef(ziyiInstalled);
+  ziyiInstalledRef.current = ziyiInstalled;
+  const [ziyiOpen, setZiyiOpen] = useState(false);
+  const [ziyiQuery, setZiyiQuery] = useState<ZiyiQuery | null>(null);
+  if (!ziyiInstalled && ziyiOpen) setZiyiOpen(false);
+  const openZiyi = useCallback((text: string) => {
+    setZiyiQuery((q) => ({ text, n: (q?.n ?? 0) + 1 }));
+    setZiyiOpen(true);
+    setAiOpen(false);
+  }, []);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [noteSaving, setNoteSaving] = useState(false);
@@ -303,7 +317,8 @@ export default function Read() {
   const findPresence = usePresence(findOpen);
   const prefsPresence = usePresence(!editing && showPrefs);
   const aiPresence = usePresence(aiOpen);
-  const sidePresence = usePresence(!aiOpen && ((showToc && toc.length > 0) || showBacklinks));
+  const ziyiPresence = usePresence(ziyiOpen && !aiOpen);
+  const sidePresence = usePresence(!aiOpen && !ziyiOpen && ((showToc && toc.length > 0) || showBacklinks));
   // saveState 镜像：按键路径上只做同值判断，避免无变化也走一遍 setState
   const saveStateRef = useRef<EditSaveState>('clean');
   useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
@@ -884,13 +899,44 @@ export default function Read() {
       if (!card.contains(t as Node)) { setSel(null); return; }
       const selection = window.getSelection();
       const text = (selection?.toString() || '').trim();
-      if (!text || text.length < 2) { setSel(null); return; }
+      // 单字选区只在导入字义库后浮出（只有「字义」按钮）；记笔记 / 问 AI 仍要求至少 2 字
+      if (!text || (text.length < 2 && !(ziyiInstalledRef.current && Array.from(text).length === 1 && isHanChar(text)))) { setSel(null); return; }
       const rect = selection!.getRangeAt(0).getBoundingClientRect();
       setSel({ text: text.slice(0, 2000), x: Math.min(window.innerWidth - 140, rect.left + rect.width / 2), y: rect.bottom + 6 });
     };
     document.addEventListener('mouseup', onUp);
     return () => document.removeEventListener('mouseup', onUp);
   }, []);
+
+  // Alt（⌥）+ 点击正文里的汉字：查字义。捕获阶段拦下 mousedown（不让编辑器开始列选区）与 click（不触发链接）
+  useEffect(() => {
+    const inBody = (e: MouseEvent) => {
+      const card = contentRef.current;
+      return e.altKey && e.button === 0 && ziyiInstalledRef.current && !!card && card.contains(e.target as Node);
+    };
+    const onDown = (e: MouseEvent) => {
+      if (!inBody(e)) return;
+      const ch = charAtPoint(e.clientX, e.clientY);
+      if (!ch || !isHanChar(ch)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setSel(null);
+      openZiyi(ch);
+    };
+    const onClick = (e: MouseEvent) => {
+      if (!inBody(e)) return;
+      const ch = charAtPoint(e.clientX, e.clientY);
+      if (!ch || !isHanChar(ch)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('click', onClick, true);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('click', onClick, true);
+    };
+  }, [openZiyi]);
 
   // 笔记草稿自动保存（按文档隔离，关闭/崩溃都不丢）
   useEffect(() => {
@@ -1123,9 +1169,19 @@ export default function Read() {
               <button
                 className={`p-1.5 rounded hover:bg-accent transition-colors ${aiOpen ? 'text-primary' : 'text-muted-foreground'}`}
                 title="AI 助手（就当前文档提问）"
-                onClick={() => setAiOpen((v) => !v)}
+                onClick={() => { setAiOpen((v) => !v); setZiyiOpen(false); }}
               >
                 <Sparkles className="w-4 h-4" />
+              </button>
+            )}
+            {ziyiInstalled && (
+              <button
+                data-wb-ziyi-toggle
+                className={`p-1.5 rounded hover:bg-accent transition-colors ${ziyiOpen && !aiOpen ? 'text-primary' : 'text-muted-foreground'}`}
+                title="字义（选中字或按住 Alt 点击字查看）"
+                onClick={() => { if (ziyiOpen && !aiOpen) setZiyiOpen(false); else { setZiyiOpen(true); setAiOpen(false); } }}
+              >
+                <BookA className="w-4 h-4" />
               </button>
             )}
             <button
@@ -1386,6 +1442,18 @@ export default function Read() {
         </aside>
       )}
 
+      {/* 右侧：字义（与 AI 互斥）；窄于 lg 时为右侧浮层 */}
+      {ziyiPresence.mounted && (
+        <aside
+          data-wb-overlay
+          data-state={ziyiPresence.state}
+          className="fixed right-0 top-12 bottom-0 z-30 lg:static lg:z-auto flex shrink-0 duration-med ease-signature fill-mode-both data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-2"
+          style={{ width: 'min(360px, 90vw)' }}
+        >
+          <ZiyiPanel query={ziyiQuery} onClose={() => setZiyiOpen(false)} />
+        </aside>
+      )}
+
       {/* 右侧：目录 + 反链 */}
       {sidePresence.mounted && (
         <aside
@@ -1449,7 +1517,7 @@ export default function Read() {
         </div>
       )}
 
-      {/* 选区旁的浮动操作：记笔记 / 问 AI（助手关闭时只有记笔记） */}
+      {/* 选区旁的浮动操作：记笔记 / 问 AI（助手关闭时只有记笔记）/ 字义（导入字义库后；单字选区只有它） */}
       {sel && !noteOpen && (
         <div
           data-wb-selbar
@@ -1457,6 +1525,7 @@ export default function Read() {
           style={{ left: sel.x, top: sel.y }}
           onMouseDown={(e) => e.preventDefault()}
         >
+          {sel.text.length >= 2 && (
           <button
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs shadow-lg transition-colors hover:opacity-90"
             onClick={() => {
@@ -1466,18 +1535,34 @@ export default function Read() {
           >
             <NotebookPen className="w-3.5 h-3.5" /> 记笔记
           </button>
-          {agentEnabled && (
+          )}
+          {agentEnabled && sel.text.length >= 2 && (
             <button
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-card border border-border text-xs shadow-lg transition-colors hover:border-primary/50 hover:text-primary"
               title="把选中内容引用到智能助手"
               onClick={() => {
                 setAiQuote(sel.text);
                 setAiOpen(true);
+                setZiyiOpen(false);
                 window.getSelection()?.removeAllRanges();
                 setSel(null);
               }}
             >
               <Sparkles className="w-3.5 h-3.5" /> 问 AI
+            </button>
+          )}
+          {ziyiInstalled && Array.from(sel.text).length <= 12 && Array.from(sel.text).some(isHanChar) && (
+            <button
+              data-wb-ziyi-sel
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-card border border-border text-xs shadow-lg transition-colors hover:border-primary/50 hover:text-primary"
+              title="查选中文字的字义"
+              onClick={() => {
+                openZiyi(sel.text);
+                window.getSelection()?.removeAllRanges();
+                setSel(null);
+              }}
+            >
+              <BookA className="w-3.5 h-3.5" /> 字义
             </button>
           )}
         </div>

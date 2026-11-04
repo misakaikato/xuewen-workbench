@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '@/store/app-context';
 import { useAgentEnabled } from '@/lib/theme-context';
+import { useZiyiInstalled } from '@/lib/ziyi';
 import { UpdateBanner } from './UpdateBanner';
 import { DiagnosticsBanner } from './DiagnosticsBanner';
 import { BackgroundIndicator } from './BackgroundIndicator';
@@ -19,7 +20,7 @@ import {
 } from '@/components/ui/dialog';
 import {
   LayoutDashboard, RefreshCw, Settings, Database, PanelLeftClose, PanelLeftOpen, Search,
-  ChevronsUpDown, Check, Plus, FolderMinus, Bot, Loader2 } from 'lucide-react';
+  ChevronsUpDown, Check, Plus, FolderMinus, Bot, Loader2, BookA } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -40,6 +41,7 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const agentEnabled = useAgentEnabled();
+  const ziyiInstalled = useZiyiInstalled();
   // 助手被关闭时浮层随之收起：渲染期对账，再打开开关也不会自己弹出来
   if (!agentEnabled && quickOpen) setQuickOpen(false);
 
@@ -206,6 +208,12 @@ export function Layout() {
             <span className="hidden sm:inline">智能助手</span>
           </Link>
         )}
+        {ziyiInstalled && (
+          <Link to="/ziyi" data-wb-ziyi-nav className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors px-1" title="字义库：检索、查看、编辑单字释义">
+            <BookA className="w-4 h-4" />
+            <span className="hidden sm:inline">字义</span>
+          </Link>
+        )}
         <span className="text-border">|</span>
         {/* 知识库切换器：列出全部已打开库；添加/移除入口 */}
         <DropdownMenu>
@@ -367,6 +375,7 @@ export function Layout() {
               ['Ctrl+E', '阅读页进入 / 结束编辑'],
               ['Ctrl+S', '保存（编辑态）'],
               ['Alt+← / Alt+→ 或 ⌘[ / ⌘]', '阅读历史后退 / 前进'],
+              ...(ziyiInstalled ? [['Alt / ⌥ + 点击正文汉字', '阅读页查字义']] : []),
               ['侧栏过滤框输入 > 后回车', '转全文检索'],
             ].map(([keys, desc]) => (
               <div key={keys} className="flex items-center justify-between gap-4">

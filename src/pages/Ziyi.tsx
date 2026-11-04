@@ -1,0 +1,171 @@
+// 字义库页：左栏检索（字头 / 释义 / 出处，繁简互通，空格分隔多词），右栏查看与编辑选中的字；URL 同步 ?q=&han=。
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { BookA, Plus, Search as SearchIcon } from 'lucide-react';
+import { api, type ZiyiEntry, type ZiyiHit } from '@/lib/api';
+import { errorMessage } from '@/lib/notify';
+import { useZiyiStatus } from '@/lib/ziyi';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { EmptyState, InlineLoading } from '@/components/ui-states';
+import { Highlight } from '@/components/Highlight';
+import { ZiyiEntryView } from '@/components/ZiyiEntryView';
+
+const PAGE = 100;
+
+export default function Ziyi() {
+  const status = useZiyiStatus();
+  const [params, setParams] = useSearchParams();
+  const q = params.get('q') || '';
+  const han = params.get('han') || '';
+  const [input, setInput] = useState(q);
+  const [hits, setHits] = useState<ZiyiHit[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const reqId = useRef(0);
+  const slow = useDelayedFlag(loading);
+  const [detail, setDetail] = useState<{ han: string; entry: ZiyiEntry | null; resolvedFrom: string | null } | null>(null);
+  const [newHan, setNewHan] = useState('');
+  const installed = status?.installed === true;
+
+  const setParam = useCallback((patch: Record<string, string>) => {
+    setParams((p) => {
+      const next = new URLSearchParams(p);
+      for (const [k, v] of Object.entries(patch)) { if (v) next.set(k, v); else next.delete(k); }
+      return next;
+    }, { replace: true });
+  }, [setParams]);
+
+  // 输入防抖 200ms 后写入 URL，检索由 URL 驱动
+  useEffect(() => {
+    if (input === q) return;
+    const t = setTimeout(() => setParam({ q: input.trim() }), 200);
+    return () => clearTimeout(t);
+  }, [input, q, setParam]);
+
+  const load = useCallback(async (offset: number) => {
+    const id = ++reqId.current;
+    setLoading(true);
+    try {
+      const r = await api.ziyiSearch(q, offset, PAGE);
+      if (id !== reqId.current) return;
+      setHits((prev) => (offset ? [...prev, ...r.items] : r.items));
+      setTotal(r.total);
+      setError(null);
+    } catch (e) {
+      if (id === reqId.current) setError(errorMessage(e));
+    } finally {
+      if (id === reqId.current) setLoading(false);
+    }
+  }, [q]);
+
+  useEffect(() => {
+    if (installed) void load(0);
+  }, [installed, load]);
+
+  const loadDetail = useCallback(async (h: string) => {
+    try {
+      const r = await api.ziyiEntry(h);
+      setDetail({ han: h, entry: r.entry, resolvedFrom: r.resolvedFrom });
+    } catch (e) {
+      if ((e as { status?: number }).status === 404) setDetail({ han: h, entry: null, resolvedFrom: null });
+      else setError(errorMessage(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (han && installed) void loadDetail(han);
+  }, [han, installed, loadDetail]);
+
+  if (status && !installed) {
+    return (
+      <div className="max-w-5xl mx-auto py-6 px-4">
+        <EmptyState
+          icon={<BookA className="w-8 h-8" />}
+          title="尚未导入字义库"
+          hint="字义包不随程序分发。请在 设置 → 字义库 中导入字义包（.zip）。"
+          action={<Button asChild size="sm"><Link to="/settings?tab=ziyi">去导入</Link></Button>}
+        />
+      </div>
+    );
+  }
+
+  const terms = q.split(/\s+/).filter(Boolean);
+  const shown = detail && detail.han === han ? detail : null;
+
+  return (
+    <div className="max-w-5xl mx-auto py-6 px-4 space-y-6">
+      <div className="flex items-center gap-3">
+        <h1 className="text-lg font-semibold">字义库</h1>
+        {status && <span className="text-xs text-muted-foreground stat-num">{status.count} 字</span>}
+      </div>
+      <div className="flex gap-4 items-start">
+        <aside className="w-72 shrink-0 space-y-3">
+          <div className="relative">
+            <SearchIcon className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              data-wb-ziyi-search
+              className="pl-8"
+              placeholder="查字、释义或出处（空格分隔多词）"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') setParam({ q: input.trim() }); }}
+              autoFocus
+            />
+          </div>
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(e) => { e.preventDefault(); const h = newHan.trim(); if (h) { setParam({ han: h }); setNewHan(''); } }}
+          >
+            <Input data-wb-ziyi-new className="h-8" placeholder="新建：输入字头" value={newHan} onChange={(e) => setNewHan(e.target.value)} />
+            <Button type="submit" variant="outline" size="sm" disabled={!newHan.trim()}><Plus /> 新建</Button>
+          </form>
+          <div className="text-xs text-muted-foreground flex items-center gap-2">
+            {q ? <>命中 <span className="stat-num">{total}</span> 字</> : <>全部 <span className="stat-num">{total}</span> 字</>}
+            {slow && <InlineLoading text="" />}
+          </div>
+          {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
+          <ul className="space-y-1" data-wb-ziyi-results>
+            {hits.map((h) => (
+              <li key={h.han}>
+                <button
+                  data-wb-ziyi-hit={h.han}
+                  className={`w-full text-left rounded-md border px-3 py-2 transition-colors ${h.han === han ? 'border-primary/60 bg-primary/5' : 'border-transparent hover:border-primary/60'}`}
+                  onClick={() => setParam({ han: h.han })}
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-serif text-base">{h.han}</span>
+                    {h.field === 'source' && <span className="text-xs text-muted-foreground">出处命中</span>}
+                    {h.editedAt && <span className="text-xs text-muted-foreground">本地修改</span>}
+                  </div>
+                  <div className="text-xs text-muted-foreground line-clamp-2"><Highlight text={h.snippet} terms={terms} emphasis /></div>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {!loading && hits.length === 0 && !error && <EmptyState compact title={q ? '没有找到' : '字义库是空的'} />}
+          {hits.length < total && (
+            <Button variant="ghost" size="sm" className="w-full" loading={loading} onClick={() => { void load(hits.length); }}>加载更多</Button>
+          )}
+        </aside>
+
+        <section data-wb-ziyi-detail className="flex-1 min-w-0 bg-card border border-border rounded-lg p-6">
+          {shown ? (
+            <ZiyiEntryView
+              key={shown.han}
+              char={shown.han}
+              entry={shown.entry}
+              resolvedFrom={shown.resolvedFrom}
+              onChange={(entry) => { setDetail({ han, entry, resolvedFrom: shown.resolvedFrom }); void load(0); }}
+              onDeleted={() => { setDetail(null); setParam({ han: '' }); void load(0); }}
+            />
+          ) : (
+            <EmptyState compact icon={<BookA className="w-5 h-5" />} title={han ? '加载中' : '在左侧选择一个字'} />
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}

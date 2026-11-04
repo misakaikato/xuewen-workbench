@@ -25,6 +25,7 @@
 | RAG 智能检索 | 已实现（Windows 先试 DirectML，不可用时 CPU） | `server/rag/` | `specs/2026-10-18-rag.md`、`specs/retrieval-regression.md` |
 | 运行日志、卡顿记录与诊断包导出 | 已实现（只导出，不上传） | `server/logger.js`、`server/lagWatch.js`、`server/diagnostics.js` | `specs/2026-11-02-win-freeze-logging.md` |
 | 智能助手（pi agent，三层记忆） | 已实现 | `server/agent/`、`src/pages/AgentChat.tsx` | `specs/2026-10-18-agent.md`、`specs/2026-10-19-memory-design.md` |
+| 字义库（全局单字释义：导入字义包、检索、编辑、阅读侧栏） | 已实现（字义数据不随程序分发，用户在设置里导入） | `server/ziyi.js`、`src/pages/Ziyi.tsx`、`src/components/ZiyiPanel.tsx` | `specs/2026-11-04-ziyi.md` |
 | 自动更新与 CI 发布 | 已实现 | `electron/updater.js`、`server/update.js`、`.github/workflows/release.yml` | `specs/2026-10-18-auto-update.md` |
 | 语料本地版本历史 | 已定未做 | — | 本文 §10 |
 | 语音输入 | 待定 | — | [decisions/2026-10-19-voice-input-integration.md](./decisions/2026-10-19-voice-input-integration.md) |

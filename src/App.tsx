@@ -20,6 +20,7 @@ const Search = lazy(() => import('@/pages/Search'));
 const RagManage = lazy(() => import('@/pages/RagManage'));
 const AgentChat = lazy(() => import('@/pages/AgentChat'));
 const Settings = lazy(() => import('@/pages/Settings'));
+const Ziyi = lazy(() => import('@/pages/Ziyi'));
 
 function RequireSource({ children }: { children: React.ReactNode }) {
   const { config, loading } = useApp();
@@ -59,6 +60,7 @@ export default function App() {
           <Route path="rag" element={<Suspense fallback={<PageSkeleton />}><RagManage /></Suspense>} />
           <Route path="agent" element={<AgentRoute />} />
           <Route path="settings" element={<Suspense fallback={<PageSkeleton />}><Settings /></Suspense>} />
+          <Route path="ziyi" element={<Suspense fallback={<PageSkeleton />}><Ziyi /></Suspense>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
