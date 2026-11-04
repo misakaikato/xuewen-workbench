@@ -17,6 +17,8 @@ const CACHE_VERSION = 2; // +1：索引文本改走 toEditorText（换行归一�
 const HTML_DOC_EXTS = ['.md', '.json', '.txt', '.doc', '.docx', '.html', '.htm'];
 const LINKS_DIR = () => path.join(dataDir(), 'links');
 const cacheFileOf = (dsId) => path.join(LINKS_DIR(), dsId + '.json');
+// wikilink 解析规则版本：凡是改变 resolveWiki 结果的改动都要 +1（参与缓存签名，老库据此重算）
+const WIKI_RESOLVE_VERSION = 2;
 
 // 时间片让出：返回的 maybeYield 自上次让出起超过 30ms 才 setImmediate 一次（结果与顺序不变）
 function sliceYielder() {
@@ -104,7 +106,7 @@ export class LinkIndex {
     this.files = new Map(); // path -> {mtimeMs, size, links, title, excerpt, headings}
     this.autoIndex = null;
     this.vocab = []; // 词条展示表（含歧义项，不含通用标题）：[{term, path, heading, ambiguous}]
-    this.resolve = { byName: new Map(), byPath: new Map() }; // wikilink 解析
+    this.resolve = { byName: new Map(), byPath: new Map(), byFile: new Map() }; // wikilink 解析
     this.backlinks = new Map(); // 目标 path -> Map<来源 path, links[]>
     this.sidecarIds = new Map(); // path -> sidecar id
     this.stats = { files: 0, terms: 0, links: 0, lastFullMs: 0, lastUpdateMs: 0 };
@@ -206,8 +208,8 @@ export class LinkIndex {
 
   vocabSignature(entries, blocklist) {
     const h = crypto.createHash('sha256');
-    // 引擎版本进签名：匹配逻辑升级后，即使词条未变也要全量重算链接
-    h.update('engine:' + MATCH_ENGINE_VERSION);
+    // 匹配引擎与 wikilink 解析规则的版本进签名：任一升级后，即使词条未变也要全量重算链接
+    h.update('engine:' + MATCH_ENGINE_VERSION + ' resolve:' + WIKI_RESOLVE_VERSION);
     h.update('\n');
     h.update(JSON.stringify([...blocklist].sort()));
     h.update('\n');
@@ -216,10 +218,11 @@ export class LinkIndex {
     return h.digest('hex');
   }
 
-  // wikilink 名称解析表：归一化 title/别名/主体名/完整路径（含与不含扩展名）
+  // wikilink 名称解析表：归一化 title/别名/主体名/完整路径（含与不含扩展名）/带扩展名的文件名
   buildResolve(entries, snapshot) {
     const byName = new Map(); // norm -> Set<path>
     const byPath = new Map(); // normPath(含/不含扩展名) -> path
+    const byFile = new Map(); // 小写文件名（含扩展名）-> path[]：[[文件名.ext]] 不论在哪个子目录都能解析
     for (const e of entries) {
       if (e.kind === 'heading' || e.kind === 'concept') continue; // 概念不是文档，[[..]] 不指向它
       const norm = normalizeText(e.term);
@@ -232,8 +235,11 @@ export class LinkIndex {
       byPath.set(np, f.path);
       const noExt = f.path.slice(0, f.path.length - f.ext.length);
       byPath.set(normalizeText(noExt).toLowerCase(), f.path);
+      const fileName = np.slice(np.lastIndexOf('/') + 1);
+      if (!byFile.has(fileName)) byFile.set(fileName, []);
+      byFile.get(fileName).push(f.path);
     }
-    this.resolve = { byName, byPath };
+    this.resolve = { byName, byPath, byFile };
   }
 
   // ---------- 单文件提取 ----------
@@ -334,6 +340,9 @@ export class LinkIndex {
       for (const [np, p] of this.resolve.byPath) {
         if (np.endsWith('/' + lower)) hits.add(p);
       }
+    } else if (!this.resolve.byPath.has(lower)) {
+      // 不带目录的文件名：根目录没有同名路径时，按文件名在各子目录里找
+      for (const p of this.resolve.byFile.get(lower) || []) hits.add(p);
     }
     if (hits.size === 1) return { status: 'unique', path: [...hits][0] };
     if (hits.size > 1) return { status: 'candidates', paths: [...hits].sort() };
