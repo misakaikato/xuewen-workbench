@@ -29,6 +29,10 @@ type OnCreate = (dir: string, kind: CreateKind) => void;
 type OnAction = (a: EntryAction) => void;
 
 const ROW_H = 28; // 统一行高（h-7）；虚拟滚动与键盘定位都依赖它
+// 虚拟滚动：视口上下各多渲染 OVERSCAN 行；滚动时可视区离已渲染范围的边缘不足 WINDOW_MARGIN 行才重算窗口。
+// 每个滚动像素都重渲整棵树，在软件渲染（如远程桌面）下会让滚动一顿一顿
+const OVERSCAN = 24;
+const WINDOW_MARGIN = 6;
 
 // ---- 路径工具 ----
 
@@ -672,7 +676,7 @@ export function FileTree({
 
   // ---- 虚拟滚动 ----
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [scrollTop, setScrollTop] = useState(0);
+  const [scrollTop, setScrollTop] = useState(0); // 渲染窗口的锚点：只在窗口需要移动时更新，实际滚动位置读 scrollRef
   const [viewportH, setViewportH] = useState(640);
   useEffect(() => {
     const el = scrollRef.current;
@@ -682,9 +686,16 @@ export function FileTree({
     setViewportH(el.clientHeight);
     return () => ro.disconnect();
   }, []);
-  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - 8);
-  const end = Math.min(rows.length, Math.ceil((scrollTop + viewportH) / ROW_H) + 8);
+  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
+  const end = Math.min(rows.length, Math.ceil((scrollTop + viewportH) / ROW_H) + OVERSCAN);
   const winRows = rows.slice(start, end);
+  const onListScroll = (top: number) => {
+    const first = Math.floor(top / ROW_H);
+    const last = Math.ceil((top + viewportH) / ROW_H);
+    const roomAbove = start === 0 || first - start >= WINDOW_MARGIN;
+    const roomBelow = end === rows.length || end - last >= WINDOW_MARGIN;
+    if (!roomAbove || !roomBelow) setScrollTop(top);
+  };
 
   // ---- reveal：跟随当前文件/目录展开父链并滚到可见 ----
   // 在目录树里（非过滤态）点开的文件不做 reveal：那一行此刻就在可见区域。路由提交比点击晚一拍
@@ -740,14 +751,14 @@ export function FileTree({
     if (idx >= 0 && scrollRef.current) {
       const vh = scrollRef.current.clientHeight;
       const top = idx * ROW_H;
-      if (top < scrollTop || top + ROW_H > scrollTop + vh) {
+      const cur = scrollRef.current.scrollTop;
+      if (top < cur || top + ROW_H > cur + vh) {
         const target = Math.max(0, top - vh / 2 + ROW_H);
         scrollRef.current.scrollTop = target;
         setScrollTop(target);
       }
     }
     setPendingScroll(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingScroll, rows]);
 
   // 剪贴板语义（树内）：Ctrl+C 复制 / Ctrl+X 剪切（半透明标记）/ Ctrl+V 粘贴（剪切=移动，复制=副本）。
@@ -1131,7 +1142,7 @@ export function FileTree({
         ref={scrollRef}
         tabIndex={0}
         onKeyDown={onKeyDown}
-        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+        onScroll={(e) => onListScroll(e.currentTarget.scrollTop)}
         onDragOver={(e) => {
           const types = Array.from(e.dataTransfer.types);
           if (!types.includes('application/x-wb-file') && !types.includes('application/x-wb-multi')) return;

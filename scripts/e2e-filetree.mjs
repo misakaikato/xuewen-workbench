@@ -34,7 +34,8 @@ fs.writeFileSync(path.join(corpus, 'notes/x.md'), '# x\n');
 fs.writeFileSync(path.join(corpus, 'ly.md'), '# 论语\n正文\n');
 fs.writeFileSync(path.join(corpus, 'ly.md.meta.json'), JSON.stringify({ id: 'doc_ly', title: '论语', type: '文章' }) + '\n');
 fs.writeFileSync(path.join(corpus, 'note.md'), '读论语有感。\n');
-for (let i = 0; i < 60; i++) fs.writeFileSync(path.join(corpus, `f${String(i).padStart(2, '0')}.md`), '# f\n');
+// 行数要明显多于「视口 + 上下各 24 行余量」，虚拟滚动才有东西可省
+for (let i = 0; i < 200; i++) fs.writeFileSync(path.join(corpus, `f${String(i).padStart(2, '0')}.md`), '# f\n');
 
 const j = async (url, init) => (await fetch(BASE + url, init)).json();
 const post = (url, body) => j(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -247,8 +248,27 @@ async function main() {
   const spacerH = await exec(`Number.parseFloat(document.querySelector('aside .overflow-auto > div')?.style.height || '0')`);
   const rendered = await exec(`document.querySelectorAll('aside .overflow-auto [data-tpath]').length`);
   const totalRows = Math.round(spacerH / 28);
-  check('总行数按 28px 摊铺（>60 行）', totalRows >= 64, `spacer=${spacerH} rows=${totalRows}`);
-  check('渲染行数远小于总行数', rendered > 0 && rendered < totalRows - 15, `rendered=${rendered} total=${totalRows}`);
+  check('总行数按 28px 摊铺（>200 行）', totalRows >= 200, `spacer=${spacerH} rows=${totalRows}`);
+  check('渲染行数远小于总行数', rendered > 0 && rendered < totalRows - 100, `rendered=${rendered} total=${totalRows}`);
+  // 逐 2px 滚动 1400px：渲染窗口只在可视区接近边缘时整段移动，且可视区顶行始终已渲染（不露白）
+  const scrollProbe = await exec(`(async () => {
+    const c = document.querySelector('aside .overflow-auto');
+    const inner = c.querySelector(':scope > div > div');
+    c.scrollTop = 0;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    let moves = 0, blank = 0, last = inner.style.transform;
+    for (let y = 2; y <= 1400; y += 2) {
+      c.scrollTop = y;
+      c.dispatchEvent(new Event('scroll'));
+      await new Promise((r) => setTimeout(r, 0));
+      if (inner.style.transform !== last) { moves++; last = inner.style.transform; }
+      if (!c.querySelector('[data-idx="' + Math.floor(c.scrollTop / 28) + '"]')) blank++;
+    }
+    c.scrollTop = 0;
+    return { moves, blank };
+  })()`);
+  check('逐像素滚动时渲染窗口只整段移动（1400px 内 ≤ 6 次）', scrollProbe.moves >= 1 && scrollProbe.moves <= 6, JSON.stringify(scrollProbe));
+  check('滚动中可视区顶行始终已渲染', scrollProbe.blank === 0, JSON.stringify(scrollProbe));
   await exec(`document.querySelector('[data-tpath="docs"]').focus(); true`);
   await exec(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })); true`);
   check('End 跳到最后一行（含滚动后聚焦）', await until(`document.activeElement?.getAttribute('data-idx') === String(${totalRows} - 1)`), 'idx=' + (await exec(`document.activeElement?.getAttribute('data-idx')`)));
