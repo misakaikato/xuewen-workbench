@@ -14,6 +14,7 @@ import type { SyntaxNode } from '@lezer/common';
 import { mdLang } from './mdLanguage';
 import { editorBaseThemeSpec } from './setup';
 import { getApiScope } from '@/lib/api';
+import { locateNote } from '@/lib/searchLocation';
 
 export interface LivePreviewOptions {
   /** 当前文档相对路径（解析相对链接 / 图片用） */
@@ -269,6 +270,10 @@ function buildCell(text: string): HTMLElement {
 
 // ---------- 部件（Widget） ----------
 
+// 无序列表圆点：部件渲染的文字，会进入选区文字但不在源码里（笔记定位时从引文行首剥掉）
+const BULLET_GLYPH = '•';
+const LEADING_BULLET = new RegExp(`^[ \\t]*${BULLET_GLYPH}[ \\t]*`, 'gm');
+
 class BulletWidget extends WidgetType {
   eq(): boolean {
     return true;
@@ -277,7 +282,7 @@ class BulletWidget extends WidgetType {
   toDOM(): HTMLElement {
     const span = document.createElement('span');
     span.className = 'cm-lp-bullet';
-    span.textContent = '•';
+    span.textContent = BULLET_GLYPH;
     return span;
   }
 }
@@ -1081,24 +1086,38 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
       }
     }
   }
-  // 划线笔记标记：正文中出现做过的笔记的原文 → 加下划线 + data-note-href（点击跳笔记锚点）
+  // 划线笔记标记：引文是选区文字（渲染后的样子），在同一坐标系的「显示文本」里定位——
+  // 可见范围的源码扣掉被替换隐藏的部分（上面产出的格式记号/网址/部件，以及 wikilink 的 [[name| ]]），
+  // 命中区间经偏移表映射回文档位置，加下划线 + data-note-href（点击跳笔记锚点）
   const marks = state.field(noteMarksField);
   if (marks.length) {
+    const linkDeco = state.field(alField, false)?.deco;
     for (const { from: vFrom, to: vTo } of view.visibleRanges) {
+      const hidden = new Uint8Array(vTo - vFrom);
+      const hideSpan = (from: number, to: number) => {
+        for (let p = Math.max(from, vFrom); p < Math.min(to, vTo); p++) hidden[p - vFrom] = 1;
+      };
+      for (const r of parts) if (r.value.point && r.to > r.from) hideSpan(r.from, r.to);
+      linkDeco?.between(vFrom, vTo, (from, to, value) => {
+        if (value.point && to > from) hideSpan(from, to);
+      });
       const slice = doc.sliceString(vFrom, vTo);
+      const chars: string[] = [];
+      const pos: number[] = [];
+      for (let i = 0; i < slice.length; i++) {
+        if (hidden[i]) continue;
+        chars.push(slice[i]);
+        pos.push(vFrom + i);
+      }
+      const display = chars.join('');
       for (const mk of marks) {
-        const q = mk.quote.split('\n')[0].slice(0, 80); // 用首行前 80 字定位
-        if (q.length < 2) continue;
-        let idx = slice.indexOf(q);
-        while (idx >= 0) {
-          const at = vFrom + idx;
+        for (const hit of locateNote(display, mk.quote.replace(LEADING_BULLET, ''))) {
           parts.push(
             Decoration.mark({
               class: 'cm-note-mark',
               attributes: { 'data-note-href': mk.href, title: '此处有笔记，点击查看' },
-            }).range(at, at + q.length)
+            }).range(pos[hit.from], pos[hit.to - 1] + 1)
           );
-          idx = slice.indexOf(q, idx + q.length);
         }
       }
     }
@@ -1179,7 +1198,9 @@ function makeLpPlugin(openLink: (href: string) => void, openNote: (href: string)
         const treeChanged = syntaxTree(u.view.state) !== syntaxTree(u.startState);
         // noteMarks 经 StateEffect 注入（不伴随文档变化）：字段变了也要重算内联装饰
         const marksChanged = u.state.field(noteMarksField, false) !== u.startState.field(noteMarksField, false);
-        if (u.docChanged || u.selectionSet || u.viewportChanged || treeChanged || marksChanged) {
+        // 内链晚到会改变 wikilink 的显示文字，笔记标记要按新的显示文本重新定位
+        const linksChanged = u.state.field(alField, false) !== u.startState.field(alField, false);
+        if (u.docChanged || u.selectionSet || u.viewportChanged || treeChanged || marksChanged || linksChanged) {
           this.decorations = buildInlineDecorations(u.view);
         }
         if (treeChanged && !u.docChanged) {

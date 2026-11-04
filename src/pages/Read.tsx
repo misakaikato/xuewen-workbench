@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams, Link, useSearchParams, useBlocker, useNavigationType } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Sparkles } from 'lucide-react';
-import { findSearchLocation, searchLocationRange, findAllRanges } from '@/lib/searchLocation';
-import { markDomFind, unmarkDomFind } from '@/lib/domFind';
+import { findSearchLocation, searchLocationRange, findAllRanges, locateNote } from '@/lib/searchLocation';
+import { collectTextNodes, markDomFind, unmarkDomFind, wrapTextRanges } from '@/lib/domFind';
 import { setFindHl } from '@/lib/readFindHighlight';
 import { perfInc } from '@/lib/perf';
 import { useApp } from '@/store/app-context';
@@ -544,48 +544,25 @@ export default function Read() {
     setToc(headings);
 
     // 划线笔记标记（JSON/Word/HTML 走 DOM；markdown 由 livePreview、TXT 由 TxtReadBody 处理）
+    // 引文在全部文本节点拼接成的正文里定位（一句话常被行内标签拆成多个节点），命中区间逐节点包成链接；
+    // 已在链接内的片段（原文超链接、先前的笔记标记）不包，避免嵌套 <a> 与重跑时重复包装
     if (noteMarks.length && file.type !== 'text') {
       for (const mk of noteMarks) {
-        // 候选定位串：引文的每个非空行（≥6 字），长的优先——多行引用总有某行能命中；
-        // 只取首行会在「首行是空行/短标题」时漏标或标错位置。
-        const cands = (mk.quote || '')
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .filter((l) => l.length >= 6)
-          .map((l) => l.slice(0, 80))
-          .sort((a, b) => b.length - a.length);
-        if (!cands.length) continue;
-        // 只接受长度接近最长候选的行：引文主体命中失败时，不要退到「第一章」这种到处都有的短串去误标
-        const floor = Math.max(6, Math.floor(cands[0].length * 0.6));
-        const usable = cands.filter((q) => q.length >= floor);
-        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-        const nodes: Text[] = [];
-        let n2: Node | null;
-        while ((n2 = walker.nextNode())) nodes.push(n2 as Text);
-        let done = false;
-        for (const q of usable) {
-          if (done) break;
-          for (const t of nodes) {
-            const idx = t.data.indexOf(q);
-            if (idx < 0 || !t.parentElement) continue;
-            if (['SCRIPT', 'STYLE', 'MARK', 'A'].includes(t.parentElement.tagName)) continue;
-            const after = t.splitText(idx);
-            after.splitText(q.length);
-            const a = document.createElement('a');
-            a.className = 'cm-note-mark';
-            a.setAttribute('data-note-href', mk.href);
-            a.setAttribute('title', '此处有笔记，点击查看');
-            a.href = mk.href;
-            a.textContent = after.data;
-            a.addEventListener('click', (ev) => {
-              ev.preventDefault();
-              navigate(mk.href);
-            });
-            after.parentNode?.replaceChild(a, after);
-            done = true;
-            break; // 每段原文只标第一处
-          }
-        }
+        const nodes = collectTextNodes(el); // 每条重收：上一条的包装已切分节点
+        const ranges = locateNote(nodes.map(({ node }) => node.data).join(''), mk.quote);
+        wrapTextRanges(nodes, ranges, (_, node) => {
+          if (node.parentElement?.closest('a')) return null;
+          const a = document.createElement('a');
+          a.className = 'cm-note-mark';
+          a.setAttribute('data-note-href', mk.href);
+          a.setAttribute('title', '此处有笔记，点击查看');
+          a.href = mk.href;
+          a.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            navigate(mk.href);
+          });
+          return a;
+        });
       }
     }
 

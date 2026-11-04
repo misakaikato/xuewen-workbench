@@ -85,7 +85,7 @@ export function wrapTextRanges(
    - 本函数已收进 `parts` 的、`value.point === true` 且 `to > from` 的区间；
    - `state.field(alField, false)?.deco` 在 `[vFrom, vTo)` 内（`.between`）、`value.point === true` 且 `to > from` 的区间。
 2. **建显示文本**：逐字符遍历 `doc.sliceString(vFrom, vTo)`，跳过隐藏位置，得到 `display` 字符串与偏移表 `pos[i]`（display 第 i 个字符对应的文档位置）。用布尔数组标记隐藏位置即可，复杂度 O(区间长度)。
-3. 对每条 mark：`locateNote(display, mk.quote)`。每个命中 `{from, to}` 映射为文档区间 `[pos[from], pos[to-1]+1)`，生成：
+3. 对每条 mark：`locateNote(display, quote)`，其中 `quote` 是 `mk.quote` 剥掉各行行首的无序列表圆点 `•`。圆点由 `BulletWidget` 渲染，会进入选区文字，但不在源码里；圆点字符与 `BulletWidget` 共用同一个常量。每个命中 `{from, to}` 映射为文档区间 `[pos[from], pos[to-1]+1)`，生成：
    ```ts
    Decoration.mark({ class: 'cm-note-mark', attributes: { 'data-note-href': mk.href, title: '此处有笔记，点击查看' } })
    ```
@@ -113,6 +113,13 @@ for mk of noteMarks:
 - 对每个区间，扣掉与 `linkSpans` 重叠的部分，把剩下的非空片段作为 `noteSpans`（`href` 相同）。
 - 其余分段与渲染逻辑不动。
 
+### 6. HTML 阅读器正文 DOM 保持稳定（`src/components/HtmlReader.tsx`）
+验收时发现了一个早就存在的问题（基线 84a0459 上可以复现）：`HtmlReader` 订阅了全局状态（`useApp()` 的 tree/config），每次全局刷新都会重新渲染。React 19 会因此重置 `dangerouslySetInnerHTML` 所在 div 的 innerHTML；`html` 字符串没变，`onContentReady` 不会重跑，阅读页注入的笔记标记（还有查找 mark）就丢了。表现为：HTML 文档里记完笔记几秒后，标记消失。
+
+修法照搬 `WordReader.tsx` 现成的 `WordBody` 写法：
+- 把正文 div 抽成 `memo` 组件 `HtmlBody({ html })`；
+- 只有 html 真的变化时才重新渲染。html 变化时 `onContentReady` 会照常触发，阅读页随之重新打标记。
+
 ## 边界情况
 | 情况 | 期望 |
 |---|---|
@@ -121,6 +128,7 @@ for mk of noteMarks:
 | 引文 2–5 字（如「克己复礼」） | 三种阅读器都标出所有出现处 |
 | 多行引文：首行短（如「第一章」），后面有长行 | 用长行定位，不去标所有「第一章」 |
 | 引文跨 `**加粗**`、`*斜体*`、`~~删除~~`、`` `代码` ``、`[文字](url)`、`[[名|别名]]` | md 阅读器标出，下划线覆盖显示出来的文字 |
+| md 引文跨多个无序列表项（选区里带 `•`） | 标出 |
 | 引文跨 HTML/Word 的 `<b>`、`<i>`、`<span>` | 标出，可能由多个相邻 `<a>` 拼成 |
 | 引文跨原文超链接 `<a>` | 超链接以外的部分标出，超链接内部不包 |
 | TXT 引文含自动内链词 | 链接以外的部分标出，链接仍可点 |
@@ -129,6 +137,7 @@ for mk of noteMarks:
 | CRLF、BOM、混合换行、GBK 文档 | 与 LF 文档表现一致 |
 | 老笔记（修复前存的、`quote` 是渲染文本） | 打开文档即标出 |
 | 同一文档的 noteMarks 更新（新存一条） | 立即出现新标记，旧标记不消失、不重复 |
+| HTML 文档有标记后，库内其他文件变化触发重扫 | 标记不消失 |
 
 ## 实施步骤
 1. `searchLocation.ts` 加 `noteQueries` / `locateNote`；新建 `scripts/test-note-marks.mjs`（node + `node:assert/strict`，风格参照 `scripts/test-retrieval.mjs`）覆盖设计 1 的规则与边界表中的纯函数部分。可单独验证。
@@ -155,7 +164,7 @@ for mk of noteMarks:
   - md：含 wikilink 别名 `[[论语|那本经典]]` 的句子选整句（语料里要有 `论语.md`，等内链就绪再选）；
   - md：纯文本里选 4 字「克己复礼」；
   - md（CRLF 换行）：跨两段的选区，第二段含加粗；
-  - html：`<p>前文<b>加粗的词</b>后文，这是带格式的一句话。</p>` 选整句；
+  - html：`<p>前文<b>加粗的词</b>后文，这是带格式的一句话。</p>` 选整句；保存后在库里新建一个文件触发重扫，等 7 秒，标记仍在；
   - html：`<p>参见<a href="x.md">某篇</a>这一篇里的说法很重要。</p>` 选整句，断言标记存在且没有 `a a`（嵌套锚点）；
   - txt：选 4 字短语；
   - txt：选含自动内链词（语料里另有同名 md 文档）的整句，断言标记存在且 `.wb-autolink` 仍在；
@@ -172,6 +181,7 @@ for mk of noteMarks:
   - `src/components/editor/livePreview.ts`
   - `src/pages/Read.tsx`
   - `src/components/TxtReadBody.tsx`
+  - `src/components/HtmlReader.tsx`
   - `scripts/test-note-marks.mjs`
   - `scripts/e2e-note-marks.mjs`
 

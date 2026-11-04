@@ -76,3 +76,29 @@ export function findAllRanges(source: string, needle: string, smart: boolean): {
   }
   return out;
 }
+
+// 笔记定位候选：引文每个非空行（去空白后 ≥2 字）截前 80 字，长的优先。
+// 最长行 ≥6 字时只保留长度接近最长者的行，避免退到「第一章」这类到处都有的短串去误标；
+// 全是短行时只保留最长的那些（短引文如「克己复礼」本身就是定位串）。
+export function noteQueries(quote: string): string[] {
+  const cands = (quote || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.replace(/\s/g, '').length >= 2)
+    .map((l) => l.slice(0, 80))
+    .sort((a, b) => b.length - a.length);
+  if (!cands.length) return [];
+  const longest = cands[0].length;
+  const floor = longest >= 6 ? Math.max(6, Math.floor(longest * 0.6)) : longest;
+  return cands.filter((q) => q.length >= floor);
+}
+
+// 在显示文本（阅读器呈现给用户的文字，与选区文字同一坐标系）里定位一条笔记：
+// 取第一个有命中的候选，返回它的全部命中区间（智能匹配：忽略空白/全半角/大小写）。
+export function locateNote(display: string, quote: string): { from: number; to: number }[] {
+  for (const q of noteQueries(quote)) {
+    const hits = findAllRanges(display, q, true);
+    if (hits.length) return hits;
+  }
+  return [];
+}

@@ -114,6 +114,12 @@ function extractStyles(rawHtml: string): { css: string; links: string[] } {
   return { css: cssParts.join('\n'), links };
 }
 
+// 保持正文 DOM 稳定：全局状态（文件树、扫描状态）更新只在 html 真变化时才重置 innerHTML，
+// 否则阅读页注入的笔记标记、查找 mark 与目录 id 会被冲掉（与 WordReader 的 WordBody 同理）。
+const HtmlBody = memo(function HtmlBody({ html }: { html: string }) {
+  return <div dangerouslySetInnerHTML={{ __html: html }} />;
+});
+
 export const HtmlReader = memo(function HtmlReader({
   content,
   docPath,
@@ -259,7 +265,7 @@ export const HtmlReader = memo(function HtmlReader({
     <>
       <div ref={bodyRef} className="reader wb-html-body min-w-0" onClick={onClick}>
         {scopedCss && <style>{scopedCss}</style>}
-        <div dangerouslySetInnerHTML={{ __html: html }} />
+        <HtmlBody html={html} />
       </div>
       <ExternalLinkDialog path={extPath} onClose={() => setExtPath(null)} />
     </>

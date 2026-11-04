@@ -9,6 +9,7 @@ import { memo, useEffect, useMemo } from 'react';
 import type { DocLink } from '@/lib/api';
 import { PageLoading } from '@/components/ui-states';
 import { LARGE_DOC_CHARS, useAfterPaint } from '@/hooks/useAfterPaint';
+import { locateNote } from '@/lib/searchLocation';
 import { toEditorText } from '../../server/editorText.js';
 
 export interface TxtLinkTarget {
@@ -33,20 +34,6 @@ function wikiLabel(raw: string): string | null {
   if (bar >= 0) return inner.slice(bar + 1);
   const hash = inner.indexOf('#');
   return hash >= 0 ? inner.slice(0, hash) : inner;
-}
-
-// 笔记定位候选：引文每个非空行（≥6 字）截前 80 字，长的优先；只保留长度接近最长候选的，
-// 避免退到「第一章」这类到处都有的短串去误标。
-function noteQueries(quote: string): string[] {
-  const cands = (quote || '')
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length >= 6)
-    .map((l) => l.slice(0, 80))
-    .sort((a, b) => b.length - a.length);
-  if (!cands.length) return [];
-  const floor = Math.max(6, Math.floor(cands[0].length * 0.6));
-  return cands.filter((q) => q.length >= floor);
 }
 
 interface TxtSeg {
@@ -99,15 +86,17 @@ export const TxtReadBody = memo(function TxtReadBody({
       .sort((a, b) => a.from - b.from);
     // 笔记 / 高亮区间：与链接重叠时链接优先（否则会切断 wikilink 标签，破坏替换显示）
     const overlap = (a: { from: number; to: number }, b: { from: number; to: number }) => a.from < b.to && a.to > b.from;
+    // 笔记区间扣掉链接部分，链接以外的片段照样标（引文含自动内链词是常态）
     const noteSpans: { from: number; to: number; href: string }[] = [];
     for (const mk of noteMarks || []) {
-      for (const q of noteQueries(mk.quote)) {
-        let idx = text.indexOf(q);
-        while (idx >= 0) {
-          const span = { from: idx, to: idx + q.length, href: mk.href };
-          if (!linkSpans.some((l) => overlap(span, l))) noteSpans.push(span);
-          idx = text.indexOf(q, idx + q.length);
+      for (const hit of locateNote(text, mk.quote)) {
+        let at = hit.from;
+        for (const l of linkSpans) {
+          if (l.to <= at || l.from >= hit.to) continue;
+          if (l.from > at) noteSpans.push({ from: at, to: l.from, href: mk.href });
+          at = Math.max(at, l.to);
         }
+        if (at < hit.to) noteSpans.push({ from: at, to: hit.to, href: mk.href });
       }
     }
     const hlSpans: { from: number; to: number }[] = [];
