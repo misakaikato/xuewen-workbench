@@ -303,6 +303,12 @@ function attachWindowEvents() {
   });
   win.on('unresponsive', () => console.warn('[window] 窗口无响应'));
   win.on('responsive', () => console.log('[window] 窗口恢复响应'));
+  // Windows 关机或注销不触发 will-quit：按正常退出处理（写会话结束标记、后端退出不记异常），下次启动不误报
+  win.on('session-end', () => {
+    console.log('[window] 系统关机或注销，按正常退出处理');
+    quitting = true;
+    if (dataDirValue) markSessionEndFn?.(dataDirValue);
+  });
   win.webContents.on('render-process-gone', (_e, details) => {
     console.error('[window] 渲染进程退出: reason=' + details.reason + ' exitCode=' + details.exitCode);
     appendIncidentFn?.(dataDirValue, { kind: 'renderer-gone', at: new Date().toISOString(), detail: { reason: details.reason, exitCode: details.exitCode } });
@@ -377,6 +383,7 @@ app.on('child-process-gone', (_e, details) => {
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => {
   quitting = true;
+  updateBridge?.onBeforeQuit?.(); // mac：下载中止并保留 .part；准备阶段结束 ditto 并卸载挂载点
   if (backend) { try { backend.kill(); } catch { /* ignore */ } }
   stopChildren();
 });

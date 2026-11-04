@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { register } from 'node:module';
@@ -17,7 +18,8 @@ if (process.platform !== 'darwin') {
   process.exit(0);
 }
 
-const { macInstallTarget, prepareMacUpdate } = await import('../electron/macInstall.js');
+const { macInstallTarget, prepareMacUpdate, cleanupMacLeftovers, launchMacSwap, swapSidePath } = await import('../electron/macInstall.js');
+const { writePending } = await import('../electron/updatePending.js');
 const SCRIPT = path.resolve('electron/mac-install.sh');
 
 let checks = 0;
@@ -49,16 +51,17 @@ function buildFakeApp(root) {
   return path.join(root, 'Fake App.app');
 }
 
-// 跑替换脚本：日志与产物都留在临时目录；NO_OPEN=1 保证不会真的打开任何东西
+// 跑替换脚本：日志与产物都留在临时目录；NO_OPEN=1 保证不会真的打开任何东西。
+// extraArgs 传 backup（产品派发形态），extraEnv 可注入 PATH 模拟命令失败
 let runSeq = 0;
-async function runSwapScript(pid, staged, target, resultFile, dmg) {
+async function runSwapScript(pid, staged, target, resultFile, dmg, { extraArgs = [], extraEnv = {} } = {}) {
   const logFile = path.join(tmp, `swap-${++runSeq}.log`);
   const fd = fs.openSync(logFile, 'a');
   const t0 = Date.now();
   const code = await new Promise((resolve) => {
-    const p = spawn('/bin/sh', [SCRIPT, String(pid), staged, target, resultFile, dmg], {
+    const p = spawn('/bin/sh', [SCRIPT, String(pid), staged, target, resultFile, dmg, ...extraArgs], {
       stdio: ['ignore', fd, fd],
-      env: { ...process.env, WB_MAC_INSTALL_NO_OPEN: '1' },
+      env: { ...process.env, ...extraEnv, WB_MAC_INSTALL_NO_OPEN: '1' },
     });
     p.on('close', resolve);
     p.on('error', (e) => { console.error(e); resolve(-1); });
@@ -228,6 +231,213 @@ try {
     assert.equal(fs.readFileSync(path.join(target, 'Contents', 'MacOS', 'x'), 'utf8'), 'new');
   });
 
+  // ---------- M6 中断残留：启动清理、准备前兜底、准备阶段退出（specs/2026-11-03-interrupted-1-update.md B1–B3） ----------
+  const hdiInfo = async () => (await execFileP('hdiutil', ['info'])).stdout;
+  const attachAt = (mp, dmg) => execFileP('hdiutil', ['attach', '-nobrowse', '-readonly', '-noautoopen', '-mountpoint', mp, dmg]);
+  // 目标 .app（旧版本）：所在目录名带空格；新版本副本与备份都放在它的同目录
+  function makeTargetApp(name) {
+    const appsDir = path.join(tmp, `${name} apps`);
+    const target = path.join(appsDir, 'Fake App.app');
+    fs.mkdirSync(path.join(target, 'Contents', 'MacOS'), { recursive: true });
+    fs.mkdirSync(path.join(target, 'Contents', 'Resources'), { recursive: true });
+    fs.writeFileSync(path.join(target, 'Contents', 'MacOS', 'x'), 'old');
+    fs.writeFileSync(path.join(target, 'Contents', 'Resources', 'r'), 'old-r');
+    return { appsDir, target };
+  }
+
+  await test('M6 启动清理：wb-dmg 残留挂载卸载；严格匹配的 .new-* 与旧 staging 删除、不匹配的保留；之后同一 DMG 能准备', async () => {
+    const stale = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-dmg-'));
+    const staleReal = fs.realpathSync(stale);
+    const userMnt = path.join(tmp, 'm6 user mount');
+    fs.mkdirSync(userMnt);
+    const userMntReal = fs.realpathSync(userMnt);
+    const unsignedDmg = path.join(tmp, 'Unsigned.dmg'); // M2 造的另一个镜像
+    const { appsDir, target } = makeTargetApp('m6a');
+    const leftover = swapSidePath(target, 'new', 1793700000000); // 上次准备或替换中断留下的新版本目录
+    fs.mkdirSync(path.join(leftover, 'Fake App.app', 'Contents'), { recursive: true });
+    const keepNames = ['.Fake App.app.new-', '.Fake App.app.new-12ab', '.Other.app.new-123', 'Fake App.app.new-123', '.Fake App.app.old-123'];
+    for (const n of keepNames) fs.mkdirSync(path.join(appsDir, n));
+    const stagingDir = path.join(tmp, 'm6-updates', 'staging'); // 旧版本的准备目录
+    fs.mkdirSync(path.join(stagingDir, 'Half.app', 'Contents'), { recursive: true });
+    const probe = fs.mkdtempSync(path.join(tmp, 'm6-probe-'));
+    try {
+      // 模拟上次准备阶段崩溃：私有挂载点上挂着安装包；另挂一个与本应用无关的镜像
+      await attachAt(stale, dmgPath);
+      await attachAt(userMnt, unsignedDmg);
+      let busy = null;
+      try { await attachAt(probe, dmgPath); } catch (e) { busy = e; }
+      assert.ok(busy, '前提：残留挂载还在时再挂同一镜像应失败（资源忙）');
+
+      await cleanupMacLeftovers({ stagingDir, appPath: target, imagePaths: [], isInstalling: () => true });
+      assert.ok(fs.existsSync(leftover), '安装进行中不删 .new-*');
+      assert.ok(fs.existsSync(stagingDir), '安装进行中不删 staging');
+
+      await cleanupMacLeftovers({ stagingDir, appPath: target, imagePaths: [] });
+      let info = await hdiInfo();
+      assert.ok(!info.includes(staleReal) && !info.includes(stale), '残留挂载应已卸载');
+      assert.ok(info.includes(userMntReal) || info.includes(userMnt), '不在下载记录里、也不在 wb-dmg-* 下的挂载不应被卸载');
+      assert.ok(!fs.existsSync(stale), '空的 wb-dmg-* 目录应已删除');
+      assert.ok(!fs.existsSync(leftover), '遗留的 .new-* 应已删除');
+      assert.deepEqual(fs.readdirSync(appsDir).sort(), ['Fake App.app', ...keepNames].sort(), '不严格匹配命名的都保留，目标应用不动');
+      assert.equal(fs.readFileSync(path.join(target, 'Contents', 'MacOS', 'x'), 'utf8'), 'old');
+      assert.ok(!fs.existsSync(stagingDir), '旧版本遗留的 staging 应已删除');
+
+      const { staged } = await prepareMacUpdate({
+        dmgPath, expectedVersion: VERSION, expectedBundleId: BUNDLE_ID, stagingDir: swapSidePath(target, 'new'),
+      });
+      const diff = await execFileP('diff', ['-r', srcApp, staged]);
+      assert.equal(diff.stdout, '', '清理后同一 DMG 应准备成功且内容一致');
+
+      // 镜像路径在下载记录里的挂载（如 Finder 打开着的安装包）也会卸载
+      await cleanupMacLeftovers({ imagePaths: [unsignedDmg] });
+      info = await hdiInfo();
+      assert.ok(!info.includes(userMntReal) && !info.includes(userMnt), '下载记录里的镜像应被卸载');
+    } finally {
+      for (const mp of [stale, userMnt, probe]) await execFileP('hdiutil', ['detach', '-force', mp]).catch(() => {});
+    }
+  });
+
+  await test('M6 准备前兜底：同一镜像已挂在别处时先卸载再挂载，不报资源忙', async () => {
+    const elsewhere = path.join(tmp, 'm6 finder mount');
+    fs.mkdirSync(elsewhere);
+    const elsewhereReal = fs.realpathSync(elsewhere);
+    const { target } = makeTargetApp('m6b');
+    try {
+      await attachAt(elsewhere, dmgPath);
+      const newDir = swapSidePath(target, 'new');
+      const { staged } = await prepareMacUpdate({ dmgPath, expectedVersion: VERSION, expectedBundleId: BUNDLE_ID, stagingDir: newDir });
+      assert.equal(staged, path.join(newDir, 'Fake App.app'), '新版本在目标同目录的 .new-* 里，bundle 保持原名');
+      assert.ok(fs.existsSync(path.join(staged, 'Contents', 'Info.plist')), '应准备成功');
+      const info = await hdiInfo();
+      assert.ok(!info.includes(elsewhereReal) && !info.includes(elsewhere), '原挂载应已卸载');
+      assert.ok(!info.includes('wb-dmg-'), '准备结束后私有挂载点也应卸载');
+    } finally {
+      await execFileP('hdiutil', ['detach', '-force', elsewhere]).catch(() => {});
+    }
+  });
+
+  await test('M6 准备阶段收到退出信号：ditto 被结束、挂载卸载、目标同目录的 .new-* 已删除', async () => {
+    const { appsDir, target } = makeTargetApp('m6c');
+    const stamp = Date.now();
+    const newDir = swapSidePath(target, 'new', stamp);
+    const ctrl = new AbortController();
+    let err = null;
+    let dittoStarted = false;
+    try {
+      await prepareMacUpdate({
+        dmgPath, expectedVersion: VERSION, expectedBundleId: BUNDLE_ID, stagingDir: newDir,
+        // ditto 刚启动时的第一次进度回调里中止（等同 before-quit 调 onBeforeQuit）
+        onProgress: () => { dittoStarted = true; ctrl.abort(); },
+        signal: ctrl.signal,
+      });
+    } catch (e) { err = e; }
+    assert.ok(dittoStarted, 'ditto 应已启动');
+    assert.ok(err?.aborted, '准备应因中止而失败：' + err);
+    const left = await execFileP('pgrep', ['-f', `ditto .*new-${stamp}`]).then((r) => r.stdout.trim(), () => '');
+    assert.equal(left, '', 'ditto 应已结束');
+    // 中止时卸载与删除副本交给独立进程（应用退出后仍会完成）：轮询
+    let gone = false;
+    for (let i = 0; i < 100 && !gone; i++) {
+      gone = !(await hdiInfo()).includes(dmgPath) && !fs.existsSync(newDir); // dmgPath 是 /private/var/... 实际路径的子串
+      if (!gone) await sleep(100);
+    }
+    assert.ok(gone, '挂载应已卸载、.new-* 应已删除');
+    assert.deepEqual(fs.readdirSync(appsDir), ['Fake App.app'], '目标目录只剩旧版本');
+    assert.equal(fs.readFileSync(path.join(target, 'Contents', 'MacOS', 'x'), 'utf8'), 'old', '旧版本不动');
+  });
+
+  // ---------- M7 替换脚本：准备阶段已就位的 .new-* + 两次改名、还原前先清理、失败分支清理 ----------
+  await test('M7 成功路径（真实准备 + 产品派发参数）：准备后 .new-* 已在目标目录，脚本无复制步骤只改名，最终没有 .new-* 与 .old-*', async () => {
+    assert.ok(!/ditto/.test(fs.readFileSync(SCRIPT, 'utf8')), '替换脚本里不应再出现 ditto');
+    const { appsDir, target } = makeTargetApp('m7a');
+    const stamp = Date.now();
+    const { staged } = await prepareMacUpdate({
+      dmgPath, expectedVersion: VERSION, expectedBundleId: BUNDLE_ID, stagingDir: swapSidePath(target, 'new', stamp),
+    });
+    assert.equal(staged, path.join(appsDir, `.Fake App.app.new-${stamp}`, 'Fake App.app'), '新版本应直接准备到目标同目录的 .new-* 里');
+    assert.deepEqual(fs.readdirSync(appsDir).sort(), [`.Fake App.app.new-${stamp}`, 'Fake App.app'].sort(), '准备完成后 .new-* 已在目标目录');
+    const diffPrepared = await execFileP('diff', ['-r', srcApp, staged]);
+    assert.equal(diffPrepared.stdout, '', '准备好的新版本与源一致');
+    const backup = swapSidePath(target, 'old', stamp);
+    const dmg = path.join(tmp, 'fake-installer.dmg');
+    const resultFile = path.join(tmp, 'm7a-updates', 'install-result.json');
+    const r = await runSwapScript(spawnSleep(1).pid, staged, target, resultFile, dmg, { extraArgs: [backup] });
+    assert.equal(r.code, 0, '退出码 0：' + r.log);
+    assert.equal(r.result.ok, true);
+    const diff = await execFileP('diff', ['-r', srcApp, target]);
+    assert.equal(diff.stdout, '', 'target 应为新版本');
+    assert.ok(r.log.includes(`旧版本已备份: ${backup}`), '应按传入的备份路径改名');
+    assert.ok(!/复制|ditto|cp /.test(r.log), '脚本日志里不应有任何复制步骤：' + r.log);
+    let clean = false;
+    for (let i = 0; i < 50 && !clean; i++) {
+      clean = JSON.stringify(fs.readdirSync(appsDir)) === JSON.stringify(['Fake App.app']);
+      if (!clean) await sleep(100);
+    }
+    assert.deepEqual(fs.readdirSync(appsDir), ['Fake App.app'], '目标目录最终没有 .new-* 与 .old-*');
+  });
+
+  await test('M7 第二次改名失败（move-new-failed）：先删目标处半截目录再还原，旧版完整、备份未被嵌入，.new-* 已清理', async () => {
+    const { appsDir, target } = makeTargetApp('m7b');
+    const staged = path.join(swapSidePath(target, 'new'), 'Fake App.app'); // 准备阶段已就位的新版本
+    fs.mkdirSync(path.join(staged, 'Contents', 'MacOS'), { recursive: true });
+    fs.writeFileSync(path.join(staged, 'Contents', 'MacOS', 'x'), 'new');
+    const dmg = path.join(tmp, 'fake-installer.dmg');
+    const resultFile = path.join(tmp, 'm7b-updates', 'install-result.json');
+    // mv 包装：把 .new-* 改为正式名时失败，并在目标处留下半截目录（模拟改名中途失败）；其余 mv 照常
+    const shimDir = path.join(tmp, 'm7b-bin');
+    fs.mkdirSync(shimDir, { recursive: true });
+    fs.writeFileSync(path.join(shimDir, 'mv'),
+      '#!/bin/sh\n' +
+      'case "$1" in\n' +
+      '  */.*.new-*) mkdir -p "$2/Contents/half"; echo "mv: rename $1 to $2: Operation not permitted" >&2; exit 1 ;;\n' +
+      'esac\n' +
+      'exec /bin/mv "$@"\n');
+    fs.chmodSync(path.join(shimDir, 'mv'), 0o755);
+    const r = await runSwapScript(spawnSleep(1).pid, staged, target, resultFile, dmg, {
+      extraEnv: { PATH: `${shimDir}:${process.env.PATH}` },
+    });
+    assert.equal(r.code, 1, '失败退出码 1');
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.reason, 'move-new-failed', r.log);
+    assert.ok(r.log.includes('已还原旧版本'), r.log);
+    assert.equal(fs.readFileSync(path.join(target, 'Contents', 'MacOS', 'x'), 'utf8'), 'old', '旧版应完整还原');
+    assert.equal(fs.readFileSync(path.join(target, 'Contents', 'Resources', 'r'), 'utf8'), 'old-r', '旧版应完整还原');
+    assert.deepEqual(fs.readdirSync(target), ['Contents'], '目标里不应嵌入备份');
+    assert.deepEqual(fs.readdirSync(path.join(target, 'Contents')).sort(), ['MacOS', 'Resources'], '半截目录应已删除');
+    assert.deepEqual(fs.readdirSync(appsDir), ['Fake App.app'], '目标目录没有 .new-* 与 .old-*');
+    assert.ok(r.log.includes(`would open ${dmg}`) && r.log.includes(`would open ${target}`), '应打开安装包并重开旧版');
+  });
+
+  await test('M7 派发替换：待完成记录写入备份路径（目标同目录、本应用命名规则），脚本收到就位的 .new-* 与同一备份路径', async () => {
+    const dir = path.join(tmp, 'm7d env');
+    const target = path.join(dir, 'Apps', 'Target App.app');
+    fs.mkdirSync(target, { recursive: true });
+    const staged = path.join(swapSidePath(target, 'new'), 'Target App.app');
+    fs.mkdirSync(staged, { recursive: true });
+    const updatesDir = path.join(dir, 'updates');
+    let script = null;
+    try {
+      // pid 用测试进程自己：脚本一直等待，本用例只看派发参数，结束前杀掉脚本
+      ({ script } = await launchMacSwap({
+        pid: process.pid, staged, target, dmgPath: path.join(dir, 'x.dmg'), fromVersion: '0.1.7', toVersion: VERSION,
+        updatesDir, logsDir: path.join(dir, 'logs'), scriptSrc: SCRIPT, writePending,
+      }));
+      const pending = JSON.parse(fs.readFileSync(path.join(updatesDir, 'pending.json'), 'utf8'));
+      assert.equal(path.dirname(pending.backupPath), path.dirname(target), '备份与目标同目录');
+      assert.match(path.basename(pending.backupPath), /^\.Target App\.app\.old-\d+$/, '备份名符合命名规则');
+      assert.ok(!fs.readdirSync(updatesDir).some((n) => n.includes('.tmp-')), '原子写不留临时文件');
+      let args = '';
+      for (let i = 0; i < 50 && !args; i++) {
+        args = (await execFileP('ps', ['-axww', '-o', 'args='])).stdout.split('\n').find((l) => l.includes(script)) || '';
+        if (!args) await sleep(50);
+      }
+      assert.ok(args.includes(staged), '脚本应收到准备好的 .new-*：' + args);
+      assert.ok(args.includes(pending.backupPath), '脚本应收到同一备份路径：' + args);
+    } finally {
+      if (script) await execFileP('pkill', ['-f', script]).catch(() => {});
+    }
+  });
+
   // ---------- M5 重复安装并发防护（updater.js 集成：打桩 electron / electron-updater + 本地 generic 源） ----------
   await test('M5 连续两次 install()：只准备一次，第二次立即被拒绝', async () => {
     const dir = path.join(tmp, 'm5 env'); // 目录名带空格
@@ -255,7 +465,8 @@ try {
       `  getPath: (name) => path.join(DIR, name === 'downloads' ? 'downloads' : 'userData'),\n` +
       `  quit: () => { globalThis.__wbQuit = (globalThis.__wbQuit || 0) + 1; },\n` +
       `};\n` +
-      `export const shell = { openPath: async () => '', openExternal: async () => {} };\n`);
+      `export const shell = { openPath: async () => '', openExternal: async () => {} };\n` +
+      `export const net = { fetch: (...args) => globalThis.fetch(...args) };\n`);
 
     // hdiutil 计数包装：统计 prepare 的 attach 次数
     const binDir = path.join(dir, 'bin');

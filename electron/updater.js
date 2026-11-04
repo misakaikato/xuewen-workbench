@@ -1,23 +1,33 @@
 // 自动更新桥（仅在打包模式下由 main.js 创建注入，见 server/update.js 的桥接约定）：
 // - Windows：electron-updater 检查/下载；安装 = 非静默 quitAndInstall(false, true)，
 //   安装器显示进度窗口，装完自动重开（build/installer.nsh 控制升级时的页面流）。
-// - macOS（未签名）：electron-updater 只做检查；下载自取发布源的 DMG；
-//   自动安装 = 应用内准备（挂载/校验/复制/验签，带进度）+ 退出后由 mac-install.sh
-//   替换并重开；预检不可自动替换（DMG 卷 / AppTranslocation / 目录不可写）时回退手动拖拽。
-import { app, shell } from 'electron';
+// - macOS（未签名）：electron-updater 只做检查；下载自取发布源的 DMG（net.fetch，可续传、重试、sha512 校验，
+//   下载过的文件记在 updates/downloads.json，清理只动记录里的文件）；
+//   自动安装 = 应用内准备（挂载/校验/复制到目标同目录的 .<名>.new-<ts>/验签，带进度）+ 退出后由
+//   mac-install.sh 两次改名替换并重开；预检不可自动替换（DMG 卷 / AppTranslocation / 目录不可写）时回退手动拖拽。
+//   启动时后台清理上次中断的残留：挂载点、.new-* 与旧版本遗留的 staging、替换备份、已装过的安装包。
+import { app, shell, net } from 'electron';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { macInstallTarget, prepareMacUpdate, launchMacSwap, readPlistValue } from './macInstall.js';
+import {
+  macInstallTarget, prepareMacUpdate, launchMacSwap, readPlistValue, cleanupMacLeftovers,
+  appBundlePath, swapSidePath, isSwapSidePath,
+} from './macInstall.js';
+import { downloadDmgToPart } from './dmgDownload.js';
 import { consumeInstallOutcome } from './updateOutcome.js';
-import { pendingFile, resultFile, writePending, clearInstallFiles, readJsonIfExists } from './updatePending.js';
+import {
+  pendingFile, resultFile, writePending, clearInstallFiles, readJsonIfExists, readDownloads, updateDownloads,
+} from './updatePending.js';
 
 const FIRST_CHECK_DELAY_MS = 10_000;
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const CHECK_TIMEOUT_MS = 30_000;
 const INSTALLER_LAUNCH_DELAY_MS = 1200; // 让「正在启动安装程序 / 即将重启」先显示出来
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url)); // 本文件所在目录（electron/）
+const PART_SUFFIX = '.part';
 
 let autoUpdater = null;
 let CancellationToken = null;
@@ -30,8 +40,11 @@ let checkTimer = null;
 let intervalTimer = null;
 let settleCheck = null; // check() 的 settle 回调（一次性）
 let dmgAbort = null; // mac 下载的 AbortController（取消用）
+let prepareAbort = null; // mac 准备阶段的 AbortController（退出时结束 ditto 并卸载）
 let winCancelToken = null; // Windows 下载的 CancellationToken（取消用）
 let cancelled = false; // 本次下载是否被用户取消（取消回 available，失败进 error）
+let quittingApp = false; // 已进入 before-quit：中止下载但保留 .part 供下次续传
+let startupCleanup = Promise.resolve(); // 启动清理（下载与安装开始前等它结束）
 let busy = () => ['checking', 'downloading', 'ready', 'installing'].includes(st.status);
 
 function newState(enabled) {
@@ -56,15 +69,79 @@ function updatesDir() {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// 启动时消费跨重启的安装记录（updateOutcome 判定规则）：刚更新成功 / 上次失败 / 用户取消（保留不提示）
+// 启动时消费跨重启的安装记录（updateOutcome 判定规则）：刚更新成功 / 上次失败 / 用户取消（保留不提示）。
+// 返回读到的 pending 与判定，供启动清理使用（消费会删除文件）
 function consumeInstallFiles() {
   const dir = updatesDir();
   const pending = readJsonIfExists(pendingFile(dir));
   const result = readJsonIfExists(resultFile(dir));
-  if (!pending && !result) return;
+  if (!pending && !result) return null;
   const outcome = consumeInstallOutcome({ currentVersion: app.getVersion(), pending, result });
   if (outcome.lastInstall) st = { ...st, lastInstall: outcome.lastInstall };
   if (outcome.clear) void clearInstallFiles(dir);
+  return { pending, outcome };
+}
+
+async function exists(p) {
+  try {
+    await fsp.lstat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 版本号比较（x.y.z 数字段，预发布后缀忽略）：a<b 为负，相等为 0
+function compareVersions(a, b) {
+  const pa = String(a).split('-')[0].split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const pb = String(b).split('-')[0].split('.').map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return Math.sign(d);
+  }
+  return 0;
+}
+
+// 启动清理（后台进行）：mac 卸载残留挂载，删目标同目录遗留的 .<名>.new-*、旧版本遗留的 staging 与空挂载点目录；
+// 上次已更新成功时补删替换备份，并删除下载记录里版本 ≤ 当前版本的 DMG 与 .part。失败的那次不删，DMG 留给用户手动安装。
+async function cleanupAtStartup(prev) {
+  const ud = updatesDir();
+  const updated = prev?.outcome?.lastInstall?.result === 'updated';
+  if (process.platform === 'darwin') {
+    const appPath = appBundlePath(process.execPath);
+    await cleanupMacLeftovers({
+      stagingDir: path.join(ud, 'staging'), // 旧版本的准备目录
+      appPath,
+      imagePaths: readDownloads(ud).map((r) => r.path),
+      isInstalling: () => st.status === 'installing',
+    });
+    // 新版本已正常运行而备份还在：上次后台删除没做完（备份名须严格符合本应用的命名规则）
+    const backup = prev?.pending?.backupPath;
+    if (updated && appPath && isSwapSidePath(backup, appPath, 'old') && await exists(backup)) {
+      console.log('[update] 删除上次替换遗留的旧版本备份：' + backup);
+      await fsp.rm(backup, { recursive: true, force: true });
+    }
+  }
+  if (updated && readDownloads(ud).length) {
+    const current = app.getVersion();
+    await updateDownloads(ud, async (list) => {
+      const keep = [];
+      for (const r of list) {
+        if (compareVersions(r.version, current) > 0) {
+          keep.push(r);
+          continue;
+        }
+        try {
+          await fsp.rm(r.path, { force: true });
+          console.log('[update] 删除已安装过的安装包：' + r.path);
+        } catch (e) {
+          console.warn('[update] 删除已安装过的安装包失败：' + r.path + '，' + (e?.message || e));
+          keep.push(r);
+        }
+      }
+      return keep;
+    });
+  }
 }
 
 // 解析 resources/app-update.yml（扁平键值，electron-builder 生成）里的发布源坐标：
@@ -83,12 +160,13 @@ function readPublishConfig() {
   return null;
 }
 
-// update-available 时从 UpdateInfo.files（即 latest-mac.yml 的文件清单）记住 DMG 文件名：
+// update-available 时从 UpdateInfo.files（即 latest-mac.yml 的文件清单）记住 DMG 文件名与 sha512：
 // 下载 URL 直接拼 <base>/v<tag>/<file>；github 走资产通道，不调 api.github.com——
 // 未认证请求限流 60 次/小时/IP，用户点下载时极易撞上 403
 let dmgFileName = null;
+let dmgSha512 = null; // base64，下载完成后校验
 
-async function releaseDmgUrl(version) {
+async function releaseDmgUrl(version, signal) {
   if (!publishCfg) throw new Error('缺少发布配置（app-update.yml）');
   if (publishCfg.provider === 'generic') {
     if (!dmgFileName) throw new Error('发布源清单缺少 DMG 文件名');
@@ -100,76 +178,146 @@ async function releaseDmgUrl(version) {
   // 回退：files 缺失（异常清单）时才查 API
   const tag = encodeURIComponent(`v${version}`);
   const api = `https://api.github.com/repos/${publishCfg.owner}/${publishCfg.repo}/releases/tags/${tag}`;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 10_000);
+  const r = await net.fetch(api, {
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'xuewen-workbench-updater' },
+    signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+  });
+  if (!r.ok) throw new Error(`查询发布资产失败 (${r.status})`);
+  const rel = await r.json();
+  const assets = (rel.assets || []).filter((a) => a.name.endsWith('.dmg'));
+  const hit = assets.find((a) => a.name.includes(`-${process.arch}`)) || assets[0];
+  if (!hit) throw new Error('该版本没有 DMG 资产');
+  return hit.browser_download_url;
+}
+
+function downloadsDir() {
   try {
-    const r = await fetch(api, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'xuewen-workbench-updater' }, signal: ctrl.signal });
-    if (!r.ok) throw new Error(`查询发布资产失败 (${r.status})`);
-    const rel = await r.json();
-    const assets = (rel.assets || []).filter((a) => a.name.endsWith('.dmg'));
-    const hit = assets.find((a) => a.name.includes(`-${process.arch}`)) || assets[0];
-    if (!hit) throw new Error('该版本没有 DMG 资产');
-    return hit.browser_download_url;
-  } finally {
-    clearTimeout(timer);
+    return app.getPath('downloads');
+  } catch {
+    return updatesDir();
   }
 }
 
+// .part 文件名带版本号：正式文件名本身不含版本时在 .part 前补上
+function partPathFor(target, version) {
+  return path.basename(target).includes(version) ? target + PART_SUFFIX : `${target}.${version}${PART_SUFFIX}`;
+}
+
+// 候选目标：原名，被占用时依次加 -1、-2…
+function dmgCandidates(dir, fileName, version) {
+  const ext = path.extname(fileName);
+  const stem = path.basename(fileName, ext);
+  const list = [];
+  for (let i = 0; i < 100; i++) {
+    const target = path.join(dir, i ? `${stem}-${i}${ext}` : fileName);
+    list.push({ target, part: partPathFor(target, version) });
+  }
+  return list;
+}
+
+// 选下载目标：优先续传记录里同版本的 .part；否则取第一个不会覆盖用户文件的名字。
+// 「用户文件」= 已存在且不在下载记录里的文件，一律不覆盖、不删除
+async function pickDmgPaths(dir, fileName, version, records) {
+  const recorded = new Set(records.map((r) => r.path));
+  const free = async (p) => recorded.has(p) || !(await exists(p));
+  const cands = dmgCandidates(dir, fileName, version);
+  for (const c of cands) {
+    const resumable = records.some((r) => r.path === c.part && r.version === version);
+    if (resumable && await exists(c.part) && await free(c.target)) return c;
+  }
+  for (const c of cands) {
+    if (await free(c.target) && await free(c.part)) return c;
+  }
+  throw new Error('下载目录里同名文件过多，无法保存安装包');
+}
+
 // macOS：自下载 DMG（全量，无差量——差量仅 electron-updater 的 zip/exe 路径可用）。
-// 可被 AbortController 取消；下载完成时写待完成记录并做自动安装预检。
+// 写 .part（先登记进下载记录再落盘），校验通过后改为正式文件名；取消与最终失败删除 .part，
+// 应用退出时保留 .part 供下次同版本续传。完成时写待完成记录并做自动安装预检。
 async function downloadDmg(version) {
-  const url = await releaseDmgUrl(version);
-  const dir = (() => {
-    try { return app.getPath('downloads'); } catch { return path.join(app.getPath('userData'), 'updates'); }
-  })();
-  await fs.promises.mkdir(dir, { recursive: true });
-  const fileName = decodeURIComponent(url.split('/').pop());
-  const filePath = path.join(dir, fileName);
   const ctrl = new AbortController();
   dmgAbort = ctrl;
+  const ud = updatesDir();
+  let paths = null;
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    if (!res.ok || !res.body) throw new Error(`下载安装包失败 (${res.status})`);
-    const total = Number(res.headers.get('content-length')) || 0;
-    const out = fs.createWriteStream(filePath);
-    let transferred = 0;
-    let lastTick = 0;
-    let lastBytes = 0;
-    setState({ progress: { percent: 0, transferred: 0, total, bytesPerSecond: 0, etaSeconds: null } });
-    for await (const chunk of res.body) {
-      out.write(chunk);
-      transferred += chunk.length;
-      const now = Date.now();
-      if (now - lastTick > 250 || transferred === total) {
-        const dt = (now - lastTick) / 1000;
-        const bps = dt > 0 ? Math.round((transferred - lastBytes) / dt) : 0;
-        setState({
-          progress: {
-            percent: total ? Math.round((transferred / total) * 100) : 0,
-            transferred, total, bytesPerSecond: bps,
-            etaSeconds: total && bps > 0 ? Math.round((total - transferred) / bps) : null,
-          },
-        });
-        lastTick = now;
-        lastBytes = transferred;
-      }
+    await startupCleanup;
+    const url = await releaseDmgUrl(version, ctrl.signal);
+    ctrl.signal.throwIfAborted();
+    const dir = downloadsDir();
+    try {
+      await fsp.mkdir(dir, { recursive: true });
+      await fsp.access(dir, fs.constants.W_OK);
+    } catch {
+      throw new Error(`下载目录不可写：${dir}`);
     }
-    await new Promise((resolve, reject) => out.end((e) => (e ? reject(e) : resolve())));
-    dmgInfo = { filePath, version };
-    macTarget = await macInstallTarget(process.execPath); // 预检结果决定 ready 的安装模式
-    setState({
-      status: 'ready', progress: null, error: null, canCancel: false,
-      installMode: macTarget.mode,
-      installModeReason: macTarget.mode === 'manual' ? macTarget.reason : null,
+    const fileName = path.basename(decodeURIComponent(url.split('/').pop()));
+    // 开始新版本的下载：删除记录里其他版本的 .part，去掉文件已不在的条目，再登记本次 .part
+    await updateDownloads(ud, async (list) => {
+      const keep = [];
+      for (const r of list) {
+        if (r.path.endsWith(PART_SUFFIX) && r.version !== version) {
+          try {
+            await fsp.rm(r.path, { force: true });
+            continue;
+          } catch { /* 删不掉就留着记录，下次再试 */ }
+        }
+        if (await exists(r.path)) keep.push(r);
+      }
+      paths = await pickDmgPaths(dir, fileName, version, keep);
+      return [...keep.filter((r) => r.path !== paths.part), { path: paths.part, version, at: new Date().toISOString() }];
     });
-    // 下载后直接退出、退出时自动安装的路径也要能提示，这里就写待完成记录
-    await writePending(updatesDir(), { fromVersion: st.currentVersion, toVersion: version, dmgPath: filePath });
+    ctrl.signal.throwIfAborted();
+    await downloadDmgToPart({
+      url,
+      part: paths.part,
+      fetchImpl: (u, opts) => net.fetch(u, opts),
+      signal: ctrl.signal,
+      sha512: dmgSha512,
+      onProgress: (progress) => setState({ progress }),
+    });
+    // 改为正式文件名；下载期间目标处新出现了用户文件时换下一个空闲名字
+    await updateDownloads(ud, async (list) => {
+      const recorded = new Set(list.map((r) => r.path));
+      let target = paths.target;
+      if (!recorded.has(target) && await exists(target)) {
+        target = null;
+        for (const c of dmgCandidates(dir, fileName, version)) {
+          if (recorded.has(c.target) || !(await exists(c.target))) {
+            target = c.target;
+            break;
+          }
+        }
+        if (!target) throw new Error('下载目录里同名文件过多，无法保存安装包');
+      }
+      await fsp.rename(paths.part, target);
+      paths = { ...paths, target };
+      return [
+        ...list.filter((r) => r.path !== paths.part && r.path !== target),
+        { path: target, version, at: new Date().toISOString() },
+      ];
+    });
   } catch (e) {
-    try { await fs.promises.unlink(filePath); } catch { /* 半截文件可能尚未创建 */ }
+    if (paths && !quittingApp) {
+      const { part } = paths;
+      await updateDownloads(ud, async (list) => {
+        await fsp.rm(part, { force: true });
+        return list.filter((r) => r.path !== part);
+      }).catch(() => {});
+    }
     throw e;
   } finally {
-    dmgAbort = null;
+    if (dmgAbort === ctrl) dmgAbort = null;
   }
+  const filePath = paths.target;
+  dmgInfo = { filePath, version };
+  macTarget = await macInstallTarget(process.execPath); // 预检结果决定 ready 的安装模式
+  setState({
+    status: 'ready', progress: null, error: null, canCancel: false,
+    installMode: macTarget.mode,
+    installModeReason: macTarget.mode === 'manual' ? macTarget.reason : null,
+  });
+  // 下载后直接退出、退出时自动安装的路径也要能提示，这里就写待完成记录
+  await writePending(updatesDir(), { fromVersion: st.currentVersion, toVersion: version, dmgPath: filePath });
 }
 
 // 定时检查：跳过进行中的流程；ui-settings.autoUpdate 关闭时只静默跳过（手动检查不受影响）
@@ -188,23 +336,37 @@ function doCheck() {
     autoUpdater.checkForUpdates().catch((e) => {
       setState({ status: 'error', error: String(e?.message || e) });
     });
-    setTimeout(() => { if (settleCheck) { const fn = settleCheck; settleCheck = null; fn(); } }, CHECK_TIMEOUT_MS);
+    const timer = setTimeout(() => { if (settleCheck) { const fn = settleCheck; settleCheck = null; fn(); } }, CHECK_TIMEOUT_MS);
+    timer.unref?.(); // 兜底超时不单独维持进程存活
   });
 }
 
 // mac 自动安装：应用内准备（进度进状态机），成功后派发替换脚本再退出；失败不退出、回退手动
 async function installMacAuto() {
   const { filePath: dmgPath, version } = dmgInfo;
+  // 新版本直接复制到目标同目录的隐藏目录 .<名>.new-<ts>（预检 auto 已保证目录可写，与目标同卷），退出后脚本只需改名
+  const newDir = swapSidePath(macTarget.target, 'new');
+  let prepared = false;
   try {
+    await startupCleanup;
     const bundleId = await readPlistValue(macTarget.target, 'CFBundleIdentifier');
-    const { staged } = await prepareMacUpdate({
-      dmgPath,
-      expectedVersion: version,
-      expectedBundleId: bundleId,
-      stagingDir: path.join(updatesDir(), 'staging'),
-      onPhase: (phase) => setState({ status: 'installing', phase, error: null }),
-      onProgress: (p) => setState({ progress: { percent: p.percent, transferred: p.transferred, total: p.total, bytesPerSecond: 0, etaSeconds: null } }),
-    });
+    // 准备阶段可被退出中止（结束 ditto、卸载挂载点、删掉半截的新版本目录）
+    prepareAbort = new AbortController();
+    let staged;
+    try {
+      ({ staged } = await prepareMacUpdate({
+        dmgPath,
+        expectedVersion: version,
+        expectedBundleId: bundleId,
+        stagingDir: newDir,
+        onPhase: (phase) => setState({ status: 'installing', phase, error: null }),
+        onProgress: (p) => setState({ progress: { percent: p.percent, transferred: p.transferred, total: p.total, bytesPerSecond: 0, etaSeconds: null } }),
+        signal: prepareAbort.signal,
+      }));
+    } finally {
+      prepareAbort = null;
+    }
+    prepared = true;
     await launchMacSwap({
       pid: process.pid,
       staged,
@@ -218,6 +380,8 @@ async function installMacAuto() {
       writePending,
     });
   } catch (e) {
+    // 准备好了但派发失败：删掉目标同目录的新版本目录（准备阶段自身失败时已由 prepareMacUpdate 删除）
+    if (prepared) await fsp.rm(newDir, { recursive: true, force: true }).catch(() => {});
     // 准备失败：DMG 仍就绪，交回手动安装（保持 ready，界面在此状态下展示 error 作为原因）
     setState({ status: 'ready', phase: null, progress: null, error: String(e?.message || e), installMode: 'manual', installModeReason: 'prepare-failed' });
     return { ok: false, error: String(e?.message || e) };
@@ -232,7 +396,14 @@ export async function createUpdaterBridge({ getUiSettings, logsDir }) {
   publishCfg = readPublishConfig();
   st = newState(true);
   logsDirValue = logsDir || null;
-  consumeInstallFiles(); // 最早的启动提示来源：上次安装的结果
+  dmgInfo = null;
+  macTarget = null;
+  dmgFileName = null;
+  dmgSha512 = null;
+  cancelled = false;
+  quittingApp = false;
+  const prev = consumeInstallFiles(); // 最早的启动提示来源：上次安装的结果
+  startupCleanup = cleanupAtStartup(prev).catch((e) => console.warn('[update] 启动清理失败：' + (e?.message || e)));
 
   // electron-updater 是 CJS 包：asar 内 ESM 动态 import 的命名导出探测不可靠
   // （autoUpdater 拿到 undefined，设置 autoDownload 直接 TypeError），
@@ -256,6 +427,7 @@ export async function createUpdaterBridge({ getUiSettings, logsDir }) {
       install: async () => st,
       cancel: async () => st,
       openInstaller: async () => { throw new Error('update-disabled'); },
+      onBeforeQuit: () => {},
     };
   }
   autoUpdater = updater;
@@ -266,8 +438,10 @@ export async function createUpdaterBridge({ getUiSettings, logsDir }) {
   autoUpdater.on('checking-for-update', () => setState({ status: 'checking', error: null }));
   autoUpdater.on('update-available', (info) => {
     const files = Array.isArray(info?.files) ? info.files : [];
-    const dmgs = files.map((f) => String(f?.url || '')).filter((n) => n.endsWith('.dmg'));
-    dmgFileName = dmgs.find((n) => n.includes(`-${process.arch}`)) || dmgs[0] || null;
+    const dmgs = files.filter((f) => String(f?.url || '').endsWith('.dmg'));
+    const dmg = dmgs.find((f) => String(f.url).includes(`-${process.arch}`)) || dmgs[0] || null;
+    dmgFileName = dmg ? String(dmg.url) : null;
+    dmgSha512 = typeof dmg?.sha512 === 'string' && dmg.sha512 ? dmg.sha512 : null;
     setState({
       status: 'available',
       info: {
@@ -323,8 +497,12 @@ export async function createUpdaterBridge({ getUiSettings, logsDir }) {
           try {
             await downloadDmg(version);
           } catch (e) {
-            if (cancelled) setState({ status: 'available', progress: null, canCancel: false, error: null });
-            else setState({ status: 'error', error: String(e?.message || e), progress: null, canCancel: false });
+            if (cancelled || quittingApp) {
+              setState({ status: 'available', progress: null, canCancel: false, error: null });
+            } else {
+              console.warn('[update] 下载安装包失败：' + (e?.message || e));
+              setState({ status: 'error', error: String(e?.message || e), progress: null, canCancel: false });
+            }
           }
         })();
         return st;
@@ -381,6 +559,13 @@ export async function createUpdaterBridge({ getUiSettings, logsDir }) {
       if (!p) throw Object.assign(new Error('没有可打开的安装包'), { noInstaller: true });
       const err = await shell.openPath(p);
       if (err) throw new Error('打开安装包失败：' + err);
+    },
+    // 应用退出（main.js 的 before-quit）：下载中止并保留 .part 供下次续传；
+    // 准备阶段结束 ditto 并卸载挂载点（卸载交给独立进程，退出后仍会完成）
+    onBeforeQuit: () => {
+      quittingApp = true;
+      dmgAbort?.abort();
+      prepareAbort?.abort();
     },
   };
 }
