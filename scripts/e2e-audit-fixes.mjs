@@ -1,0 +1,95 @@
+// 走查问题修复 e2e（specs/2026-11-03-audit-fixes.md）：起后端 + BrowserWindow，临时语料，mock 嵌入（RAG 索引为空）。
+// 用法：electron scripts/e2e-audit-fixes.mjs [段号...]，不带参数跑全部。
+import { app, BrowserWindow } from 'electron';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { makeTmpDir, atExit } from './tmpdirs.mjs';
+const root = fileURLToPath(new URL('..', import.meta.url));
+const tmp = makeTmpDir('wb-audit-fixes-');
+const corpus = path.join(tmp, 'corpus');
+const W = (rel, s) => { fs.mkdirSync(path.dirname(path.join(corpus, rel)), { recursive: true }); fs.writeFileSync(path.join(corpus, rel), s); };
+W('笔记/诗句.md', '# 诗句\n\n独有词：雪拥蓝关马不前。\n');
+const longDoc = ['# 长文'];
+for (let i = 1; i <= 40; i++) longDoc.push(`\n## 第 ${i} 节\n\n这是第 ${i} 节的正文，内容足够长用来撑开页面。这是第 ${i} 节的正文，内容足够长用来撑开页面。\n\n- 要点：第 ${i} 节`);
+W('笔记/长文.md', longDoc.join('\n'));
+
+const only = process.argv.slice(2).filter((a) => /^\d+$/.test(a)).map(Number);
+const want = (n) => !only.length || only.includes(n);
+const port = Number(process.env.E2E_AUDIT_PORT) || 7538;
+const base = `http://127.0.0.1:${port}`;
+let server, win, passed = 0;
+atExit(() => server?.kill('SIGKILL'));
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+app.on('window-all-closed', () => {});
+const exec = (js) => win.webContents.executeJavaScript(js, true);
+async function until(js, ms = 8000) {
+  const t0 = Date.now();
+  for (;;) { if (await exec(js)) return true; if (Date.now() - t0 > ms) throw new Error('等待超时 ' + js); await pause(80); }
+}
+const check = (name, ok, detail) => { assert.ok(ok, name + ': ' + JSON.stringify(detail)); console.log('PASS', name); passed++; };
+async function api(url, body, method = 'POST') {
+  const r = await fetch(base + url, body === undefined ? undefined : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json();
+  assert.ok(r.ok, url + ' -> ' + JSON.stringify(j));
+  return j;
+}
+const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
+const CARD = '[data-wb-content-card]';
+const pageText = () => exec('document.body.innerText');
+async function openRead(file, ready) {
+  await win.loadURL(base + '/read/' + enc(file));
+  await until(`!!document.querySelector('${CARD}') && document.querySelector('${CARD}').textContent.includes(${JSON.stringify(ready)})`);
+  await pause(400);
+}
+
+// ---------- 1 检索：智能索引为空时改用精确，关键词入口带 mode=exact ----------
+async function caseSearch() {
+  await win.loadURL(base + '/search?q=' + encodeURIComponent('雪拥蓝关'));
+  await until(`location.search.includes('mode=exact')`, 8000);
+  await until(`document.body.innerText.includes('个文件命中') && !document.body.innerText.includes('0 个文件命中')`, 8000);
+  const t = await pageText();
+  check('1 智能索引为空：自动改用精确检索并出结果', t.includes('诗句.md'), t.slice(0, 300));
+  check('1 智能索引为空：给出已改用精确检索的说明', t.includes('已改用精确检索'), t.slice(0, 300));
+
+  await win.loadURL(base + '/');
+  await until(`document.body.innerText.includes('知识库概览')`);
+  await exec(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }))`);
+  await until(`!!document.querySelector('[cmdk-input]')`);
+  await exec(`(() => { const el=document.querySelector('[cmdk-input]'); const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; set.call(el,'雪拥蓝关'); el.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`);
+  await until(`[...document.querySelectorAll('[cmdk-item]')].some((e) => e.textContent.includes('全文检索'))`);
+  await exec(`[...document.querySelectorAll('[cmdk-item]')].find((e) => e.textContent.includes('全文检索')).click()`);
+  await until(`location.pathname === '/search'`);
+  check('1 命令面板「全文检索」带 mode=exact', await exec(`location.search.includes('mode=exact')`), await exec('location.href'));
+}
+
+async function main() {
+  server = spawn(process.execPath, [path.join(root, 'server/index.js')], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', WORKBENCH_PORT: String(port), WORKBENCH_DATA_DIR: path.join(tmp, 'data'), WORKBENCH_STATIC_DIR: path.join(root, 'dist'), WORKBENCH_RAG_EMBED: 'mock' },
+    stdio: 'ignore',
+  });
+  let ready = false;
+  for (let i = 0; i < 150; i++) { try { await api('/api/config', undefined); ready = true; break; } catch { /* 后端未起 */ } await pause(100); }
+  assert.ok(ready, 'server ready');
+  await api('/api/config', { baseDir: corpus });
+  await pause(1500); // 等扫描 + 索引就绪
+
+  await app.whenReady();
+  win = new BrowserWindow({ width: 1440, height: 900, show: false, webPreferences: { sandbox: true, contextIsolation: true } });
+  const renderErrors = [];
+  win.webContents.on('console-message', (event) => { if (event.level === 'error' && !/status of (404|409|400)/.test(event.message)) renderErrors.push(event.message); });
+
+  if (want(1)) await caseSearch();
+
+  check('渲染进程无代码报错', renderErrors.length === 0, renderErrors.slice(-5));
+  console.log(`${passed} audit-fix checks passed.`);
+}
+main().then(() => finish(0), (e) => { console.error(e); return finish(1); });
+async function finish(code) {
+  if (server && server.exitCode === null) { server.kill('SIGTERM'); await new Promise((r) => server.once('exit', r)); }
+  win?.destroy();
+  fs.rmSync(tmp, { recursive: true, force: true });
+  app.exit(code);
+}

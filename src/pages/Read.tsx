@@ -1253,7 +1253,7 @@ export default function Read() {
                 <Button onClick={() => navigate(-1)}>返回上一页</Button>
                 <Button variant="outline" asChild><Link to="/browse">浏览目录</Link></Button>
                 <Button asChild>
-                  <Link to={'/search?q=' + encodeURIComponent(relPath.split('/').pop() || '')}>搜索同名文件</Link>
+                  <Link to={'/search?q=' + encodeURIComponent(relPath.split('/').pop() || '') + '&mode=exact'}>搜索同名文件</Link>
                 </Button>
               </PageError>
             ) : !file ? (

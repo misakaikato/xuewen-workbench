@@ -1122,7 +1122,7 @@ export function FileTree({
         <div className="shrink-0 flex items-center gap-2 px-1.5 py-1 text-xs text-muted-foreground border-b border-sidebar-border">
           <span className="stat-num">{rows.length}</span> 个匹配文件
           <span className="flex-1" />
-          <button className="hover:text-primary" onClick={() => navigate('/search?q=' + encodeURIComponent(filter.trim()))}>
+          <button className="hover:text-primary" onClick={() => navigate('/search?q=' + encodeURIComponent(filter.trim()) + '&mode=exact')}>
             转全文检索 →
           </button>
         </div>

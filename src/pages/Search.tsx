@@ -79,6 +79,7 @@ export default function Search() {
   const [smartLimit, setSmartLimit] = useState(50);
   const [smartErr, setSmartErr] = useState<string | null>(null);
   const [smartRt, setSmartRt] = useState<RagRuntimeStatus | null>(null); // 智能检索期间拉取运行时状态（首次加载模型的阶段说明）
+  const [smartUnavailable, setSmartUnavailable] = useState(false); // 智能索引为空时已自动改用精确检索
   const [terms, setTerms] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -186,14 +187,19 @@ export default function Search() {
         }
       } catch (e) {
         if (seq === seqRef.current) {
-          if (m === 'smart') setSmartErr((e as Error).message);
-          else setErr((e as Error).message);
+          const msg = (e as Error).message;
+          if (m === 'smart' && msg.includes('索引为空')) {
+            // 智能索引还没建：同一查询改走精确检索，页面给出说明（不让用户面对空结果）
+            setSmartUnavailable(true);
+            setParams({ q: query.trim(), mode: 'exact' }, { replace: true });
+          } else if (m === 'smart') setSmartErr(msg);
+          else setErr(msg);
         }
       } finally {
         if (seq === seqRef.current) setLoading(false);
       }
     },
-    [smartLimit]
+    [smartLimit, setParams]
   );
 
   // 智能检索加载中：1s 拉一次 RAG 状态，首次加载模型时给出阶段与已用时间
@@ -284,6 +290,11 @@ export default function Search() {
         placeholder={mode === 'smart' ? '用自然语言提问，如：孔子怎么看礼' : '多个关键词用空格分隔；精确短语用 "双引号"'}
         className="w-full px-3 py-2.5 rounded-lg border border-input bg-card text-sm mb-3"
       />
+      {mode === 'exact' && smartUnavailable && (
+        <div className="text-xs text-muted-foreground border border-border bg-muted/40 rounded p-2.5 mb-3">
+          智能检索尚未建索引，已改用精确检索。去 <Link to="/rag" className="text-primary underline">RAG 管理</Link> 下载模型并构建索引后可用智能检索。
+        </div>
+      )}
       {mode === 'exact' && (
       <div className="flex items-center gap-3 mb-4 flex-wrap text-xs">
         <div className="flex items-center gap-1">

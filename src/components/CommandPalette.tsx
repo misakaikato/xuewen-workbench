@@ -59,7 +59,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     navigate(to);
   };
   const openFile = (p: string) => go('/read/' + enc(p));
-  const fullText = () => go('/search?q=' + encodeURIComponent(q.trim()));
+  const fullText = () => go('/search?q=' + encodeURIComponent(q.trim()) + '&mode=exact');
 
   const fileItem = (p: string, key: string) => (
     <CommandItem key={key} value={p} onSelect={() => openFile(p)}>

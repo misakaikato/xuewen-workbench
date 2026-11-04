@@ -274,7 +274,7 @@ export default function Dashboard() {
                   <button
                     key={t.tag}
                     className="text-xs px-2 py-1 rounded-full border border-border hover:border-primary hover:text-primary flex items-center gap-1"
-                    onClick={() => navigate('/search?q=' + encodeURIComponent(t.tag))}
+                    onClick={() => navigate('/search?q=' + encodeURIComponent(t.tag) + '&mode=exact')}
                     title={t.files.slice(0, 5).map((f) => f.title).join('\n')}
                   >
                     {t.tag} <span className="stat-num text-muted-foreground">{t.count}</span>
@@ -319,7 +319,7 @@ export default function Dashboard() {
                   <button
                     key={t.topic}
                     className="text-xs px-2 py-1 rounded-full border border-border hover:border-primary hover:text-primary"
-                    onClick={() => navigate('/search?q=' + encodeURIComponent(t.topic))}
+                    onClick={() => navigate('/search?q=' + encodeURIComponent(t.topic) + '&mode=exact')}
                     title={t.files.slice(0, 5).join('\n')}
                   >
                     {t.topic} <span className="stat-num text-muted-foreground">{t.count}</span>
@@ -338,7 +338,7 @@ export default function Dashboard() {
                   <button
                     key={t.concept}
                     className="text-xs px-2 py-1 rounded-full border border-border hover:border-primary hover:text-primary"
-                    onClick={() => navigate('/search?q=' + encodeURIComponent(t.concept))}
+                    onClick={() => navigate('/search?q=' + encodeURIComponent(t.concept) + '&mode=exact')}
                     title={t.files.slice(0, 5).join('\n')}
                   >
                     {t.concept} <span className="stat-num text-muted-foreground">{t.count}</span>

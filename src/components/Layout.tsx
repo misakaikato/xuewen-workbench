@@ -149,7 +149,7 @@ export function Layout() {
               const v = treeFilter.trim();
               if (v.startsWith('>')) {
                 const qs = v.slice(1).trim();
-                if (qs) navigate('/search?q=' + encodeURIComponent(qs));
+                if (qs) navigate('/search?q=' + encodeURIComponent(qs) + '&mode=exact');
               }
             }
           }}
