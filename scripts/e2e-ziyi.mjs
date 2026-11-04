@@ -3,7 +3,8 @@
 // 设置页导入后：顶栏出现「字义」；单字选区只有「字义」，点开侧栏显示释义；两字选区有「记笔记」和「字义」；
 // 扩展区单字选区同样只有「字义」；Alt 点击某字侧栏切到该字且不触发其他动作；原位编辑态 Alt 不拦截（留给编辑器列选区）；
 // 侧栏内编辑保存后字义库页检索得到并高亮；字义库页新建。
-// 字形演变（假 zi.tools）：侧栏查字显示字形格、点开放大；关闭开关后不显示字形区、也不再请求。
+// 字形演变（假 zi.tools）：侧栏查字显示字形格、点开放大；上游不响应时同时取多个字也不卡住其它接口；
+// 关闭开关后不显示字形区、也不再请求。
 // 运行：npm run build && ./node_modules/.bin/electron scripts/e2e-ziyi.mjs
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
@@ -63,9 +64,11 @@ const base = `http://127.0.0.1:${port}`;
 // 假 zi.tools：任何字都返回两个代表字形（1×1 PNG），记录请求过的字
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
 const ziHits = [];
+let ziHang = false; // 模拟上游黑洞：收下请求但永不回应
 const fakeZi = http.createServer((req, res) => {
   const ch = decodeURIComponent(req.url).replace(/^\/api\/zi\//, '');
   ziHits.push(ch);
+  if (ziHang) return;
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ yi: { tubrief: [['k', '1', ch, ch, PNG, '甲骨', '商', '賓組', '', 1], ['k', '2', ch, ch, PNG, '篆', '秦', '說文', '', 1]] } }));
 });
@@ -308,6 +311,19 @@ async function main() {
   check('新建条目标为「本机新建」', (await exec(`document.querySelector('[data-wb-ziyi-detail] [data-wb-ziyi-origin]')?.textContent`)) === '本机新建');
   await until(`!!document.querySelector('[data-wb-ziyi-origin-opt="local"]')`);
   check('来源筛选出现「本机新建」', (await exec(`document.querySelector('[data-wb-ziyi-origin-opt="local"]').textContent`)).includes('1'));
+
+  // 上游不响应时，页面同时取 8 个没缓存的字形，其它接口仍立即返回（取字形不占住浏览器到后端的连接）
+  ziHang = true;
+  const stall = await exec(`(async () => {
+    const chars = [...'庚辛壬癸子丑寅卯'];
+    const glyphReqs = chars.map((c) => fetch('/api/ziyi/glyphs?han=' + encodeURIComponent(c)).then((r) => r.status));
+    const t0 = performance.now();
+    const ok = (await fetch('/api/ui-settings')).ok;
+    const ms = performance.now() - t0;
+    return { ok, ms, statuses: await Promise.all(glyphReqs) };
+  })()`);
+  check('上游卡住时取字形不拖慢其它接口', stall.ok && stall.ms < 1500 && stall.statuses.every((x) => x === 202), stall);
+  ziHang = false;
 
   // 关闭联网取字形：字义库页详情不再显示字形区，也不再请求
   await spaGo('/settings?tab=ziyi');

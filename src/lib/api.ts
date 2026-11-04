@@ -344,7 +344,10 @@ export const api = {
   ziyiExport: () => req<{ ok: boolean; file: string }>('/api/ziyi/export', json('POST', {})),
   ziyiUninstall: () => req<{ ok: boolean; backup: string | null }>('/api/ziyi', { method: 'DELETE' }),
   ziyiGlyphs: (han: string, refresh = false) =>
-    req<ZiyiGlyphs>('/api/ziyi/glyphs?han=' + encodeURIComponent(han) + (refresh ? '&refresh=1' : '')),
+    req<ZiyiGlyphs | { status: 'pending' }>('/api/ziyi/glyphs?han=' + encodeURIComponent(han) + (refresh ? '&refresh=1' : '')),
+  /** 不再看这个字：撤销还没开始的取字形（keepalive，页面切走时也能发出） */
+  ziyiGlyphsCancel: (han: string) =>
+    req<{ ok: boolean }>('/api/ziyi/glyphs?han=' + encodeURIComponent(han), { method: 'DELETE', keepalive: true }),
 };
 
 // ---------- 字义库 ----------
@@ -392,8 +395,9 @@ export interface ZiyiLookupItem {
   resolvedFrom: string | null;
 }
 
-/** 一个字的字形演变（来自 zi.tools，本机缓存） */
+/** 一个字的字形演变（来自 zi.tools，本机缓存）；还在取时接口返回 { status: 'pending' }（HTTP 202），隔一秒再问 */
 export interface ZiyiGlyphs {
+  status: 'ok';
   char: string;
   fetchedAt: string;
   /** zi.tools 上这个字的页面 */

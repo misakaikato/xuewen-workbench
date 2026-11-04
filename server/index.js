@@ -191,7 +191,7 @@ app.use('/api/rag', mountRag(ragManager, resolveLib));
 // 字义库：全局单字释义，用户导入的字义文件存 <数据目录>/ziyi/（不随程序分发）
 // 字形演变：查字时按需从 zi.tools 取并缓存在 <数据目录>/ziglyphs/，可在设置里关闭（ui-settings.ziyiGlyphs）
 app.use('/api/ziyi', mountZiyi(new ZiyiStore(path.join(dataDir(), 'ziyi'), { exportDir: process.env.WORKBENCH_DESKTOP_DIR }), {
-  glyphs: new ZiGlyphs(path.join(dataDir(), 'ziglyphs')),
+  glyphs: new ZiGlyphs(path.join(dataDir(), 'ziglyphs'), { enabled: () => getUiSettings().ziyiGlyphs }),
   glyphsEnabled: () => getUiSettings().ziyiGlyphs,
 }));
 
