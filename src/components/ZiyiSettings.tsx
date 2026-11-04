@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { Download, FileArchive, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { errorMessage, notify } from '@/lib/notify';
-import { refreshZiyiStatus, useZiyiStatus, ZIYI_ORIGIN_LABEL } from '@/lib/ziyi';
+import { refreshZiyiStatus, useZiyiStatus, ZIYI_ORIGIN_FILTERS } from '@/lib/ziyi';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
@@ -81,8 +81,8 @@ export default function ZiyiSettings() {
         ) : installed ? (
           <span>
             已导入 <span className="stat-num">{status.count}</span> 字
-            {(['lecture', 'ai', 'local'] as const).some((o) => status.origins[o]) && (
-              <>（{(['lecture', 'ai', 'local'] as const).filter((o) => status.origins[o]).map((o) => `${ZIYI_ORIGIN_LABEL[o]} ${status.origins[o]}`).join('，')}）</>
+            {status.count > 0 && (
+              <>（{ZIYI_ORIGIN_FILTERS.filter(([o]) => status.origins[o]).map(([o, label]) => `${label} ${status.origins[o]}`).join('，')}）</>
             )}
             {edited > 0 && <>，其中本地修改或新建 <span className="stat-num">{edited}</span> 字</>}
             {status.sourceName && <span className="text-xs text-muted-foreground">（来自 {status.sourceName}{status.importedAt ? '，' + new Date(status.importedAt).toLocaleString() : ''}）</span>}

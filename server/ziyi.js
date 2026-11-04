@@ -1,6 +1,7 @@
 // 字义库：全局（与资料库无关）的单字释义，用户在设置里导入字义文件，数据存 <数据目录>/ziyi/。
 // 字义文件不随程序分发：仓库与安装包里都没有字义数据。
-// 字义文件是一个 JSON（可装在 zip 里）：{ format: 'xuewen-ziyi', version: 1, entries: [{ han, variants?, origin?, meaning, source? }] }
+// 字义文件是一个 JSON（可装在 zip 里）：{ format: 'xuewen-ziyi', version: 1, entries: [{ han, variants?, origin?, meaning, source?, editedAt? }] }
+// editedAt 只出现在导出与备份里：导回后这些字仍算本地修改，再次导入时受「保留本地修改」保护。
 // origin 标出处：lecture 课堂讲解、ai AI 推导、local 本机新建；缺省为 null（未标注）。
 // 内存常驻一份 + 每条的归一化文本（繁→简等长映射，偏移可直接回到原文）；所有写操作经同一队列串行。
 import fs from 'node:fs';
@@ -57,6 +58,7 @@ function cleanVariants(han, v) {
 }
 
 const cleanOrigin = (o) => (ORIGINS.includes(o) ? o : null);
+const cleanEditedAt = (t) => (typeof t === 'string' && !Number.isNaN(Date.parse(t)) ? t : null);
 
 function stamp(d = new Date()) {
   const p = (n, w = 2) => String(n).padStart(w, '0');
@@ -110,6 +112,7 @@ export async function parsePack(buf) {
       source: typeof x.source === 'string' ? x.source : '',
       origin: cleanOrigin(x.origin),
       variants: cleanVariants(han, x.variants),
+      editedAt: cleanEditedAt(x.editedAt),
     });
   }
   return { entries, invalid, duplicates };
@@ -123,6 +126,7 @@ function sortedEntries(entries) {
 function packZipEntries(entries) {
   const out = sortedEntries(entries).map(([han, e]) => ({
     han, ...(e.variants.length ? { variants: e.variants } : {}), origin: e.origin, meaning: e.meaning, source: e.source,
+    ...(e.editedAt ? { editedAt: e.editedAt } : {}),
   }));
   return [{ name: PACK_FILE, data: JSON.stringify({ format: PACK_FORMAT, version: VERSION, entries: out }, null, 1) + '\n' }];
 }
@@ -237,13 +241,15 @@ export class ZiyiStore {
     return { han, unicode: unicodeOf(han), variants: e.variants, origin: e.origin, meaning: e.meaning, source: e.source, editedAt: e.editedAt };
   }
 
-  /** 字头 → 繁简归一后的字头 → 异体字（原字、归一后） */
+  /** 字头 → 明确声明的异体字 → 繁简归一后的字头 → 归一后的异体字 */
   _resolve(han) {
     if (this.entries.has(han)) return { han, resolvedFrom: null };
+    const v = this.variantOf.get(han);
+    if (v) return { han: v, resolvedFrom: han };
     const n = normalizeText(han);
     if (n !== han && this.entries.has(n)) return { han: n, resolvedFrom: han };
-    const v = this.variantOf.get(han) ?? this.variantOf.get(n);
-    if (v) return { han: v, resolvedFrom: han };
+    const vn = n !== han ? this.variantOf.get(n) : null;
+    if (vn) return { han: vn, resolvedFrom: han };
     return null;
   }
 
@@ -300,7 +306,7 @@ export class ZiyiStore {
       if (!terms.every((t) => n.han.includes(t) || n.meaning.includes(t) || n.source.includes(t))) continue;
       let tier;
       let count = 0;
-      if (n.han === qn) tier = 0;
+      if (n.heads.includes(qn)) tier = 0;
       else if (terms.some((t) => n.han.includes(t))) tier = 1;
       else {
         for (const t of terms) count += countOf(n.meaning, t);
@@ -388,13 +394,16 @@ export class ZiyiStore {
       const backup = this.installed ? this._backup() : null;
       const before = this.installed ? this.entries : new Map();
       const now = new Date().toISOString();
-      const next = new Map();
-      for (const [han, e] of incoming) next.set(han, { ...e, editedAt: null });
+      const next = new Map(incoming);
       let keptEdited = 0;
       if (keepEdited) {
+        // 保留本地改过的释义与出处；来源与异体字以新文件为准（新文件里没有这个字时沿用旧的）
         for (const [han, e] of before) {
           if (!e.editedAt) continue;
-          next.set(han, e);
+          const inc = incoming.get(han);
+          next.set(han, inc
+            ? { ...inc, meaning: e.meaning, source: e.source, origin: e.origin === 'local' ? 'local' : inc.origin, editedAt: e.editedAt }
+            : e);
           keptEdited++;
         }
       }
@@ -403,7 +412,7 @@ export class ZiyiStore {
       for (const [han, e] of next) {
         const old = before.get(han);
         if (!old) added++;
-        else if (old.meaning !== e.meaning || old.source !== e.source || old.origin !== e.origin) updated++;
+        else if (old.meaning !== e.meaning || old.source !== e.source || old.origin !== e.origin || old.variants.join('') !== e.variants.join('')) updated++;
       }
       let removed = 0;
       for (const han of before.keys()) if (!next.has(han)) removed++;
@@ -471,8 +480,10 @@ export class ZiyiStore {
   }
 }
 
+/** 检索用归一化文本：han 含字头与异体字（字头命中档），heads 为逐个的字头与异体字（精确命中档） */
 function normEntry(han, e) {
-  return { han: normalizeText(han), meaning: normalizeText(e.meaning), source: normalizeText(e.source) };
+  const heads = [han, ...e.variants].map(normalizeText);
+  return { han: heads.join(' '), heads, meaning: normalizeText(e.meaning), source: normalizeText(e.source) };
 }
 
 function countOf(hay, needle) {

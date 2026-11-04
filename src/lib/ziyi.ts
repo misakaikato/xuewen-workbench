@@ -35,6 +35,8 @@ export function useZiyiInstalled(): boolean {
 
 /** 出处的界面名称 */
 export const ZIYI_ORIGIN_LABEL: Record<ZiyiOrigin, string> = { lecture: '课堂讲解', ai: 'AI 推导', local: '本机新建' };
+/** 筛选与计数用：多一个「未标注」 */
+export const ZIYI_ORIGIN_FILTERS = [['lecture', '课堂讲解'], ['ai', 'AI 推导'], ['local', '本机新建'], ['none', '未标注']] as const;
 
 /** 字义库页地址 */
 export const ziyiHref = (han?: string) => '/ziyi' + (han ? '?han=' + encodeURIComponent(han) : '');

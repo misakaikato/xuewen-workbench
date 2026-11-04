@@ -177,6 +177,8 @@ check('zip 里两个 JSON 400', (await call('POST', '/api/ziyi/import', makeZip(
   check('lookup 命中与 resolvedFrom', lk[0].entry.han === '甲' && lk[2].entry.han === '枣' && lk[2].resolvedFrom === '棗' && lk[3].entry === null, lk);
   const v = await call('GET', '/api/ziyi/entry?han=' + encodeURIComponent('麴'));
   check('异体字回退到字头', v.status === 200 && v.json.entry.han === '曲' && v.json.resolvedFrom === '麴', v.json);
+  const vs = (await call('GET', '/api/ziyi/search?q=' + encodeURIComponent('麴'))).json;
+  check('检索异体字命中字头并排第一', vs.items[0]?.han === '曲' && vs.items[0].field === 'han', vs.items);
   const marks = (await call('GET', '/api/ziyi/lookup?text=' + encodeURIComponent('々〇⺀甲'))).json.items;
   check('lookup 不收々〇与部首', marks.map((x) => x.char).join('') === '甲', marks.map((x) => x.char));
   const many = (await call('GET', '/api/ziyi/lookup?text=' + encodeURIComponent('一二三四五六七八九十百千万亿'))).json.items;
@@ -238,6 +240,7 @@ const backupsDir = path.join(dataDir, 'ziyi', 'backups');
 {
   await call('PUT', '/api/ziyi/entry', { han: '𠀀', meaning: '扩展 B 区字，测试代理对。', create: true });
   const before = (await call('GET', '/api/ziyi/search?q=&limit=200')).json.items.map((x) => x.han);
+  const editedBefore = (await call('GET', '/api/ziyi/status')).json.editedCount;
   const snapshot = {};
   for (const han of before) snapshot[han] = (await call('GET', '/api/ziyi/entry?han=' + encodeURIComponent(han))).json.entry;
   check('扩展区 unicode 5 位', snapshot['𠀀'].unicode === '20000', snapshot['𠀀']);
@@ -259,6 +262,26 @@ const backupsDir = path.join(dataDir, 'ziyi', 'backups');
   check('导出再导入逐条一致', same);
   const s = (await call('GET', '/api/ziyi/status')).json;
   check('导出再导入来源计数一致', s.origins.lecture === 2 && s.origins.local === 1, s.origins);
+  check('导出再导入保留本地修改标记', editedBefore > 0 && s.editedCount === editedBefore, { editedBefore, after: s.editedCount });
+  const kept = (await call('POST', '/api/ziyi/import', PACK)).json;
+  check('从导出导回后再导入，本机新建的字仍被保留', (await call('GET', '/api/ziyi/entry?han=' + encodeURIComponent('𠀀'))).status === 200 && kept.keptEdited === editedBefore, kept);
+}
+
+// ---------- 保留本地修改时，来源与异体字以新文件为准；声明的异体字优先于繁简归一 ----------
+{
+  await call('POST', '/api/ziyi/import?keepEdited=0', packJson([ent('类', '旧版本', '', {}), ent('枣', '枣', '', { origin: 'ai' })]));
+  const cur = (await call('GET', '/api/ziyi/entry?han=类')).json.entry;
+  await call('PUT', '/api/ziyi/entry', { han: '类', meaning: '本地改过的类', source: '', expectEditedAt: cur.editedAt });
+  const r = (await call('POST', '/api/ziyi/import', packJson([
+    ent('类', '文件里的类', '', { origin: 'lecture', variants: ['㮚'] }),
+    ent('枣', '枣', '', { origin: 'ai', variants: ['乙'] }),
+    ent('甲', '甲，声明棗为异体', '', { origin: 'ai', variants: ['棗'] }),
+  ]))).json;
+  const lei = (await call('GET', '/api/ziyi/entry?han=类')).json.entry;
+  check('保留本地释义，来源与异体字取新文件', lei.meaning === '本地改过的类' && lei.origin === 'lecture' && JSON.stringify(lei.variants) === '["㮚"]' && !!lei.editedAt, lei);
+  check('只改异体字也计入更新（枣改异体、类改来源与异体）', r.updated === 2 && r.keptEdited === 1, r);
+  const z = (await call('GET', '/api/ziyi/entry?han=' + encodeURIComponent('棗'))).json;
+  check('明确声明的异体字优先于繁简归一', z.entry.han === '甲' && z.resolvedFrom === '棗', z);
 }
 
 // ---------- 无效包不动现有数据 ----------
@@ -339,6 +362,13 @@ await startServer();
   w(lec, '待.json', { han: '待', meaning: '待定', source: '' });
   w(lec, '空.json', { han: '空', meaning: '待定' });
   w(lec, '坏.json', '{ bad');
+  w(lec, '空值.json', 'null');
+  w(lec, '白.json', { han: '白', meaning: JSON.stringify({ p: [{ runs: [{ text: '  ' }] }] }), source: '' });
+  w(lec, '候.json', { han: '候', meaning: '（待定。）' });
+  w(lec, '衣.json', { han: '衣（衣字旁）', meaning: '课堂：衣' });
+  w(ai, '白.json', { han: '白', meaning: 'AI：白' });
+  w(ai, '候.json', { han: '候', meaning: 'AI：候' });
+  w(ai, '體.json', { han: '體', meaning: 'AI：體' });
   w(ai, '类.json', { han: '类', unicode: '7C7B', meaning: 'AI：类', source: 'ai' });
   w(ai, '待.json', { han: '待', unicode: '5F85', meaning: 'AI：待', source: 'ai' });
   w(ai, '新.json', { han: '新', unicode: '65B0', meaning: 'AI：新', source: 'ai' });
@@ -346,17 +376,23 @@ await startServer();
   const out = path.join(tmp, 'merged', '字义库.json');
   const run = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'build-ziyi-pack.mjs'), '--lecture', lec, '--ai', ai, '--out', out], { encoding: 'utf8' });
   check('合并脚本运行成功', run.status === 0, run.stderr);
-  check('合并脚本报告解析失败与跳过的文件名', run.stdout.includes('解析失败 1（坏.json）') && run.stdout.includes('跳过：1（空.json）'), run.stdout);
-  check('合并脚本报告重叠计数', run.stdout.includes('两边都有：2 字，其中用课堂讲解 1，课堂释义为空或「待定」改用 AI 推导 1'), run.stdout);
+  check('合并脚本报告解析失败（含 null）与跳过的文件名', run.stdout.includes('解析失败 2（坏.json、空值.json）') && run.stdout.includes('跳过：1（空.json）'), run.stdout);
+  check('合并脚本报告异体并入', run.stdout.includes('并入课堂字头：1（體.json）'), run.stdout);
+  check('合并脚本报告重叠计数（含异体并入、空白富文本、带标点的待定）', run.stdout.includes('两边都有：5 字，其中用课堂讲解 2，课堂释义为空或「待定」改用 AI 推导 3'), run.stdout);
+  check('合并脚本提示核对多异体字头', run.stdout.includes('≥2 个异体字 1（衣.json）'), run.stdout);
   const pack = JSON.parse(fs.readFileSync(out, 'utf8'));
   const by = Object.fromEntries(pack.entries.map((x) => [x.han, x]));
-  check('合并结果字头', pack.format === 'xuewen-ziyi' && Object.keys(by).sort().join('') === ['体', '待', '新', '类'].sort().join(''), Object.keys(by));
+  check('合并结果字头（體 并入 体，不单独成条）', pack.format === 'xuewen-ziyi' && Object.keys(by).sort().join('') === ['体', '待', '新', '类', '白', '候', '衣'].sort().join(''), Object.keys(by));
+  check('空白富文本算没有释义，改用 AI', by['白'].origin === 'ai' && by['白'].meaning === 'AI：白', by['白']);
+  check('「（待定。）」算没有释义，改用 AI', by['候'].origin === 'ai', by['候']);
   check('重叠以课堂讲解为准', by['类'].origin === 'lecture' && by['类'].meaning === '课堂：类' && JSON.stringify(by['类'].variants) === '["類"]', by['类']);
   check('课堂待定改用 AI 推导', by['待'].origin === 'ai' && by['待'].meaning === 'AI：待', by['待']);
   check('只在 AI 目录的为 AI 推导', by['新'].origin === 'ai', by['新']);
   check('富文本释义转纯文本、体-體 取异体', by['体'].meaning === '课堂：体' && JSON.stringify(by['体'].variants) === '["體"]', by['体']);
   const r = await call('POST', '/api/ziyi/import?name=' + encodeURIComponent('字义库.json'), fs.readFileSync(out));
-  check('合并结果可直接导入', r.status === 200 && r.json.count === 4, r.json);
+  check('合并结果可直接导入', r.status === 200 && r.json.count === 7, r.json);
+  const ti = await call('GET', '/api/ziyi/entry?han=' + encodeURIComponent('體'));
+  check('查繁体「體」落到课堂讲解', ti.json?.entry?.han === '体' && ti.json.entry.origin === 'lecture', ti.json);
   const t = await call('GET', '/api/ziyi/entry?han=' + encodeURIComponent('類'));
   check('导入后繁体字查到字头', t.json?.entry?.han === '类', t.json);
 }

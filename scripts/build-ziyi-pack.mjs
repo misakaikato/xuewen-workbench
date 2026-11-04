@@ -3,14 +3,17 @@
 //   --ai <目录>       AI 推导（每字一个 json）→ origin: ai
 //   --out <文件>      输出 { format: 'xuewen-ziyi', version: 1, entries: [...] }
 // 同一字两边都有时以课堂讲解为准；课堂那边释义为空或「待定」时用 AI 推导的。
+// 「同一字」含繁简与异体：AI 目录的字头若是某条课堂讲解的异体字或繁简对应字，并入那条课堂讲解的字头。
 // 只打印计数与文件名，不输出任何字义内容。
 // 运行：node scripts/build-ziyi-pack.mjs --lecture <hans 目录> --ai <annotations 目录> --out <字义库.json>
 import fs from 'node:fs';
 import path from 'node:path';
 import { PACK_FORMAT } from '../server/ziyi.js';
+import { normalizeText } from '../server/linkMatch.js';
 
 const HAN_G = /[㐀-䶿一-鿿豈-﫿\u{20000}-\u{3FFFF}]/gu;
-const PENDING = new Set(['', '待定']);
+// 空、「待定」及带括号句号的写法都算没有释义
+const isPending = (m) => !m || /^[\s（(【[]*待定[\s）)】\]。.！!]*$/.test(m);
 
 function arg(name) {
   const i = process.argv.indexOf(name);
@@ -21,7 +24,7 @@ function arg(name) {
   return process.argv[i + 1];
 }
 
-/** 个别条目是 docx 富文本 JSON（{"...":{"text":"..."}}），抽出全部 text 拼成纯文本；不是则原样返回 */
+/** 个别条目是 docx 富文本 JSON（{"...":{"text":"..."}}），抽出全部 text 拼成纯文本（可能为空串）；不是 JSON 则原样返回 */
 function richToText(s) {
   if (typeof s !== 'string') return '';
   if (!s.trimStart().startsWith('{')) return s;
@@ -41,8 +44,9 @@ function richToText(s) {
       }
     }
   };
+  if (!d || typeof d !== 'object') return s;
   walk(d);
-  return texts.length ? texts.join('\n') : s;
+  return texts.join('\n');
 }
 
 /** 读一个目录：返回 Map<字头, { variants, meaning, source, file, rich }>，以及解析失败、无字头的文件名 */
@@ -62,7 +66,11 @@ function readDir(dir) {
       bad.push(f);
       continue;
     }
-    const raw = typeof d?.han === 'string' && d.han.trim() ? d.han : f.replace(/\.json$/i, '');
+    if (!d || typeof d !== 'object' || Array.isArray(d)) {
+      bad.push(f);
+      continue;
+    }
+    const raw = typeof d.han === 'string' && d.han.trim() ? d.han : f.replace(/\.json$/i, '');
     const chars = [...new Set(raw.match(HAN_G) || [])];
     const head = chars[0];
     if (!head) { noHead.push(f); continue; }
@@ -85,19 +93,47 @@ const outFile = arg('--out');
 const L = readDir(lectureDir);
 const A = readDir(aiDir);
 
+// AI 目录的字头若是某条课堂讲解的异体字或繁简对应字，改挂到那条课堂讲解的字头上
+const alias = new Map();
+for (const [h, l] of L.map) {
+  for (const x of [h, ...l.variants]) {
+    for (const k of [x, normalizeText(x)]) if (!alias.has(k)) alias.set(k, h);
+  }
+}
+const aiMap = new Map();
+const aliased = [];
+const aliasClash = [];
+for (const [a, e] of A.map) {
+  const target = L.map.has(a) ? a : alias.get(a) ?? alias.get(normalizeText(a)) ?? a;
+  if (target !== a) aliased.push(e.file);
+  if (aiMap.has(target)) {
+    // 同一课堂字头下有两条 AI：字头完全相同的那条优先
+    aliasClash.push(e.file);
+    if (target !== a) continue;
+  }
+  aiMap.set(target, e);
+}
+// 异体字可疑：一个字头下 ≥2 个异体字，或异体字本身也是另一条的字头
+const manyVariants = [];
+const variantIsHead = [];
+for (const [h, l] of L.map) {
+  if (l.variants.length >= 2) manyVariants.push(l.file);
+  if (l.variants.some((v) => v !== h && (L.map.has(v) || aiMap.has(v)))) variantIsHead.push(l.file);
+}
+
 const entries = [];
 const stat = { lecture: 0, ai: 0, overlap: 0, overlapLecture: 0, overlapPendingUsedAi: 0, pendingSkipped: [] };
-const heads = [...new Set([...L.map.keys(), ...A.map.keys()])].sort((a, b) => a.codePointAt(0) - b.codePointAt(0));
+const heads = [...new Set([...L.map.keys(), ...aiMap.keys()])].sort((a, b) => a.codePointAt(0) - b.codePointAt(0));
 for (const han of heads) {
   const l = L.map.get(han);
-  const a = A.map.get(han);
-  const lectureOk = l && !PENDING.has(l.meaning);
+  const a = aiMap.get(han);
+  const lectureOk = l && !isPending(l.meaning);
   if (l && a) stat.overlap++;
   if (lectureOk) {
     if (a) stat.overlapLecture++;
     entries.push({ han, ...(l.variants.length ? { variants: l.variants } : {}), origin: 'lecture', meaning: l.meaning, source: l.source });
     stat.lecture++;
-  } else if (a && !PENDING.has(a.meaning)) {
+  } else if (a && !isPending(a.meaning)) {
     if (l) stat.overlapPendingUsedAi++;
     const variants = l ? l.variants : a.variants;
     entries.push({ han, ...(variants.length ? { variants } : {}), origin: 'ai', meaning: a.meaning, source: a.source });
@@ -113,6 +149,8 @@ fs.writeFileSync(outFile, JSON.stringify({ format: PACK_FORMAT, version: 1, gene
 const list = (xs) => (xs.length ? `${xs.length}（${xs.slice(0, 10).join('、')}${xs.length > 10 ? ' …' : ''}）` : '0');
 console.log(`课堂讲解目录：${L.map.size} 字；解析失败 ${list(L.bad)}；无字头 ${list(L.noHead)}；同字多文件 ${list(L.dup)}；文件名与 han 字段首字不一致 ${list(L.headMismatch)}；富文本转纯文本 ${L.rich}`);
 console.log(`AI 推导目录：${A.map.size} 字；解析失败 ${list(A.bad)}；无字头 ${list(A.noHead)}；同字多文件 ${list(A.dup)}；文件名与 han 字段首字不一致 ${list(A.headMismatch)}；富文本转纯文本 ${A.rich}`);
+console.log(`AI 字头按异体或繁简并入课堂字头：${list(aliased)}；并入时同一课堂字头下已有 AI 条目而舍去：${list(aliasClash)}`);
 console.log(`两边都有：${stat.overlap} 字，其中用课堂讲解 ${stat.overlapLecture}，课堂释义为空或「待定」改用 AI 推导 ${stat.overlapPendingUsedAi}`);
+console.log(`请核对异体字：一个字头带 ≥2 个异体字 ${list(manyVariants)}；异体字本身也是字头 ${list(variantIsHead)}`);
 console.log(`两边都没有可用释义而跳过：${list(stat.pendingSkipped)}`);
 console.log(`输出 ${entries.length} 字（课堂讲解 ${stat.lecture}，AI 推导 ${stat.ai}）→ ${path.resolve(outFile)}（${(fs.statSync(outFile).size / 1048576).toFixed(1)} MB）`);
