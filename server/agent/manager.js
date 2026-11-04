@@ -13,9 +13,11 @@ import { decodeText } from '../textDecode.js';
 import { applySettings, readSettings, SETTABLE, buildPatch, normalizeCategory } from './settings.js';
 import { generateImage, uniapiKey } from './imagegen.js';
 import { isWithin } from '../paths.js';
-import { preserveCorrupt, writeFileAtomic, writeJsonAtomic } from '../atomicFile.js';
+import { preserveCorrupt, renameWithRetry, writeFileAtomic, writeJsonAtomic } from '../atomicFile.js';
 
 const CONV_META = 'conversations.json';
+// pi 会话文件名：<ISO 时间戳，: 与 . 换成 ->_<会话 id>.jsonl（SessionManager 生成）
+export const PI_SESSION_FILE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_.+\.jsonl$/;
 // 生成中的回复每约 2 秒或每新增 2000 字写一次「进行中」记录（<convId>.partial.json）
 const PARTIAL_EVERY_MS = 2000;
 const PARTIAL_EVERY_CHARS = 2000;
@@ -28,6 +30,20 @@ const TOOL_NAMES = ['read', 'bash', 'search_corpus', 'rag_search', 'read_doc', '
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+// conversations.json 的内容校验：对象，且 conversations 缺省或为数组；不合格返回 null（按损坏处理）
+function parseConvMeta(raw) {
+  try {
+    const m = JSON.parse(raw);
+    if (m && typeof m === 'object' && !Array.isArray(m) && (m.conversations === undefined || Array.isArray(m.conversations))) {
+      return {
+        conversations: m.conversations || [],
+        folders: Array.isArray(m.folders) ? m.folders : [],
+      };
+    }
+  } catch { /* 按损坏处理 */ }
+  return null;
 }
 
 export class AgentHub {
@@ -54,6 +70,7 @@ export class AgentHub {
     this._modelRuntime = null;
     this._ctxWindow = 0; // 端点模型的真实上下文窗口（0=未知，回退 128000）
     this._ctxProbed = false; // 上下文窗口探测是否已做过（推迟到助手开启时，见 setEnabled）
+    this._metaRebuilt = false; // 本进程内重建过对话索引：会话文件引用是按文件名推断的，启动清理不据此删文件
     this._syncModelsJson();
     this._recoverInterrupted();
   }
@@ -152,14 +169,19 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     const legacy = path.join(dataDir, 'agent');
     if (!fs.existsSync(legacy)) return;
     try {
-      // skills 目录：旧有新的没有时整体搬过来
+      // skills：新目录缺的逐个改名搬过来（同一数据目录内改名是原子的，中断后再启动接着补齐）；
+      // 新目录已有同名的保留旧份不动。点开头的是安装中断的临时目录，不搬
       const oldSkills = path.join(legacy, 'skills');
       const newSkills = path.join(this.agentDir, 'skills');
-      if (fs.existsSync(oldSkills) && fs.readdirSync(oldSkills).length && !fs.readdirSync(newSkills).length) {
+      if (fs.existsSync(oldSkills)) {
+        const moved = [];
         for (const name of fs.readdirSync(oldSkills)) {
-          fs.cpSync(path.join(oldSkills, name), path.join(newSkills, name), { recursive: true });
+          if (name.startsWith('.') || fs.existsSync(path.join(newSkills, name))) continue;
+          renameWithRetry(path.join(oldSkills, name), path.join(newSkills, name));
+          moved.push(name);
         }
-        console.log('[agent] 已迁移 skills:', fs.readdirSync(newSkills).join(', '));
+        if (moved.length) console.log('[agent] 已迁移 skills:', moved.join(', '));
+        if (fs.readdirSync(oldSkills).length === 0) fs.rmdirSync(oldSkills);
       }
       // mcp.json
       const oldMcp = path.join(legacy, 'mcp.json');
@@ -256,16 +278,32 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
       if (e.code === 'ENOENT') return { conversations: [], folders: [] };
       throw e; // 读不到不等于没有：不返回空列表，免得下一次写入覆盖掉全部对话索引
     }
+    return parseConvMeta(raw) || this._rebuildMeta(file);
+  }
+
+  /**
+   * 启动清理用：各库对话目录，以及对话索引里引用的 pi 会话文件名与显示记录名 <convId>.jsonl。
+   * 索引不存在、读不到、损坏，或本进程内重建过时返回 null，调用方不删任何会话文件。
+   */
+  async sessionFileRefs() {
+    if (this._metaRebuilt) return null;
+    let meta;
     try {
-      const m = JSON.parse(raw);
-      if (m && typeof m === 'object' && !Array.isArray(m) && (m.conversations === undefined || Array.isArray(m.conversations))) {
-        return {
-          conversations: m.conversations || [],
-          folders: Array.isArray(m.folders) ? m.folders : [],
-        };
-      }
-    } catch { /* 下面按损坏处理 */ }
-    return this._rebuildMeta(file);
+      meta = parseConvMeta(await fs.promises.readFile(this._metaPath(), 'utf8'));
+    } catch {
+      return null;
+    }
+    if (!meta) return null;
+    const keep = new Set();
+    for (const c of meta.conversations) {
+      if (c?.id) keep.add(`${c.id}.jsonl`);
+      if (c?.piSessionFile) keep.add(path.basename(String(c.piSessionFile)));
+    }
+    let dsIds = [];
+    try {
+      dsIds = (await fs.promises.readdir(path.join(this.dataDir, 'knowledge'), { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name);
+    } catch { /* 还没有任何库 */ }
+    return { dirs: dsIds.map((dsId) => this._convDir(dsId)), keep };
   }
 
   /**
@@ -310,6 +348,7 @@ description: 在用户自己的资料库中检索、阅读、问答与管理的�
     }
     const meta = { conversations, folders: [] };
     this._saveMeta(meta);
+    this._metaRebuilt = true;
     console.warn(`[agent] conversations.json 无法解析，已另存为 ${path.basename(kept)}；从对话记录重建了 ${conversations.length} 个对话（文件夹归属未恢复）`);
     return meta;
   }

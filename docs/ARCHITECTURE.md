@@ -125,6 +125,7 @@ flowchart TB
 | `host.js` | 托管模式（utilityProcess）下与主进程的 RPC、启动进度与就绪上报；独立运行时为空操作 |
 | `logger.js` / `logInit.js` / `lagWatch.js` | 分进程日志（接管 console 写文件、5MB 轮转）与事件循环卡顿看门狗；`logInit.js` 必须是 `index.js` 的第一条 import |
 | `diagnostics.js` / `zip.js` | 异常事件记录（`incidents.jsonl`）与诊断 zip 导出 |
+| `startupSweep.js` | 启动清理：就绪后延迟执行一次，清中断残留、给备份与 incidents 设上限、重交 `.trash` 中转、删不再被引用的会话文件（§5.2） |
 
 **前端 `src/`**：路由 `/`（概览）、`/setup`、`/browse`、`/read/*`、`/edit/*`、`/search`、`/rag`、`/agent`、`/settings`，定义在 `src/App.tsx`（概览以外的页面 `React.lazy` 按需加载，Suspense fallback 用骨架屏）；接口封装在 `src/lib/api.ts`；三套主题 A 宣纸书卷 / B 现代极简 / C 夜读在 `src/styles/themes.css`，可在设置里切换。
 
@@ -149,11 +150,11 @@ flowchart TB
 
 - **旁注 `.meta.json`**：命名 `<原文件名含扩展名>.meta.json`，避免同名不同格式冲突。字段以 `schema/meta.schema.json` 为准，导入格式见 `schema/meta-import.schema.json`。`id`、`created_at` 由程序生成且永不改；`content_hash` 由程序维护：导入时计算，保存时同步。应用内改名、移动、删除时旁注跟随；应用外移动造成的孤立旁注或缺旁注文档只报告（`/api/meta/issues`），不静默处理。
 - **`.derived/`**：判据是“字段丢了能否从正文重算”——能重算的放这里，不能的进旁注。完整协议见 [derived-data-protocol.md](./derived-data-protocol.md)；旧目录名 `.xuewen/` 首次读取时自动迁移。
-- **删除**：先原子移入 `.trash/<时间戳>__<名称>/`（连同旁注）；Electron 下再交给系统回收站，失败则留在 `.trash/`。
+- **删除**：先原子移入 `.trash/<时间戳>__<名称>/`（连同旁注）；Electron 下再交给系统回收站，失败则留在 `.trash/`，下次启动清理时再交一次（没有系统回收站时 `.trash/` 就是回收站，不动）。
 
 ### 5.2 应用数据目录：`~/.xuewen-workbench`，开发与打包共用
 
-位置由 `server/store.js` 决定：环境变量 `WORKBENCH_DATA_DIR` 优先，否则为用户目录下的 `.xuewen-workbench`（Windows 为 `%USERPROFILE%`）。该目录不存在时，首次启动会把仓库内的 `server/data/`（早期开发数据位置）整体迁过来；旧的 `sources/<dsId>/` 会迁到 `knowledge/<dsId>/`。
+位置由 `server/store.js` 决定：环境变量 `WORKBENCH_DATA_DIR` 优先，否则为用户目录下的 `.xuewen-workbench`（Windows 为 `%USERPROFILE%`）。该目录不存在时，首次启动会把仓库内的 `server/data/`（早期开发数据位置）整体迁过来；旧的 `sources/<dsId>/` 逐项合并到 `knowledge/<dsId>/`（两边同名的条目保留 `knowledge/` 的）。
 
 ```
 ~/.xuewen-workbench/
@@ -180,6 +181,8 @@ flowchart TB
 
 `dsId` 由语料目录绝对路径哈希得出：同一目录移出工作区再加回，数据全部恢复。
 
+**启动清理与上限**：`server/startupSweep.js` 在后端就绪 30 秒后异步执行一次，只认文件开头列出的本应用命名规则与自有目录，修改时间不到 1 小时的临时文件不动。备份每个文档保留最近 20 份、每库总量不超过 500MB；`logs/incidents.jsonl` 超过 1MB 时保留最近 500 条。刻意不删的：`*.wb-case-*` 是仅大小写改名中途的条目本身，原名空着时改回原名；`models/` 与 `py/`（第三方 Python 环境）不进入，模型目录只删另一后端的 `.part`；对话索引缺失、损坏、本次启动重建过或读不到时不删会话文件。Word 缓存（`cache/word-*.json`、`cache/word-assets/`）在每次完整扫描并建完索引后按快照回收（`server/word.js` 的 `reclaimWordCache`），扫描有读不到的目录或文件时不回收。
+
 ---
 
 ## 6. 关键机制
@@ -191,7 +194,7 @@ flowchart TB
 chokidar 监听每个库，变化合并防抖后重扫并更新精确索引、内链与 RAG（RAG 按 mtime + size 对账）。扫描跳过隐藏目录（`.git`、`.trash` 等）和旁注；`.derived/` 只在设置打开「显示元数据文件」时进入目录树。网络盘上监听可能失效，顶栏有「重新扫描」手动入口，它会强制重建内链索引。
 
 ### 6.3 保存：原子写回 + 写前备份 + 冲突检测
-先写临时文件再替换；旧版本备份到 `knowledge/<dsId>/backups/<相对路径>.<时间戳>.bak`。磁盘内容被外部改过时，前端给出「重新加载 / 覆盖 / 继续编辑」。未保存内容有路由拦截和按库隔离的本地草稿。
+先写临时文件再替换；旧版本备份到 `knowledge/<dsId>/backups/<相对路径>.<时间戳>.bak`（上限见 §5.2）。磁盘内容被外部改过时，前端给出「重新加载 / 覆盖 / 继续编辑」。未保存内容有路由拦截和按库隔离的本地草稿。
 
 ### 6.4 自动内链：只在渲染层，引擎改输出必须升版本号
 词条来自文档标题 / 文件名、旁注 `aliases`、标题锚点、JSON 的 title 字段、`.derived` 概念名与别名；匹配用“核心词 + 包装”模型（编号前缀、系列 / 注释后缀等），最长匹配优先，排除不像名称的文件名，支持屏蔽词表与繁简互通。与显式引用 `集合名|文件名` 并存。
@@ -279,7 +282,7 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 
 ## 8. 构建、发布与测试
 
-**开发**：`npm run dev` 同时起后端（7410）与 Vite（3000）；`npm run electron:dev` 在壳里跑。环境变量：`WORKBENCH_DATA_DIR`、`WORKBENCH_PORT`、`WORKBENCH_HOST`、`WORKBENCH_STATIC_DIR`、`WORKBENCH_RAG_EMBED`、`WORKBENCH_RAG_ONNX_EP`、`WORKBENCH_RAG_MODEL_HOSTS`（逗号分隔，测试用）、`WORKBENCH_LAG_THRESHOLD_MS`（看门狗阈值，测试用）。
+**开发**：`npm run dev` 同时起后端（7410）与 Vite（3000）；`npm run electron:dev` 在壳里跑。环境变量：`WORKBENCH_DATA_DIR`、`WORKBENCH_PORT`、`WORKBENCH_HOST`、`WORKBENCH_STATIC_DIR`、`WORKBENCH_RAG_EMBED`、`WORKBENCH_RAG_ONNX_EP`、`WORKBENCH_RAG_MODEL_HOSTS`（逗号分隔，测试用）、`WORKBENCH_LAG_THRESHOLD_MS`（看门狗阈值，测试用）、`WORKBENCH_SWEEP_DELAY_MS`（启动清理延迟，测试用）。
 
 **发布**：代码仓库是公开的 GitHub 仓库 `misakaikato/xuewen-workbench`，坐标写在 `package.json` 的 `build.publish`。`npm version patch` 打 tag 并推送后，`.github/workflows/release.yml` 依次执行：
 1. `prepare` 预建唯一的 draft release，避免多个发布器各建一个 draft；
@@ -306,6 +309,7 @@ Electron 主进程同时承担 Windows 的窗口消息循环，后端曾在其�
 | `node scripts/test-scan-async.mjs` / `node scripts/test-index-status.mjs` | 异步扫描与旧同步扫描逐项一致、不阻塞事件循环；`/api/status` 索引阶段字段 |
 | `node scripts/test-slow-fs.mjs [--rev <版本>]` | 注入慢文件操作与缓存改名 EPERM：扫描与建索引期间 `/api/status` 单次 ≤ 400ms、索引按时完成、Word 正文可检索、慢操作与改名失败有 WARN；`--rev` 用指定版本的 `server/` 跑同一套断言作对照 |
 | `./node_modules/.bin/electron scripts/e2e-index-visibility.mjs` / `e2e-files-feedback.mjs` | 后台指示与「结果可能不完整」；文件操作与其余入口的忙碌态、慢提示、失败提示 |
+| `node scripts/test-startup-sweep.mjs` | 中断恢复（启动清理）：各条清理规则（超过 1 小时的删、不到 1 小时的与用户同类名字保留）、备份与 incidents 上限、Word 缓存回收、`.trash` 中转重交（系统回收站用桩）、会话文件清理与索引损坏时跳过；旧版数据、sources、skills 迁移中断后再次启动迁完 |
 | `node scripts/test-interrupted-backend.mjs` | 中断恢复（后端）：半截 MLX 运行时重解压与取消清理、复制失败回滚、对话索引重建、助手上下文续接/半截回复/会话损坏与格式错误回退、下载跳过已完成文件、RAG 暂停持久化与切块参数、划线记录与 mcp.json 坏文件保留 |
 | `node scripts/test-agent-toggle.mjs` | 助手总开关：缺省关闭、409 语义、非法值 400、关闭时不探测模型端点、关闭时中止生成与待确认的工具调用 |
 | `./node_modules/.bin/electron scripts/e2e-agent-toggle.mjs` | 助手总开关的全部界面入口：关闭时隐藏、设置页切换即时生效（先 `npm run build`）；既有助手 e2e 在准备阶段先打开开关 |

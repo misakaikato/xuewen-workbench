@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import mammoth from 'mammoth';
 import WordExtractor from 'word-extractor';
-import { cacheDirAsync, readJsonAsync, writeJsonAtomicAsync } from './store.js';
+import { cacheDirAsync, knowledgeDir, readJsonAsync, writeJsonAtomicAsync } from './store.js';
 import { withActivity } from './lagWatch.js';
 
 const extractor = new WordExtractor();
@@ -56,6 +56,15 @@ function escapeHtml(s) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// 资产目录名 <缓存键>-<mtime>：/api/word/asset 校验与缓存回收共用
+export const WORD_ASSET_KEY = /^[0-9a-f]{40}-\d+(\.\d+)?$/;
+const WORD_CACHE_FILE = /^word-([0-9a-f]{40})\.json$/;
+
+/** 缓存键：由文档相对路径算出，解析缓存 word-<键>.json 与图片目录 word-assets/<键>-<mtime> 共用 */
+export function wordCacheKey(relPath) {
+  return crypto.createHash('sha1').update(relPath).digest('hex');
 }
 
 // 图片外置：不内嵌 data URI（26MB docx 会产生 36MB JSON 响应），写到
@@ -160,7 +169,7 @@ const WORD_CACHE_VERSION = 2;
 
 export async function parseWord(dsId, absPath, relPath, mtimeMs) {
   const ext = path.extname(absPath).toLowerCase();
-  const key = crypto.createHash('sha1').update(relPath).digest('hex');
+  const key = wordCacheKey(relPath);
   const cacheRoot = await cacheDirAsync(dsId);
   const cacheFile = path.join(cacheRoot, 'word-' + key + '.json');
   const cached = await readJsonAsync(cacheFile, null);
@@ -204,4 +213,36 @@ export async function extractWordText(dsId, absPath, relPath, mtimeMs) {
   } catch {
     return null;
   }
+}
+
+// 回收 Word 缓存：删除快照里已不存在的文档对应的 word-<键>.json 与 word-assets/<键>-* 目录。
+// 保留的键由快照里每个 Word 文档的 relPath 经 wordCacheKey 算出；只认上面两种命名，其余文件不动。
+// shouldStop() 为真（本轮扫描被取代或新扫描已开始）时立即停止。返回删除的条目数。
+export async function reclaimWordCache(dsId, snapshot, shouldStop = () => false) {
+  const keep = new Set();
+  for (const f of [...snapshot.files, ...(snapshot.derivedFiles || [])]) {
+    if (f.ext === '.doc' || f.ext === '.docx') keep.add(wordCacheKey(f.path));
+  }
+  const cacheRoot = path.join(knowledgeDir(dsId), 'cache');
+  const stale = [];
+  for (const name of await fs.promises.readdir(cacheRoot).catch(() => [])) {
+    const key = WORD_CACHE_FILE.exec(name)?.[1];
+    if (key && !keep.has(key)) stale.push(path.join(cacheRoot, name));
+  }
+  const assets = path.join(cacheRoot, 'word-assets');
+  for (const name of await fs.promises.readdir(assets).catch(() => [])) {
+    if (WORD_ASSET_KEY.test(name) && !keep.has(name.slice(0, 40))) stale.push(path.join(assets, name));
+  }
+  let removed = 0;
+  for (const p of stale) {
+    if (shouldStop()) break;
+    try {
+      await fs.promises.rm(p, { recursive: true, force: true });
+      removed++;
+    } catch (e) {
+      console.warn(`[word] 回收缓存失败：${p}：${e.code || e.message}`);
+    }
+  }
+  if (removed) console.log(`[word] 回收已删除文档的 Word 缓存 ${removed} 项（${dsId}）`);
+  return removed;
 }

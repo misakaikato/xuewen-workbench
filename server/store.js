@@ -23,7 +23,7 @@ function migrateIfNeeded() {
       fs.renameSync(oldDir, USER_DATA_DIR);
       console.log(`[store] 数据目录迁移: ${oldDir} → ${USER_DATA_DIR}`);
     } catch (e) {
-      console.warn('[store] 迁移失败，继续使用旧位置:', e.message);
+      console.warn(`[store] 数据目录改名失败，继续使用新位置 ${USER_DATA_DIR}，旧数据留在 ${oldDir}:`, e.message);
     }
   }
 }
@@ -40,13 +40,27 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 // 旧版本（v0.1.1–v0.1.3）数据迁移：那些版本把数据放 Electron userData/data，
 // v0.1.4 起改到 ~/.xuewen-workbench。主进程 import 本文件前设置 WORKBENCH_LEGACY_DATA_DIR；
 // 后端进程（WORKBENCH_HOSTED=1）跳过，避免两进程同时搬。新数据目录已有资料库则不迁移。
+// config.json 最后迁：它不在旧目录而旧目录还有条目、又没有 MIGRATED.txt，说明上次在它之后中断
+// （或旧版本先迁了它），这时把剩下的条目接着迁完并写 MIGRATED.txt。
+const MIGRATED_MARK = 'MIGRATED.txt';
 export function migrateLegacyUserData(legacyDir, targetDir) {
   if (!legacyDir) return { migrated: false };
   const legacy = path.resolve(legacyDir);
   const target = path.resolve(targetDir || DATA_DIR);
   if (legacy === target || !fs.existsSync(legacy)) return { migrated: false };
   const legacyConfig = path.join(legacy, 'config.json');
-  if (!fs.existsSync(legacyConfig)) return { migrated: false };
+  if (!fs.existsSync(legacyConfig)) {
+    if (fs.existsSync(path.join(legacy, MIGRATED_MARK))) return { migrated: false };
+    let rest = [];
+    try {
+      rest = fs.readdirSync(legacy);
+    } catch (e) {
+      console.warn('[store] 旧版数据目录读取失败:', e.message);
+      return { migrated: false, reason: e.message };
+    }
+    if (!rest.length) return { migrated: false };
+    return moveLegacyEntries(legacy, target, rest, true);
+  }
   const newHasLibs = (() => {
     try {
       const raw = JSON.parse(fs.readFileSync(path.join(target, 'config.json'), 'utf8'));
@@ -60,21 +74,25 @@ export function migrateLegacyUserData(legacyDir, targetDir) {
     console.warn(`[store] 旧版数据目录 ${legacy} 与新数据目录 ${target} 都含资料库，不迁移，请手动处理`);
     return { migrated: false, reason: 'both-have-libs' };
   }
+  return moveLegacyEntries(legacy, target, fs.readdirSync(legacy), false);
+}
+
+// 逐项改名搬到目标目录（目标已有的条目跳过），config.json 放在最后，全部完成才写 MIGRATED.txt
+function moveLegacyEntries(legacy, target, names, resumed) {
   try {
-    for (const name of fs.readdirSync(legacy)) {
-      const from = path.join(legacy, name);
+    for (const name of names) {
+      if (name === 'config.json' || name === MIGRATED_MARK) continue;
       const to = path.join(target, name);
-      if (name === 'config.json') {
-        if (fs.existsSync(to)) fs.rmSync(to, { force: true }); // 目标无资料库，旧配置直接覆盖
-        fs.renameSync(from, to);
-      } else if (!fs.existsSync(to)) {
-        fs.renameSync(from, to);
-      }
-      // 其余已存在条目跳过
+      if (!fs.existsSync(to)) fs.renameSync(path.join(legacy, name), to);
     }
-    fs.writeFileSync(path.join(legacy, 'MIGRATED.txt'), `数据已迁移到 ${target}\n`, 'utf8');
-    console.log(`[store] 旧版数据迁移: ${legacy} → ${target}`);
-    return { migrated: true };
+    if (names.includes('config.json')) {
+      const to = path.join(target, 'config.json');
+      if (fs.existsSync(to)) fs.rmSync(to, { force: true }); // 目标无资料库，旧配置直接覆盖
+      fs.renameSync(path.join(legacy, 'config.json'), to);
+    }
+    fs.writeFileSync(path.join(legacy, MIGRATED_MARK), `数据已迁移到 ${target}\n`, 'utf8');
+    console.log(`[store] 旧版数据迁移${resumed ? '（续迁上次中断的剩余条目）' : ''}: ${legacy} → ${target}`);
+    return { migrated: true, ...(resumed ? { resumed: true } : {}) };
   } catch (e) {
     console.warn('[store] 旧版数据迁移失败:', e.message);
     return { migrated: false, reason: e.message };
@@ -85,23 +103,39 @@ if (process.env.WORKBENCH_HOSTED !== '1') {
   migrateLegacyUserData(process.env.WORKBENCH_LEGACY_DATA_DIR || null, DATA_DIR);
 }
 
-// 一次性迁移：sources/<dsId>/ → knowledge/<dsId>/（记忆层设计要求库数据统一在 knowledge/ 下）
-try {
-  const oldSources = path.join(DATA_DIR, 'sources');
-  const newKnowledge = path.join(DATA_DIR, 'knowledge');
-  if (fs.existsSync(oldSources)) {
-    fs.mkdirSync(newKnowledge, { recursive: true });
-    for (const name of fs.readdirSync(oldSources)) {
-      const from = path.join(oldSources, name);
-      const to = path.join(newKnowledge, name);
-      if (!fs.existsSync(to)) fs.renameSync(from, to);
+// 一次性迁移：sources/<dsId>/ → knowledge/<dsId>/（记忆层设计要求库数据统一在 knowledge/ 下）。
+// 目标已存在时逐项合并：目标缺的条目改名搬过去，两边都是目录就往下一层合并，两边同名文件保留目标的；
+// 搬空的目录删掉，有冲突留下的条目原地保留。中断后再启动会接着合并。
+export function migrateSourcesToKnowledge(dataDir) {
+  const oldSources = path.join(dataDir, 'sources');
+  if (!fs.existsSync(oldSources)) return { moved: 0, kept: 0 };
+  const stat = { moved: 0, kept: 0 };
+  const merge = (from, to) => {
+    for (const ent of fs.readdirSync(from, { withFileTypes: true })) {
+      const src = path.join(from, ent.name);
+      const dst = path.join(to, ent.name);
+      if (!fs.existsSync(dst)) {
+        fs.renameSync(src, dst);
+        stat.moved++;
+      } else if (ent.isDirectory() && fs.statSync(dst).isDirectory()) {
+        merge(src, dst);
+      } else {
+        stat.kept++;
+      }
     }
-    // 全部迁完才删空目录
-    if (fs.readdirSync(oldSources).length === 0) fs.rmdirSync(oldSources);
+    if (fs.readdirSync(from).length === 0) fs.rmdirSync(from);
+  };
+  try {
+    fs.mkdirSync(path.join(dataDir, 'knowledge'), { recursive: true });
+    merge(oldSources, path.join(dataDir, 'knowledge'));
+    if (stat.kept) console.warn(`[store] sources → knowledge：${stat.kept} 个条目与 knowledge 中已有的同名，保留在 sources/ 原处`);
+  } catch (e) {
+    console.warn('[store] sources → knowledge 迁移失败:', e.message);
   }
-} catch (e) {
-  console.warn('[store] sources → knowledge 迁移失败:', e.message);
+  return stat;
 }
+
+migrateSourcesToKnowledge(DATA_DIR);
 
 export function dataDir() {
   return DATA_DIR;

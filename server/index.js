@@ -23,7 +23,8 @@ import { mountRag } from './rag/routes.js';
 import { AgentHub } from './agent/manager.js';
 import { mountAgent } from './agent/routes.js';
 import { Indexer } from './indexer.js';
-import { parseWord, wordCapability } from './word.js';
+import { parseWord, wordCapability, reclaimWordCache, WORD_ASSET_KEY } from './word.js';
+import { scheduleStartupSweep } from './startupSweep.js';
 import { LinkIndex } from './links.js';
 import { loadDerived, loadTopics, DERIVED_DIR } from './derived.js';
 import { decodeText, encodingLabel } from './textDecode.js';
@@ -111,6 +112,7 @@ class Lib {
       const total = snapshot.files.length;
       const startedAt = Date.now();
       const isCurrent = () => this.indexing === run;
+      let indexed = false;
       this.indexError = null;
       this.indexState = { phase: 'text', done: 0, total, startedAt };
       try {
@@ -121,11 +123,18 @@ class Lib {
         await this.linkIndex.rebuild(snapshot, this.indexer, (done) => {
           if (isCurrent()) this.indexState = { phase: 'links', done, total, startedAt };
         }); // 自动内链索引随文本索引之后增量更新
+        indexed = true;
       } catch (e) {
         if (isCurrent()) this.indexError = String(e?.message || e);
         console.error(`[${this.name}] 索引构建失败:`, e.message);
       } finally {
         if (isCurrent()) this.indexState = { phase: null, done: 0, total: 0, startedAt: null };
+      }
+      // 扫描完整（无目录或文件读取错误）且索引建成、仍是最新一轮时，后台回收已删除文档的 Word 缓存；
+      // 不等它完成，写操作等待的 indexing 不因此变慢
+      if (indexed && isCurrent() && !snapshot.dirErrors.length && !snapshot.fileErrors.length) {
+        reclaimWordCache(this.id, snapshot, () => !isCurrent() || this.scanner.running)
+          .catch((e) => console.warn(`[${this.name}] Word 缓存回收失败：${e.message}`));
       }
       // 已有 RAG 索引的库自动增量（从未建过的不自动）
       ragManager.onScanComplete(this.id);
@@ -1925,7 +1934,6 @@ const WORD_ASSET_TYPES = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
 };
-const WORD_ASSET_KEY = /^[0-9a-f]{40}-\d+(\.\d+)?$/;
 const WORD_ASSET_NAME = /^img-\d+\.(png|jpeg|gif|webp|bmp)$/;
 app.get('/api/word/asset', (req, res) => {
   const lib = requireLib(res, req);
@@ -2192,6 +2200,14 @@ async function boot() {
   app.listen(PORT, HOST, () => {
     console.log('服务开始监听: http://localhost:' + PORT + '，距进程启动 ' + (Date.now() - PROC_START) + 'ms');
     postReady(PORT);
+    // 中断残留清理与数据上限：就绪后延迟执行，不在启动关键路径上
+    scheduleStartupSweep({
+      dataDir: dataDir(),
+      libraries: () => [...libs.values()].map((l) => ({ id: l.id, name: l.name, baseDir: l.baseDir })),
+      embed: ragManager.embed,
+      agentHub,
+      bootAt: PROC_START,
+    });
   });
 }
 

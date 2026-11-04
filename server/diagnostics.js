@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { logsDir } from './logger.js';
 import { writeZip } from './zip.js';
-import { writeFileAtomic } from './atomicFile.js';
+import { writeFileAtomic, writeFileAtomicAsync } from './atomicFile.js';
 
 const LOG_CAP = 30 * 1024 * 1024; // 日志收录总量上限 30MB
+const INCIDENTS_MAX_BYTES = 1024 * 1024; // incidents.jsonl 超过 1MB 时收缩
+const INCIDENTS_KEEP = 500; // 收缩后保留最近 500 条
 
 const sessionFile = (dataDir) => path.join(logsDir(dataDir), 'session.json');
 const incidentsFile = (dataDir) => path.join(logsDir(dataDir), 'incidents.jsonl');
@@ -29,6 +31,25 @@ export function readIncidents(dataDir, { limit = 50 } = {}) {
     }
   } catch { /* 无文件 */ }
   return out.slice(-limit);
+}
+
+// incidents.jsonl 上限（启动清理调用）：超过 1MB 时只保留最近 500 条，原子写回。
+// 读取之后文件又被追加（主进程也会写）时放弃本次，下次启动再收，不丢新记录。
+// 返回 { before, after }，无需收缩或放弃时返回 null。
+export async function capIncidents(dataDir) {
+  const file = incidentsFile(dataDir);
+  let st;
+  try {
+    st = await fs.promises.stat(file);
+  } catch {
+    return null;
+  }
+  if (st.size <= INCIDENTS_MAX_BYTES) return null;
+  const lines = (await fs.promises.readFile(file, 'utf8')).split('\n').filter((l) => l.trim());
+  const keep = lines.slice(-INCIDENTS_KEEP);
+  if ((await fs.promises.stat(file)).size !== st.size) return null;
+  await writeFileAtomicAsync(file, keep.join('\n') + '\n');
+  return { before: lines.length, after: keep.length };
 }
 
 export function pendingIncident(dataDir) {

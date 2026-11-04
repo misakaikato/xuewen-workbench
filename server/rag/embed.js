@@ -25,6 +25,12 @@ const REPOS = {
 const HOSTS = (process.env.WORKBENCH_RAG_MODEL_HOSTS || 'https://huggingface.co,https://hf-mirror.com')
   .split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
 
+// 本机下载模型用的后端：环境变量强制 onnx/mlx 时用它，否则 mac 用 mlx、其余平台用 onnx
+function downloadKind() {
+  const forced = process.env.WORKBENCH_RAG_EMBED;
+  return forced === 'onnx' || forced === 'mlx' ? forced : (process.platform === 'darwin' ? 'mlx' : 'onnx');
+}
+
 // MLX sidecar 最小依赖集（实证对齐 resources-mlx/requirements.txt；vendor 前向后不再依赖 mlx-embeddings）
 export const MLX_REQUIREMENTS = [
   'anyio', 'click', 'filelock', 'h11', 'httpcore2', 'httpx2', 'huggingface-hub', 'idna',
@@ -89,6 +95,16 @@ export class EmbedService {
 
   modelDir(kind) {
     return path.join(this.modelsDir, REPOS[kind].dir);
+  }
+
+  /** 另一种后端（本机不下载的那种）的模型目录：其中的 .part 不会再被续传，启动清理时删除 */
+  foreignModelDir() {
+    return this.modelDir(downloadKind() === 'mlx' ? 'onnx' : 'mlx');
+  }
+
+  /** 下载或导入进行中（期间模型目录里的 .part 可能正在写入） */
+  busy() {
+    return this.state === 'downloading' || this.state === 'importing';
   }
 
   manifestPath(kind) {
@@ -189,8 +205,7 @@ export class EmbedService {
   download({ force = false } = {}) {
     if (this.state === 'downloading' || this.state === 'importing') return { ok: true, already: true };
     if (this.state === 'ready' && !force) return { ok: true, ready: true };
-    const forced = process.env.WORKBENCH_RAG_EMBED;
-    const kind = forced === 'onnx' || forced === 'mlx' ? forced : (process.platform === 'darwin' ? 'mlx' : 'onnx');
+    const kind = downloadKind();
     const spec = REPOS[kind];
     const dir = this.modelDir(kind);
     fs.mkdirSync(dir, { recursive: true });
