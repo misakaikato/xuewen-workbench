@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { extractWordText } from './word.js';
 import { SUPPORTED_EXTS } from './scanner.js';
-import { withActivity, SLOW_FS_OP_MS } from './lagWatch.js';
+import { withActivity, setActivity, SLOW_FS_OP_MS } from './lagWatch.js';
 import { decodeText } from './textDecode.js';
 import { toEditorText } from './editorText.js';
 
@@ -11,6 +11,8 @@ import { toEditorText } from './editorText.js';
 export const TEXT_INDEX_MAX_BYTES = Number(process.env.WORKBENCH_TEXT_INDEX_MAX_BYTES) || 16 * 1024 * 1024;
 export const WORD_INDEX_MAX_BYTES = Number(process.env.WORKBENCH_WORD_INDEX_MAX_BYTES) || 64 * 1024 * 1024;
 const MB = (n) => Math.round((n / 1048576) * 10) / 10;
+// 单个文件在主线程上的同步处理（解码、换行归一、转小写）超过它记 WARN，写明各步耗时
+const SYNC_SLOW_MS = 100;
 // 小写正文：建索引时算一次，检索不再逐次对全文 toLowerCase（耗时与总正文量成正比）
 // 与原文相同（如纯中文）时丢掉副本、复用原串，不多占内存
 const lowerOf = (text) => {
@@ -96,8 +98,24 @@ export class Indexer {
             if (isText) {
               // 与前端 CodeMirror 的文档表示逐字符对齐：剥 BOM、纯 CRLF 归一为 LF、
               // 孤立 \r 与混用文档里的 \r 保留；非 UTF-8 经 decodeText 正确解码。
-              const { content } = decodeText(await fs.promises.readFile(path.join(this.baseDir, f.path)));
-              put(f, toEditorText(content));
+              const buf = await fs.promises.readFile(path.join(this.baseDir, f.path));
+              // 同步处理期间登记活动：这一段若阻塞事件循环，[lag] 行会直接点出是哪个文件
+              const endActivity = setActivity('处理正文 ' + f.path);
+              try {
+                const t0 = performance.now();
+                const { content, encoding } = decodeText(buf);
+                const t1 = performance.now();
+                const text = toEditorText(content);
+                const t2 = performance.now();
+                const low = lowerOf(text);
+                const t3 = performance.now();
+                put(f, text, low);
+                if (t3 - t0 > SYNC_SLOW_MS) {
+                  console.warn(`[index] 主线程处理慢：${f.path}（${MB(buf.length)}MB，${encoding}）解码 ${Math.round(t1 - t0)}ms，换行归一 ${Math.round(t2 - t1)}ms，小写 ${Math.round(t3 - t2)}ms`);
+                }
+              } finally {
+                endActivity();
+              }
             } else {
               const t = await extractWordText(this.dsId, path.join(this.baseDir, f.path), f.path, f.mtimeMs);
               if (t !== null) put(f, t);

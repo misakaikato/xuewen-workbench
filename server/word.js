@@ -3,8 +3,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { cacheDirAsync, knowledgeDir, readJsonAsync, writeJsonAtomicAsync } from './store.js';
-import { withActivity } from './lagWatch.js';
+import { cacheDirAsync, knowledgeDir } from './store.js';
+import { writeFileAtomicAsync } from './atomicFile.js';
+import { withActivity, setActivity } from './lagWatch.js';
 import { findSoffice } from './wordParse.js';
 import { convertInWorker, WORD_TIMEOUT_MS } from './wordPool.js';
 
@@ -38,6 +39,21 @@ export function wordCacheKey(relPath) {
 // 缓存写不进去（如 Windows 上缓存文件被占用）只记 WARN，结果照常返回或抛出，下次再解析。
 // 返回 { html, text, engine, warning? }；失败抛出带 code 的 Error，message 是给界面看的中文原因。
 const WORD_CACHE_VERSION = 3;
+// 缓存的 JSON 解析与序列化在主线程上同步进行，超过它记 WARN（大文档的缓存可达数十 MB）
+const SYNC_SLOW_MS = 100;
+
+// 在主线程上同步执行 fn：登记活动（阻塞时 [lag] 行点名），超过 SYNC_SLOW_MS 记 WARN
+function timedSync(step, relPath, fn) {
+  const endActivity = setActivity(step + ' ' + relPath);
+  const t0 = performance.now();
+  try {
+    return fn();
+  } finally {
+    const ms = performance.now() - t0;
+    endActivity();
+    if (ms > SYNC_SLOW_MS) console.warn(`[word] 主线程处理慢：${relPath} ${step} ${Math.round(ms)}ms`);
+  }
+}
 
 function failureMessage(e) {
   if (e.code === 'WORD_TIMEOUT') return `解析超时（超过 ${Math.round(WORD_TIMEOUT_MS / 1000)} 秒），已跳过。可在阅读页重新打开以重试。`;
@@ -50,7 +66,11 @@ export async function parseWord(dsId, absPath, relPath, mtimeMs, { force = false
   const key = wordCacheKey(relPath);
   const cacheRoot = await cacheDirAsync(dsId);
   const cacheFile = path.join(cacheRoot, 'word-' + key + '.json');
-  const cached = await readJsonAsync(cacheFile, null);
+  let cached = null;
+  try {
+    const raw = await fs.promises.readFile(cacheFile, 'utf8');
+    cached = timedSync('读 Word 缓存', relPath, () => JSON.parse(raw));
+  } catch { /* 无缓存或无法解析：重新解析文档 */ }
   if (cached && cached.v === WORD_CACHE_VERSION && cached.mtimeMs === mtimeMs) {
     if (cached.result) return cached.result;
     if (cached.failed && !force) throw Object.assign(new Error(cached.failed.message), { code: 'WORD_SKIPPED' });
@@ -74,7 +94,8 @@ export async function parseWord(dsId, absPath, relPath, mtimeMs, { force = false
 
 async function writeCache(cacheFile, entry, relPath) {
   try {
-    await writeJsonAtomicAsync(cacheFile, entry);
+    const text = timedSync('写 Word 缓存', relPath, () => JSON.stringify(entry, null, 2));
+    await writeFileAtomicAsync(cacheFile, text);
   } catch (e) {
     console.warn(`[word] 缓存写入失败（本次结果照常使用）：${relPath}：${e.code || e.message}`);
   }
