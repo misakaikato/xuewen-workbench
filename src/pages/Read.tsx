@@ -54,6 +54,8 @@ type EditSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
 
 // Word 首次打开要在服务端转换，加载超过 1.5 秒时说明原因
 const WORD_EXT = /\.docx?$/i;
+// 跳转后目标离可视区顶部的距离：吸顶区（标签、工具栏，以及打开时的查找条/偏好面板）高度会变，按实时高度留出空间
+const jumpOffset = (sticky: HTMLElement | null, gap: number) => (sticky?.offsetHeight ?? 0) + gap;
 const WORD_SLOW_TEXT = '正在转换 Word 文档，首次打开较慢…';
 
 // TXT 原位编辑主题：排版完全跟随阅读偏好（--rd-*），高度随内容增长、页面滚动，
@@ -269,6 +271,7 @@ export default function Read() {
   const [navDepth, setNavDepth] = useState({ idx: 0, max: 0 });
   const contentRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickyRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorViewType | null>(null);
   const [viewReady, setViewReady] = useState(0);
   const lastFindRef = useRef<{ from: number; to: number } | null>(null);
@@ -639,11 +642,11 @@ export default function Read() {
       if (anchor) {
         if (file.type === 'markdown' && viewRef.current) {
           const h = docHeadings(viewRef.current).find((x) => x.text === anchor);
-          if (h && scrollDocToPos(viewRef.current, h.pos, sc, 80)) return true;
+          if (h && scrollDocToPos(viewRef.current, h.pos, sc, jumpOffset(stickyRef.current, 16))) return true;
         } else {
           const el2 = document.getElementById(anchor);
           if (el2) {
-            sc.scrollTop += el2.getBoundingClientRect().top - sc.getBoundingClientRect().top - 80;
+            sc.scrollTop += el2.getBoundingClientRect().top - sc.getBoundingClientRect().top - jumpOffset(stickyRef.current, 16);
             return true;
           }
         }
@@ -819,7 +822,7 @@ export default function Read() {
       if (hit) {
         lastFindRef.current = hit;
         v.dispatch({ selection: { anchor: hit.from, head: hit.to } });
-        scrollDocToPos(v, hit.from, scrollRef.current, 120);
+        scrollDocToPos(v, hit.from, scrollRef.current, jumpOffset(stickyRef.current, 40));
       }
       return;
     }
@@ -845,7 +848,7 @@ export default function Read() {
       if (hit) {
         lastFindRef.current = hit;
         v.dispatch({ selection: { anchor: hit.from, head: hit.to }, effects: setFindHl.of({ ranges, current: hit }) });
-        scrollDocToPos(v, hit.from, sc, 120);
+        scrollDocToPos(v, hit.from, sc, jumpOffset(stickyRef.current, 40));
       }
       return;
     }
@@ -970,7 +973,7 @@ export default function Read() {
           {/* 顶部工具栏区（sticky，不随正文滚走）：阅读态=面包屑+操作行，
               原位编辑态=格式工具栏+保存控件；查找条与偏好面板也收在同一 sticky 区，
               避免多个 sticky 互相重叠 */}
-          <div className="sticky top-0 z-20 pb-3 space-y-2 bg-background">
+          <div ref={stickyRef} className="sticky top-0 z-20 pb-3 space-y-2 bg-background">
           <DocTabs
             tabs={tabs}
             active={relPath}
@@ -1393,10 +1396,10 @@ export default function Read() {
                         const sc = scrollRef.current;
                         if (!sc) return;
                         if (t.pos != null && viewRef.current) {
-                          scrollDocToPos(viewRef.current, t.pos, sc, 70);
+                          scrollDocToPos(viewRef.current, t.pos, sc, jumpOffset(stickyRef.current, 16));
                         } else if (t.id) {
                           const el = document.getElementById(t.id);
-                          if (el) sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - 70;
+                          if (el) sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - jumpOffset(stickyRef.current, 16);
                         }
                       }}
                     >

@@ -65,6 +65,35 @@ async function caseSearch() {
   check('1 命令面板「全文检索」带 mode=exact', await exec(`location.search.includes('mode=exact')`), await exec('location.href'));
 }
 
+// ---------- 3 跳转后目标不被吸顶区挡住：目录、#锚点、文内查找（查找条打开时） ----------
+const geomJs = (sel) => `(() => {
+  const sticky = document.querySelector('.wb-paper .sticky.top-0');
+  const target = ${sel};
+  return target ? { stickyBottom: Math.round(sticky.getBoundingClientRect().bottom), top: Math.round(target.getBoundingClientRect().top) } : null;
+})()`;
+const lineWith = (text) => `[...document.querySelectorAll('.cm-line')].find((e) => e.textContent.trim() === ${JSON.stringify(text)})`;
+async function caseJumpOffset() {
+  await openRead('笔记/长文.md', '第 1 节');
+  await exec(`[...document.querySelectorAll('aside button')].find((b) => b.textContent.trim() === '第 30 节').click()`);
+  await pause(900);
+  const g1 = await exec(geomJs(lineWith('第 30 节')));
+  check('3 目录跳转：标题在吸顶区下方可见', g1 && g1.top >= g1.stickyBottom, g1);
+
+  await win.loadURL(base + '/read/' + enc('笔记/长文.md') + '#' + encodeURIComponent('第 25 节'));
+  await until(`!!document.querySelector('${CARD}')`);
+  await pause(1500);
+  const g2 = await exec(geomJs(lineWith('第 25 节')));
+  check('3 #锚点跳转：标题在吸顶区下方可见', g2 && g2.top >= g2.stickyBottom, g2);
+
+  await exec(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))`);
+  await until(`!!document.querySelector('input[placeholder^="文内查找"]')`);
+  await exec(`(() => { const el=document.querySelector('input[placeholder^="文内查找"]'); const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; set.call(el,'这是第 33 节的正文'); el.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`);
+  await pause(900);
+  const g3 = await exec(geomJs(`document.querySelector('.cm-rd-find-current')`));
+  check('3 文内查找（查找条打开）：命中在吸顶区下方可见', g3 && g3.top >= g3.stickyBottom, g3);
+  await exec(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+}
+
 // ---------- 2 库目录短暂不可达：保留上次结果、如实提示，目录回来后自动恢复并继续监听 ----------
 async function caseUnreachable() {
   const moved = corpus + '-moved';
@@ -107,6 +136,7 @@ async function main() {
   win.webContents.on('console-message', (event) => { if (event.level === 'error' && !/status of (404|409|400)/.test(event.message)) renderErrors.push(event.message); });
 
   if (want(1)) await caseSearch();
+  if (want(3)) await caseJumpOffset();
   if (want(2)) await caseUnreachable(); // 会移动语料目录，放在最后
 
   check('渲染进程无代码报错', renderErrors.length === 0, renderErrors.slice(-5));
