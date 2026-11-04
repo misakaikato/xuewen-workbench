@@ -11,6 +11,7 @@ import { isWithin } from './paths.js';
 import { preserveCorrupt } from './atomicFile.js';
 import { caseRenameAction } from './renamePlan.js';
 import { Scanner, SUPPORTED_EXTS, SIDECAR_SUFFIX, TRASH_DIR, isSidecar } from './scanner.js';
+import { fsErrorText } from './fsErrors.js';
 import { hostOpenPath, revealInFolder } from './hostOpen.js';
 import { logsDir, createLogWriter } from './logger.js';
 import { pendingIncident, ackIncidents, readIncidents, exportDiagnostics } from './diagnostics.js';
@@ -345,7 +346,7 @@ async function addOrActivateLibrary(baseDir) {
     if (!st.isDirectory()) throw new Error('不是目录');
     fs.accessSync(p, fs.constants.R_OK);
   } catch (e) {
-    return { ok: false, error: '目录不可访问: ' + e.message };
+    return { ok: false, error: '目录不可访问：' + fsErrorText(e) };
   }
   const lib = upsertLib(p);
   if (!libs.has(lib.id)) {
@@ -445,7 +446,7 @@ app.post('/api/config/test', async (req, res) => {
     }
     out.ok = true;
   } catch (e) {
-    out.error = out.exists ? '目录不可读: ' + e.code : '目录不存在或无法访问: ' + e.code;
+    out.error = (out.exists ? '目录不可读：' : '目录无法访问：') + fsErrorText(e);
   }
   res.json(out);
 });
@@ -464,7 +465,7 @@ app.post('/api/rescan', async (req, res) => {
       fs.accessSync(lib.baseDir, fs.constants.R_OK);
       await lib.start();
     } catch (e) {
-      return res.status(409).json({ error: '目录不可访问或扫描失败: ' + e.message });
+      return res.status(409).json({ error: '目录不可访问或扫描失败：' + fsErrorText(e) });
     }
     return res.json({ ok: true, status: lib.scanner.status() });
   }
@@ -532,7 +533,7 @@ app.put('/api/ui-settings', async (req, res) => {
     try {
       await Promise.all([...libs.values()].map((l) => l.rescanAndIndex()));
     } catch (e) {
-      return res.status(500).json({ error: '设置已保存，但重新扫描失败: ' + e.message });
+      return res.status(500).json({ error: '设置已保存，但重新扫描失败：' + fsErrorText(e) });
     }
   }
   res.json({ ok: true, ...next });
@@ -740,7 +741,7 @@ app.post('/api/open-external', async (req, res) => {
     await hostOpenPath(p);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: '打开失败: ' + e.message });
+    res.status(500).json({ error: '打开失败：' + fsErrorText(e) });
   }
 });
 
@@ -810,7 +811,7 @@ app.put('/api/file', async (req, res) => {
     await lib.scanner.rescan();
     res.json({ ok: true, mtimeMs: st.mtimeMs });
   } catch (e) {
-    res.status(e.status || 500).json({ error: '写入失败: ' + e.message });
+    res.status(e.status || 500).json({ error: '写入失败：' + fsErrorText(e) });
   }
 });
 
@@ -879,7 +880,7 @@ app.post('/api/notes/append', async (req, res) => {
     await lib.scanner.rescan();
     res.json({ ok: true, path: rel, meta: rel + SIDECAR_SUFFIX, annotations: ann.length });
   } catch (e) {
-    res.status(e.status || 500).json({ error: '写入笔记失败: ' + e.message });
+    res.status(e.status || 500).json({ error: '写入笔记失败：' + fsErrorText(e) });
   }
 });
 
@@ -948,7 +949,7 @@ app.post('/api/file/save-as', async (req, res) => {
     await lib.scanner.rescan();
     res.json({ ok: true });
   } catch (e) {
-    res.status(e.status || 500).json({ error: '写入失败: ' + e.message });
+    res.status(e.status || 500).json({ error: '写入失败：' + fsErrorText(e) });
   }
 });
 

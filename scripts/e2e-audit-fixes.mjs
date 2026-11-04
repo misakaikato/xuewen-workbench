@@ -178,6 +178,24 @@ async function caseFrontmatter() {
   check('5 首行 --- 但不是 YAML：仍按分割线渲染', !hr.fm && hr.hr >= 1, hr);
 }
 
+// ---------- 7 报错不露系统错误码 ----------
+async function caseErrorText() {
+  await win.loadURL(base + '/setup');
+  await until(`!!document.querySelector('input[placeholder^="例如"]')`);
+  const missing = path.join(tmp, '不存在的目录');
+  await exec(`(() => { const el=document.querySelector('input[placeholder^="例如"]'); const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; set.call(el, ${JSON.stringify(missing)}); el.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`);
+  const click = (label) => exec(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === ${JSON.stringify(label)}).click()`);
+  await click('测试连接');
+  await until(`document.body.innerText.includes('目录无法访问')`);
+  let t = await pageText();
+  check('7 测试连接：中文原因、不露错误码', t.includes('不存在或已被移走') && !/ENOENT|no such file/.test(t), t.slice(0, 600));
+  await click('添加并打开');
+  await until(`document.body.innerText.includes('目录不可访问')`);
+  await pause(300);
+  t = await pageText();
+  check('7 添加失败：提示里不露错误码', t.includes('不存在或已被移走') && !/ENOENT|no such file/.test(t), t.slice(-400));
+}
+
 // ---------- 2 库目录短暂不可达：保留上次结果、如实提示，目录回来后自动恢复并继续监听 ----------
 async function caseUnreachable() {
   const moved = corpus + '-moved';
@@ -224,6 +242,7 @@ async function main() {
   if (want(3)) await caseJumpOffset();
   if (want(4)) await caseTabsFollow(dsId);
   if (want(5)) await caseFrontmatter();
+  if (want(7)) await caseErrorText();
   if (want(2)) await caseUnreachable(); // 会移动语料目录，放在最后
 
   check('渲染进程无代码报错', renderErrors.length === 0, renderErrors.slice(-5));

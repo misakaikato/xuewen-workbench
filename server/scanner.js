@@ -101,14 +101,14 @@ function createScanWalk(baseDir, opts = {}) {
     }
     const real = await timed('realpath', where, realpathAsync(frame.absDir));
     if (real.error) {
-      dirErrors.push({ path: where, reason: '无法解析目录: ' + real.error.code });
+      dirErrors.push({ path: where, reason: '无法解析目录：' + fsErrorText(real.error) });
       return false;
     }
     if (visited.has(real.value)) return false; // 符号链接循环
     visited.add(real.value);
     const list = await timed('readdir', where, fs.promises.readdir(frame.absDir, { withFileTypes: true }));
     if (list.error) {
-      dirErrors.push({ path: where, reason: '目录不可读: ' + list.error.code });
+      dirErrors.push({ path: where, reason: '目录不可读：' + fsErrorText(list.error) });
       return false;
     }
     frame.entries = list.value;
@@ -170,7 +170,7 @@ function createScanWalk(baseDir, opts = {}) {
     if (ent.isSymbolicLink()) {
       // 跟随符号链接
       if (res.error) {
-        fileErrors.push({ path: rel, reason: '访问失败: ' + res.error.code });
+        fileErrors.push({ path: rel, reason: '访问失败：' + fsErrorText(res.error) });
         return;
       }
       isDir = res.value.isDirectory();
@@ -200,7 +200,7 @@ function createScanWalk(baseDir, opts = {}) {
       if (!keepsFile(ent.name)) return;
       frame.hasContent = true;
       if (res.error) {
-        fileErrors.push({ path: rel, reason: '无法读取文件信息: ' + res.error.code });
+        fileErrors.push({ path: rel, reason: '无法读取文件信息：' + fsErrorText(res.error) });
         return;
       }
       files.push({

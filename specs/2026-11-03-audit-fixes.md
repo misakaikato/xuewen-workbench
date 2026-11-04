@@ -124,6 +124,7 @@
 **改法**：
 - `server/index.js` 的 `testDir`（约 448 行）与 `addOrActivateLibrary`（「目录不可访问」）改用 `fsErrorText`。
 - `server/scanner.js` 的 dirErrors/fileErrors 原因（四处）改用 `fsErrorText`。
+- 同类的文件读写失败提示也改用它：重新扫描失败（两处）、打开失败、写入失败（两处）、写入笔记失败。没有错误码的自定义错误，`fsErrorText` 原样返回 message。
 **验收**：
 - V7.1 node 测试覆盖 `fsErrorText` 的映射与兜底。
 - V7.2 e2e：测试连接与添加一个不存在的目录，提示里不含 `ENOENT`、`no such file`。
