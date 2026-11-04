@@ -37,7 +37,7 @@ import { ReadAgentPanel } from '@/components/ReadAgentPanel';
 import { ConceptCard } from '@/components/ConceptCard';
 import { TagChips } from '@/components/TagChips';
 import { DocTabs } from '@/components/DocTabs';
-import { loadTabs, saveTabs, ensureTab, removeTab } from '@/lib/tabs';
+import { loadTabs, saveTabs, ensureTab, removeTab, TABS_CHANGED_EVENT } from '@/lib/tabs';
 import { usePresence } from '@/lib/presence';
 import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { extIcon } from '@/lib/extIcon';
@@ -153,6 +153,14 @@ export default function Read() {
   // 文档标签页：URL 是激活标签的单一真相，tabs 只持久化「开过哪些」
   const [tabs, setTabs] = useState<string[]>(() => loadTabs(dsId));
   useEffect(() => { setTabs(loadTabs(dsId)); }, [dsId]);
+  // 条目改名 / 移动 / 删除在目录树里完成：标签已随之改写，这里重新载入
+  useEffect(() => {
+    const onChanged = (e: Event) => {
+      if ((e as CustomEvent<{ dsId: string }>).detail?.dsId === dsId) setTabs(loadTabs(dsId));
+    };
+    window.addEventListener(TABS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(TABS_CHANGED_EVENT, onChanged);
+  }, [dsId]);
   useEffect(() => {
     if (!dsId || !relPath) return;
     setTabs((prev) => {

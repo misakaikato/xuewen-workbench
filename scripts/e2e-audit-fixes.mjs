@@ -12,6 +12,8 @@ const tmp = makeTmpDir('wb-audit-fixes-');
 const corpus = path.join(tmp, 'corpus');
 const W = (rel, s) => { fs.mkdirSync(path.dirname(path.join(corpus, rel)), { recursive: true }); fs.writeFileSync(path.join(corpus, rel), s); };
 W('笔记/诗句.md', '# 诗句\n\n独有词：雪拥蓝关马不前。\n');
+W('标签/改名前.md', '# 改名前\n\n用于标签跟随的文档。\n');
+W('待改名目录/内文.md', '# 内文\n\n目录改名时标签也要跟着改。\n');
 const longDoc = ['# 长文'];
 for (let i = 1; i <= 40; i++) longDoc.push(`\n## 第 ${i} 节\n\n这是第 ${i} 节的正文，内容足够长用来撑开页面。这是第 ${i} 节的正文，内容足够长用来撑开页面。\n\n- 要点：第 ${i} 节`);
 W('笔记/长文.md', longDoc.join('\n'));
@@ -94,6 +96,55 @@ async function caseJumpOffset() {
   await exec(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
 }
 
+// ---------- 4 改名 / 删除后标签跟随 ----------
+const tabNames = () => exec(`[...document.querySelectorAll('[role="tab"]')].map((e) => e.textContent.trim())`);
+async function treeMenu(name, item) {
+  const ok = await exec(`(() => {
+    const el = [...document.querySelectorAll('aside *')].find((e) => e.children.length === 0 && e.textContent.trim() === ${JSON.stringify(name)} && e.getClientRects().length);
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5, button: 2 }));
+    return true;
+  })()`);
+  assert.ok(ok, '目录树里找不到 ' + name);
+  await until(`[...document.querySelectorAll('[role="menuitem"]')].some((e) => e.textContent.trim() === ${JSON.stringify(item)})`);
+  await exec(`[...document.querySelectorAll('[role="menuitem"]')].find((e) => e.textContent.trim() === ${JSON.stringify(item)}).click()`);
+  await until(`!!document.querySelector('[role="dialog"], [role="alertdialog"]')`);
+}
+async function dialogConfirm(button, value) {
+  if (value !== undefined) {
+    await exec(`(() => { const el=document.querySelector('[role="dialog"] input'); const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; set.call(el, ${JSON.stringify(value)}); el.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`);
+  }
+  await exec(`[...document.querySelectorAll('[role="dialog"] button, [role="alertdialog"] button')].find((b) => b.textContent.trim() === ${JSON.stringify(button)}).click()`);
+  await until(`!document.querySelector('[role="dialog"], [role="alertdialog"]')`, 8000);
+  await pause(800);
+}
+async function caseTabsFollow(dsId) {
+  await openRead('标签/改名前.md', '用于标签跟随');
+  await openRead('笔记/诗句.md', '雪拥蓝关');
+  await openRead('标签/改名前.md', '用于标签跟随');
+  const before = await tabNames();
+  const idx = before.indexOf('改名前');
+  await treeMenu('改名前.md', '重命名');
+  await dialogConfirm('重命名', '改名后');
+  await until(`decodeURIComponent(location.pathname).endsWith('改名后.md')`);
+  const after = await tabNames();
+  check('4 改名：标签换成新名且位置不变', !after.includes('改名前') && after.indexOf('改名后') === idx && after.length === before.length, { before, after });
+
+  await treeMenu('改名后.md', '删除');
+  await dialogConfirm('移到回收站');
+  await openRead('笔记/诗句.md', '雪拥蓝关');
+  const afterDel = await tabNames();
+  check('4 删除：标签随之消失', !afterDel.includes('改名后') && afterDel.includes('诗句'), afterDel);
+
+  await openRead('待改名目录/内文.md', '目录改名时');
+  await treeMenu('待改名目录', '重命名');
+  await dialogConfirm('重命名', '已改名目录');
+  await pause(500);
+  const stored = await exec(`JSON.parse(localStorage.getItem('wb:tabs:${dsId}') || '[]')`);
+  check('4 目录改名：其下已打开文档的标签一起改', stored.includes('已改名目录/内文.md') && !stored.some((p) => p.startsWith('待改名目录/')), stored);
+}
+
 // ---------- 2 库目录短暂不可达：保留上次结果、如实提示，目录回来后自动恢复并继续监听 ----------
 async function caseUnreachable() {
   const moved = corpus + '-moved';
@@ -127,8 +178,9 @@ async function main() {
   let ready = false;
   for (let i = 0; i < 150; i++) { try { await api('/api/config', undefined); ready = true; break; } catch { /* 后端未起 */ } await pause(100); }
   assert.ok(ready, 'server ready');
-  await api('/api/config', { baseDir: corpus });
+  const cfg = await api('/api/config', { baseDir: corpus });
   await pause(1500); // 等扫描 + 索引就绪
+  const dsId = cfg.dsId;
 
   await app.whenReady();
   win = new BrowserWindow({ width: 1440, height: 900, show: false, webPreferences: { sandbox: true, contextIsolation: true } });
@@ -137,6 +189,7 @@ async function main() {
 
   if (want(1)) await caseSearch();
   if (want(3)) await caseJumpOffset();
+  if (want(4)) await caseTabsFollow(dsId);
   if (want(2)) await caseUnreachable(); // 会移动语料目录，放在最后
 
   check('渲染进程无代码报错', renderErrors.length === 0, renderErrors.slice(-5));

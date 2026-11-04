@@ -1,10 +1,11 @@
 // 条目操作（重命名 / 移动 / 删除 / 副本）的统一执行：对话框、右键菜单、剪贴板与 e2e 测试钩子共用。
 // 重命名 / 移动前先 flush 打开中的编辑器（失败中止），成功后刷新目录树、
-// 迁移草稿键、跟随导航到新路径（wbFollow，编辑页据此只重绑路径不重置缓冲区）。
+// 迁移草稿键与标签、跟随导航到新路径（wbFollow，编辑页据此只重绑路径不重置缓冲区）。
 // 反馈口径见 writeOp.ts：对话框里的操作由对话框显示忙碌态，副本走 runWriteOp 的进行中 toast。
 import { api } from './api';
 import { flushOpenEditor } from './openEditor';
 import { migrateDrafts } from './drafts';
+import { retargetTabs } from './tabs';
 import { errorMessage, notify } from './notify';
 import { runWriteOp } from './writeOp';
 
@@ -90,6 +91,7 @@ export async function runEntryAction(action: EntryAction): Promise<{ newPath: st
   }
   await refreshTreeAfterWrite();
   if (newPath !== null && dsId) migrateDrafts(dsId, action.path, newPath);
+  retargetTabs(dsId, action.path, newPath, action.isDir);
   followNavigation(action, newPath);
   return { newPath };
 }

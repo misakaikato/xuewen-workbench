@@ -30,6 +30,25 @@ export function removeTab(tabs: string[], path: string): string[] {
   return tabs.filter((p) => p !== path);
 }
 
+/** 标签列表在阅读页之外被改写（条目改名 / 移动 / 删除）时派发，detail 为 { dsId } */
+export const TABS_CHANGED_EVENT = 'wb-tabs-changed';
+
+/** 条目改名 / 移动（to 为新路径）或删除（to 为 null）后同步已存标签：
+ *  文件本身，目录时连同其下的文档；位置不变，去重；有变化才写回并派发 TABS_CHANGED_EVENT */
+export function retargetTabs(dsId: string | null | undefined, from: string, to: string | null, isDir: boolean): void {
+  if (!dsId) return;
+  const prev = loadTabs(dsId);
+  const hit = (p: string) => p === from || (isDir && p.startsWith(from + '/'));
+  if (!prev.some(hit)) return;
+  const next: string[] = [];
+  for (const p of prev) {
+    const q = hit(p) ? (to === null ? null : to + p.slice(from.length)) : p;
+    if (q !== null && !next.includes(q)) next.push(q);
+  }
+  saveTabs(dsId, next);
+  window.dispatchEvent(new CustomEvent(TABS_CHANGED_EVENT, { detail: { dsId } }));
+}
+
 export function tabTitle(path: string): string {
   const name = path.split('/').pop() || path;
   const dot = name.lastIndexOf('.');
