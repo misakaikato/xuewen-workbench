@@ -1,7 +1,8 @@
 // 字义库后端（specs/2026-11-04-ziyi.md 验收 1）：临时 WORKBENCH_DATA_DIR 下拉起后端，字义包全部运行时合成。
 // 断言：未安装状态；导入解析（嵌套目录、_ 开头、__MACOSX、坏 json、缺释义、重复字）；检索排序 / AND / 繁简；
 // lookup 去重与跳过标点；新建 / 更新 / exists / conflict / 删除；保留与不保留本地修改；备份最多 5 份；
-// 导出再导入一致；无效包 400 且数据不变；entries.json 损坏被保留；3000 条 × 4KB 检索耗时。
+// 导出再导入一致；无效包 400 且数据不变；写盘失败时内存不变；读盘失败 503 且可重试；entries.json 损坏被保留；
+// 3000 条 × 4KB 检索耗时。
 // 运行：node scripts/test-ziyi.mjs
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -48,7 +49,8 @@ async function startServer() {
   server.stderr.on('data', (d) => process.stderr.write('[srv] ' + d));
   for (let i = 0; ; i++) {
     try {
-      if ((await fetch(base + '/api/ziyi/status')).ok) return;
+      await fetch(base + '/api/ziyi/status'); // 有 HTTP 响应即已起来（读盘失败的用例里是 503）
+      return;
     } catch { /* 还没起来 */ }
     if (i > 200) throw new Error('后端启动超时');
     await sleep(50);
@@ -165,6 +167,8 @@ check('非 zip 400', (await call('POST', '/api/ziyi/import', Buffer.from('hello'
   const lk = (await call('GET', '/api/ziyi/lookup?text=' + encodeURIComponent('甲，甲 a乙！棗无'))).json.items;
   check('lookup 去重、跳过标点与拉丁', lk.map((x) => x.char).join('') === '甲乙棗无', lk.map((x) => x.char));
   check('lookup 命中与 resolvedFrom', lk[0].entry.han === '甲' && lk[2].entry.han === '枣' && lk[2].resolvedFrom === '棗' && lk[3].entry === null, lk);
+  const marks = (await call('GET', '/api/ziyi/lookup?text=' + encodeURIComponent('々〇⺀甲'))).json.items;
+  check('lookup 不收々〇与部首', marks.map((x) => x.char).join('') === '甲', marks.map((x) => x.char));
   const many = (await call('GET', '/api/ziyi/lookup?text=' + encodeURIComponent('一二三四五六七八九十百千万亿'))).json.items;
   check('lookup 最多 12 个', many.length === 12);
 }
@@ -178,6 +182,9 @@ let yiEditedAt;
   check('更新不存在 404', (await call('PUT', '/api/ziyi/entry', { han: '己', meaning: 'x' })).status === 404);
   check('空释义 400', (await call('PUT', '/api/ziyi/entry', { han: '甲', meaning: '  ' })).status === 400);
   check('字头含空白 400', (await call('PUT', '/api/ziyi/entry', { han: '甲 乙', meaning: 'x', create: true })).status === 400);
+  for (const bad of ['_甲', '.乙', '甲/乙', '甲\\乙']) {
+    check(`字头「${bad}」400（导出文件名会被跳过或成路径）`, (await call('PUT', '/api/ziyi/entry', { han: bad, meaning: 'x', create: true })).status === 400);
+  }
   const u = await call('PUT', '/api/ziyi/entry', { han: '乙', meaning: '本地修改：乙。', source: '改过', expectEditedAt: null });
   check('更新', u.status === 200 && u.json.entry.meaning === '本地修改：乙。', u);
   yiEditedAt = u.json.entry.editedAt;
@@ -249,6 +256,44 @@ const backupsDir = path.join(dataDir, 'ziyi', 'backups');
   check('已安装时非 zip 400', (await call('POST', '/api/ziyi/import', Buffer.from('PK broken'))).status === 400);
   const after = (await call('GET', '/api/ziyi/status')).json;
   check('无效包后数据不变', after.count === before.count && after.importedAt === before.importedAt, { before, after });
+}
+
+// ---------- 写盘失败：内存与磁盘保持一致 ----------
+{
+  const zdir = path.join(dataDir, 'ziyi');
+  const before = (await call('GET', '/api/ziyi/entry?han=甲')).json.entry;
+  const status0 = (await call('GET', '/api/ziyi/status')).json;
+  fs.chmodSync(zdir, 0o555);
+  try {
+    const u = await call('PUT', '/api/ziyi/entry', { han: '甲', meaning: '写不进去的修改', expectEditedAt: before.editedAt });
+    check('写盘失败时编辑报错', u.status >= 500, u);
+    check('写盘失败后内存仍是旧内容', (await call('GET', '/api/ziyi/entry?han=甲')).json.entry.meaning === before.meaning);
+    check('写盘失败后检索不到新内容', (await call('GET', '/api/ziyi/search?q=' + encodeURIComponent('写不进去'))).json.total === 0);
+    check('写盘失败时新建报错且不出现', (await call('PUT', '/api/ziyi/entry', { han: '癸', meaning: 'x', create: true })).status >= 500 && (await call('GET', '/api/ziyi/entry?han=癸')).status === 404);
+    check('写盘失败时删除报错且仍在', (await call('DELETE', '/api/ziyi/entry?han=甲')).status >= 500 && (await call('GET', '/api/ziyi/entry?han=甲')).status === 200);
+    const im = await call('POST', '/api/ziyi/import?keepEdited=0', makeZip('other.zip', [['x/庚.json', entryFile('庚', '另一个包')]]));
+    check('写盘失败时导入报错', im.status >= 500, im);
+    const status1 = (await call('GET', '/api/ziyi/status')).json;
+    check('导入写盘失败后现有数据不动', status1.count === status0.count && status1.importedAt === status0.importedAt && (await call('GET', '/api/ziyi/entry?han=庚')).status === 404, status1);
+  } finally {
+    fs.chmodSync(zdir, 0o755);
+  }
+  const ok = await call('PUT', '/api/ziyi/entry', { han: '甲', meaning: '恢复后可写', expectEditedAt: before.editedAt });
+  check('恢复可写后按原版本号保存成功（无误报冲突）', ok.status === 200, ok);
+}
+
+// ---------- 读盘失败：503，恢复后重试成功，且不当成未安装 ----------
+await stopServer();
+{
+  const file = path.join(dataDir, 'ziyi', 'entries.json');
+  fs.chmodSync(file, 0o000);
+  await startServer();
+  const s503 = await call('GET', '/api/ziyi/status');
+  check('读盘失败返回 503', s503?.status === 503, s503);
+  check('读盘失败时新建被拒、不覆盖原文件', (await call('PUT', '/api/ziyi/entry', { han: '癸', meaning: 'x', create: true })).status === 503);
+  fs.chmodSync(file, 0o644);
+  const s = (await call('GET', '/api/ziyi/status')).json;
+  check('恢复可读后重试成功', s.installed === true && s.count > 0, s);
 }
 
 // ---------- 移除 ----------

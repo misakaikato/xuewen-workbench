@@ -6,13 +6,14 @@ const send = (res, e) => res.status(e.status || 500).json({ error: e.message || 
 
 export function mountZiyi(store) {
   const r = Router();
-  r.use(async (_req, _res, next) => {
+  // 首次请求时读盘；读不了（权限、占用、损坏且无法保留）返回 503，下次请求重试
+  r.use(async (_req, res, next) => {
     try {
       await store.ready();
-      next();
     } catch (e) {
-      next(e);
+      return send(res, e);
     }
+    next();
   });
 
   r.get('/status', (_req, res) => res.json(store.status()));

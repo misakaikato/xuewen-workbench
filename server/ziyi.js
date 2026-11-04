@@ -13,7 +13,10 @@ const MAX_BACKUPS = 5;
 const MAX_HAN_CHARS = 8;
 const LOOKUP_MAX = 12;
 const SNIPPET_PAD = 40;
-const HAN_RE = /\p{Script=Han}/u;
+// CJK 统一表意文字、扩展 A、兼容区与 2 万以上的扩展区（B 起）；不含々〇与部首
+const HAN_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u{20000}-\u{3FFFF}]/u;
+const YIELD_EVERY = 256;
+const yieldLoop = () => new Promise((r) => setImmediate(r));
 
 const httpError = (status, message, extra) => Object.assign(new Error(message), { status, ...extra });
 
@@ -33,8 +36,9 @@ function cmpHan(a, b) {
   return x.length - y.length;
 }
 
+// 字头即导出文件名：不含空白与路径分隔符，不以 _ 或 . 开头（导入时会被当成元数据跳过）
 function validHan(han) {
-  if (typeof han !== 'string' || !han || /\s/.test(han)) return false;
+  if (typeof han !== 'string' || !han || /[\s/\\]/.test(han) || /^[_.]/.test(han)) return false;
   return Array.from(han).length <= MAX_HAN_CHARS;
 }
 
@@ -43,8 +47,8 @@ function stamp(d = new Date()) {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-${p(d.getMilliseconds(), 3)}`;
 }
 
-/** 解析字义包：zip 内任意层级的 *.json；跳过 _ 或 . 开头的文件名、__MACOSX/、非 json 文件 */
-export function parsePack(buf) {
+/** 解析字义包：zip 内任意层级的 *.json；跳过 _ 或 . 开头的文件名、__MACOSX/、非 json 文件。每 256 个文件让出一次事件循环 */
+export async function parsePack(buf) {
   let zip;
   try {
     zip = new AdmZip(buf);
@@ -60,7 +64,9 @@ export function parsePack(buf) {
   const entries = new Map();
   const invalid = [];
   let duplicates = 0;
+  let n = 0;
   for (const ze of zipEntries) {
+    if (++n % YIELD_EVERY === 0) await yieldLoop();
     if (ze.isDirectory) continue;
     const name = ze.entryName.replace(/\\/g, '/');
     const base = name.split('/').pop();
@@ -83,6 +89,10 @@ export function parsePack(buf) {
     entries.set(han, { meaning, source: typeof obj.source === 'string' ? obj.source : '' });
   }
   return { entries, invalid, duplicates };
+}
+
+function sortedEntries(entries) {
+  return [...entries.keys()].sort(cmpHan).map((han) => [han, entries.get(han)]);
 }
 
 /** 导出格式与导入相同：<han>.json → { han, unicode, meaning, source } */
@@ -118,20 +128,28 @@ export class ZiyiStore {
     let raw;
     try {
       raw = await fs.promises.readFile(this.file, 'utf8');
-    } catch {
-      return;
+    } catch (e) {
+      if (e.code === 'ENOENT') return;
+      // 读不了（权限、占用）不能当成未安装：否则之后的导入或新建会不备份就覆盖原文件。下次请求再试
+      this._loading = null;
+      console.warn(`[ziyi] 读取 entries.json 失败：${e.message}`);
+      throw httpError(503, '读取字义库失败：' + e.message);
     }
     let obj;
     try {
       obj = JSON.parse(raw);
       if (!obj || typeof obj.entries !== 'object' || obj.entries === null) throw new Error('缺少 entries');
     } catch (e) {
+      let kept;
       try {
-        const kept = preserveCorrupt(this.file);
-        console.warn(`[ziyi] entries.json 解析失败（${e.message}），已保留为 ${path.basename(kept)}，按未安装处理`);
+        kept = preserveCorrupt(this.file);
       } catch (e2) {
+        // 保留成功前不得覆盖原文件：不按未安装处理，下次请求再试
+        this._loading = null;
         console.warn(`[ziyi] entries.json 解析失败且无法改名保留：${e2.message}`);
+        throw httpError(503, '字义库文件已损坏且无法改名保留：' + e2.message);
       }
+      console.warn(`[ziyi] entries.json 解析失败（${e.message}），已保留为 ${path.basename(kept)}，按未安装处理`);
       return;
     }
     const entries = new Map();
@@ -143,34 +161,36 @@ export class ZiyiStore {
         editedAt: typeof e.editedAt === 'string' ? e.editedAt : null,
       });
     }
-    this._swap(entries, { importedAt: obj.importedAt ?? null, sourceName: obj.sourceName ?? null });
+    await this._swap(entries, { importedAt: obj.importedAt ?? null, sourceName: obj.sourceName ?? null });
   }
 
-  _swap(entries, meta) {
+  /** 换入一整份数据：先在旁边建好归一化索引（分批让出事件循环），再一次性替换 */
+  async _swap(entries, meta) {
+    const norm = new Map();
+    let n = 0;
+    for (const [han, e] of entries) {
+      if (++n % YIELD_EVERY === 0) await yieldLoop();
+      norm.set(han, normEntry(han, e));
+    }
     this.entries = entries;
     this.meta = meta;
     this.installed = true;
-    this.norm = new Map();
-    for (const [han, e] of entries) this._indexOne(han, e);
+    this.norm = norm;
     this._resort();
   }
 
   _indexOne(han, e) {
-    this.norm.set(han, { han: normalizeText(han), meaning: normalizeText(e.meaning), source: normalizeText(e.source) });
+    this.norm.set(han, normEntry(han, e));
   }
 
   _resort() {
     this.order = [...this.entries.keys()].sort(cmpHan);
   }
 
-  _serialize() {
-    const entries = {};
-    for (const han of this.order) entries[han] = this.entries.get(han);
-    return { version: VERSION, importedAt: this.meta.importedAt, sourceName: this.meta.sourceName, entries };
-  }
-
-  _persist() {
-    return writeJsonAtomicAsync(this.file, this._serialize());
+  _write(entries, meta) {
+    const out = {};
+    for (const [han, e] of sortedEntries(entries)) out[han] = e;
+    return writeJsonAtomicAsync(this.file, { version: VERSION, importedAt: meta.importedAt, sourceName: meta.sourceName, entries: out });
   }
 
   /** 写操作串行：后来者等前者落盘后再基于其结果执行 */
@@ -281,10 +301,6 @@ export class ZiyiStore {
       const now = new Date().toISOString();
       if (create) {
         if (this.installed && this.entries.has(h)) throw httpError(409, `「${h}」已有字义`, { code: 'exists' });
-        if (!this.installed) {
-          this.installed = true;
-          this.meta = { importedAt: null, sourceName: null };
-        }
       } else {
         const cur = this.installed ? this.entries.get(h) : null;
         if (!cur) throw httpError(404, `「${h}」没有字义`);
@@ -292,12 +308,17 @@ export class ZiyiStore {
           throw httpError(409, `「${h}」已被修改，请重新载入后再编辑`, { code: 'conflict' });
         }
       }
+      const next = new Map(this.entries);
+      next.set(h, { meaning, source: source ?? '', editedAt: now });
+      const meta = this.installed ? this.meta : { importedAt: null, sourceName: null };
+      // 先落盘再改内存：写失败时界面看到的仍是磁盘上的内容
+      await this._write(next, meta);
       const isNew = !this.entries.has(h);
-      const e = { meaning, source: source ?? '', editedAt: now };
-      this.entries.set(h, e);
-      this._indexOne(h, e);
+      this.entries = next;
+      this.meta = meta;
+      this.installed = true;
+      this._indexOne(h, next.get(h));
       if (isNew) this._resort();
-      await this._persist();
       return this._entryOut(h);
     });
   }
@@ -305,16 +326,18 @@ export class ZiyiStore {
   remove(han) {
     return this._serial(async () => {
       if (!this.installed || !this.entries.has(han)) throw httpError(404, `「${han}」没有字义`);
-      this.entries.delete(han);
+      const next = new Map(this.entries);
+      next.delete(han);
+      await this._write(next, this.meta);
+      this.entries = next;
       this.norm.delete(han);
       this._resort();
-      await this._persist();
     });
   }
 
   importPack(buf, { keepEdited = true, name = null } = {}) {
     return this._serial(async () => {
-      const { entries: incoming, invalid, duplicates } = parsePack(buf);
+      const { entries: incoming, invalid, duplicates } = await parsePack(buf);
       if (!incoming.size) {
         throw httpError(400, invalid.length ? `字义包里没有有效条目（${invalid.length} 个文件格式不对）` : '字义包里没有字义文件（*.json）');
       }
@@ -340,8 +363,10 @@ export class ZiyiStore {
       }
       let removed = 0;
       for (const han of before.keys()) if (!next.has(han)) removed++;
-      this._swap(next, { importedAt: now, sourceName: name || null });
-      await this._persist();
+      const meta = { importedAt: now, sourceName: name || null };
+      // 原子写成功后才换入内存：写失败时现有数据原样不动
+      await this._write(next, meta);
+      await this._swap(next, meta);
       return {
         ok: true, count: next.size, added, updated, removed, keptEdited,
         invalid: invalid.slice(0, 20), invalidCount: invalid.length, duplicates, backup,
@@ -363,7 +388,7 @@ export class ZiyiStore {
       }
       if (!ok) dir = path.join(this.dir, 'exports');
       const file = path.join(dir, `字义库-${stamp()}.zip`);
-      writeZip(file, packEntries(this._sorted()));
+      writeZip(file, packEntries(sortedEntries(this.entries)));
       return file;
     });
   }
@@ -382,21 +407,27 @@ export class ZiyiStore {
     });
   }
 
-  _sorted() {
-    return this.order.map((han) => [han, this.entries.get(han)]);
-  }
 
   /** 替换或移除前备份成导出格式的 zip，只留最近 5 份 */
   _backup() {
     let file = path.join(this.backupDir, `ziyi-${stamp()}.zip`);
     for (let i = 1; fs.existsSync(file); i++) file = path.join(this.backupDir, `ziyi-${stamp()}-${i}.zip`);
-    writeZip(file, packEntries(this._sorted()));
-    const all = fs.readdirSync(this.backupDir).filter((f) => /^ziyi-.*\.zip$/.test(f)).sort();
+    writeZip(file, packEntries(sortedEntries(this.entries)));
+    // 按修改时间轮转（文件名在同毫秒冲突、夏令时回拨时不保证有序）
+    const all = fs.readdirSync(this.backupDir)
+      .filter((f) => /^ziyi-.*\.zip$/.test(f))
+      .map((f) => ({ f, t: fs.statSync(path.join(this.backupDir, f)).mtimeMs }))
+      .sort((a, b) => a.t - b.t)
+      .map((x) => x.f);
     for (const f of all.slice(0, Math.max(0, all.length - MAX_BACKUPS))) {
       try { fs.rmSync(path.join(this.backupDir, f), { force: true }); } catch { /* 删不掉的旧备份下次再清 */ }
     }
     return file;
   }
+}
+
+function normEntry(han, e) {
+  return { han: normalizeText(han), meaning: normalizeText(e.meaning), source: normalizeText(e.source) };
 }
 
 function countOf(hay, needle) {

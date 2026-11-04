@@ -20,11 +20,19 @@ export default function Ziyi() {
   const q = params.get('q') || '';
   const han = params.get('han') || '';
   const [input, setInput] = useState(q);
+  // URL 的 q 被外部改变（顶栏再点「字义」、前进后退）时同步回输入框；自己防抖写入的不回写，免得吃掉正在输入的空格
+  const [syncedQ, setSyncedQ] = useState(q);
+  if (q !== syncedQ) {
+    setSyncedQ(q);
+    if (q !== input.trim()) setInput(q);
+  }
   const [hits, setHits] = useState<ZiyiHit[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const reqId = useRef(0);
+  const hanRef = useRef(han);
+  hanRef.current = han;
   const slow = useDelayedFlag(loading);
   const [detail, setDetail] = useState<{ han: string; entry: ZiyiEntry | null; resolvedFrom: string | null } | null>(null);
   const [newHan, setNewHan] = useState('');
@@ -68,8 +76,9 @@ export default function Ziyi() {
   const loadDetail = useCallback(async (h: string) => {
     try {
       const r = await api.ziyiEntry(h);
-      setDetail({ han: h, entry: r.entry, resolvedFrom: r.resolvedFrom });
+      if (h === hanRef.current) setDetail({ han: h, entry: r.entry, resolvedFrom: r.resolvedFrom });
     } catch (e) {
+      if (h !== hanRef.current) return; // 已切到别的字，丢弃迟到的响应
       if ((e as { status?: number }).status === 404) setDetail({ han: h, entry: null, resolvedFrom: null });
       else setError(errorMessage(e));
     }

@@ -79,7 +79,8 @@ export function ZiyiPanel({ query, onClose }: { query: ZiyiQuery | null; onClose
               char={it.char}
               entry={it.entry}
               resolvedFrom={it.resolvedFrom}
-              onChange={(entry) => setItems((prev) => prev.map((x) => (x.char === it.char ? { ...x, entry } : x)))}
+              // 繁简两字可能指向同一条（棗 / 枣）：按字头一起更新
+              onChange={(entry) => setItems((prev) => prev.map((x) => (x.char === it.char || x.entry?.han === entry.han ? { ...x, entry } : x)))}
             />
           ))
         )}

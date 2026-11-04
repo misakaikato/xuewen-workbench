@@ -303,6 +303,8 @@ export default function Read() {
   // ---------- 原位编辑会话（与 Edit 页保存机制同源：原子写/备份/冲突/草稿） ----------
   // 编辑缓冲区不进组件 state：按键只翻转 dirty 标志，内容需要时从 view 读取
   const [editing, setEditing] = useState(false);
+  // 单字（按码点，扩展区字也算一个）选区：浮动条只放「字义」；编辑态不提供查字义，浮动条与未导入时相同
+  const selOnlyZiyi = !!sel && ziyiInstalled && !editing && Array.from(sel.text).length === 1 && isHanChar(sel.text);
   const [saveState, setSaveState] = useState<EditSaveState>('clean');
   const [saveMsg, setSaveMsg] = useState('');
   const [conflict, setConflict] = useState<{ current: string; currentMtimeMs: number } | null>(null);
@@ -899,8 +901,8 @@ export default function Read() {
       if (!card.contains(t as Node)) { setSel(null); return; }
       const selection = window.getSelection();
       const text = (selection?.toString() || '').trim();
-      // 单字选区只在导入字义库后浮出（只有「字义」按钮）；记笔记 / 问 AI 仍要求至少 2 字
-      if (!text || (text.length < 2 && !(ziyiInstalledRef.current && Array.from(text).length === 1 && isHanChar(text)))) { setSel(null); return; }
+      // 单字选区只在导入字义库且非编辑态时浮出（只有「字义」按钮）；记笔记 / 问 AI 仍要求至少 2 字
+      if (!text || (text.length < 2 && !(ziyiInstalledRef.current && !editingRef.current && isHanChar(text)))) { setSel(null); return; }
       const rect = selection!.getRangeAt(0).getBoundingClientRect();
       setSel({ text: text.slice(0, 2000), x: Math.min(window.innerWidth - 140, rect.left + rect.width / 2), y: rect.bottom + 6 });
     };
@@ -908,11 +910,12 @@ export default function Read() {
     return () => document.removeEventListener('mouseup', onUp);
   }, []);
 
-  // Alt（⌥）+ 点击正文里的汉字：查字义。捕获阶段拦下 mousedown（不让编辑器开始列选区）与 click（不触发链接）
+  // Alt（⌥）+ 点击正文里的汉字：查字义（只在阅读态；编辑态 Alt 拖动是编辑器的列选区，不拦）。
+  // 捕获阶段拦下 mousedown（不扩展选区）、click（不触发链接）与 dblclick（不进入编辑）
   useEffect(() => {
     const inBody = (e: MouseEvent) => {
       const card = contentRef.current;
-      return e.altKey && e.button === 0 && ziyiInstalledRef.current && !!card && card.contains(e.target as Node);
+      return e.altKey && e.button === 0 && ziyiInstalledRef.current && !editingRef.current && !!card && card.contains(e.target as Node);
     };
     const onDown = (e: MouseEvent) => {
       if (!inBody(e)) return;
@@ -920,6 +923,7 @@ export default function Read() {
       if (!ch || !isHanChar(ch)) return;
       e.preventDefault();
       e.stopPropagation();
+      window.getSelection()?.removeAllRanges(); // 旧选区不留，随后的 mouseup 不会再弹出它的浮动条
       setSel(null);
       openZiyi(ch);
     };
@@ -932,9 +936,11 @@ export default function Read() {
     };
     document.addEventListener('mousedown', onDown, true);
     document.addEventListener('click', onClick, true);
+    document.addEventListener('dblclick', onClick, true);
     return () => {
       document.removeEventListener('mousedown', onDown, true);
       document.removeEventListener('click', onClick, true);
+      document.removeEventListener('dblclick', onClick, true);
     };
   }, [openZiyi]);
 
@@ -1517,7 +1523,7 @@ export default function Read() {
         </div>
       )}
 
-      {/* 选区旁的浮动操作：记笔记 / 问 AI（助手关闭时只有记笔记）/ 字义（导入字义库后；单字选区只有它） */}
+      {/* 选区旁的浮动操作：记笔记 / 问 AI（助手关闭时只有记笔记）/ 字义（导入字义库后；单字（按码点）选区只有它） */}
       {sel && !noteOpen && (
         <div
           data-wb-selbar
@@ -1525,7 +1531,7 @@ export default function Read() {
           style={{ left: sel.x, top: sel.y }}
           onMouseDown={(e) => e.preventDefault()}
         >
-          {sel.text.length >= 2 && (
+          {!selOnlyZiyi && (
           <button
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs shadow-lg transition-colors hover:opacity-90"
             onClick={() => {
@@ -1536,7 +1542,7 @@ export default function Read() {
             <NotebookPen className="w-3.5 h-3.5" /> 记笔记
           </button>
           )}
-          {agentEnabled && sel.text.length >= 2 && (
+          {agentEnabled && !selOnlyZiyi && (
             <button
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-card border border-border text-xs shadow-lg transition-colors hover:border-primary/50 hover:text-primary"
               title="把选中内容引用到智能助手"
@@ -1551,7 +1557,7 @@ export default function Read() {
               <Sparkles className="w-3.5 h-3.5" /> 问 AI
             </button>
           )}
-          {ziyiInstalled && Array.from(sel.text).length <= 12 && Array.from(sel.text).some(isHanChar) && (
+          {ziyiInstalled && !editing && Array.from(sel.text).length <= 12 && Array.from(sel.text).some(isHanChar) && (
             <button
               data-wb-ziyi-sel
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-card border border-border text-xs shadow-lg transition-colors hover:border-primary/50 hover:text-primary"

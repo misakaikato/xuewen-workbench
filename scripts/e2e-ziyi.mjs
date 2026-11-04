@@ -1,7 +1,8 @@
 // 字义库 UI e2e（specs/2026-11-04-ziyi.md 验收 2）：起后端 + BrowserWindow，临时语料与数据目录，字义包运行时合成。
 // 导入前：顶栏无「字义」、单字选区不浮出操作条、两字选区只有「记笔记」、阅读页无字义按钮。
 // 设置页导入后：顶栏出现「字义」；单字选区只有「字义」，点开侧栏显示释义；两字选区有「记笔记」和「字义」；
-// Alt 点击某字侧栏切到该字且不触发其他动作；侧栏内编辑保存后字义库页检索得到并高亮；字义库页新建。
+// 扩展区单字选区同样只有「字义」；Alt 点击某字侧栏切到该字且不触发其他动作；原位编辑态 Alt 不拦截（留给编辑器列选区）；
+// 侧栏内编辑保存后字义库页检索得到并高亮；字义库页新建。
 // 运行：npm run build && ./node_modules/.bin/electron scripts/e2e-ziyi.mjs
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
@@ -18,7 +19,7 @@ const tmp = makeTmpDir('wb-ziyi-ui-');
 const corpus = path.join(tmp, 'corpus');
 fs.mkdirSync(corpus, { recursive: true });
 const DOC = '诗.md';
-fs.writeFileSync(path.join(corpus, DOC), '# 诗\n\n宛在水中央，甲乙丙丁。\n\n另起一段文字。\n');
+fs.writeFileSync(path.join(corpus, DOC), '# 诗\n\n宛在水中央，甲乙丙丁𠀀。\n\n另起一段文字。\n');
 
 const packFile = path.join(tmp, 'test-ziyi.zip');
 const entry = (han, meaning) => ({ name: `annotations/${han}.json`, data: JSON.stringify({ han, meaning, source: '测试出处' }) });
@@ -108,6 +109,33 @@ const clickButton = (scope, label) => exec(`(() => {
   return true;
 })()`);
 
+// Alt + 点击正文里的某个字（在字的中心派发 mousedown / mouseup / click）：返回 click 是否被 preventDefault，
+// 以及 mousedown 是否传到了正文（被字义拦截时捕获阶段就 stopPropagation，传不到）
+const altClick = (ch) => exec(`(() => {
+  const card = document.querySelector('[data-wb-content-card]');
+  const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const i = n.data.indexOf(${JSON.stringify(ch)});
+    if (i < 0) continue;
+    const r = document.createRange();
+    r.setStart(n, i);
+    r.setEnd(n, i + 1);
+    const b = r.getBoundingClientRect();
+    const init = { bubbles: true, cancelable: true, altKey: true, button: 0, clientX: b.left + b.width / 2, clientY: b.top + b.height / 2 };
+    const target = document.elementFromPoint(init.clientX, init.clientY);
+    let reached = false;
+    const mark = () => { reached = true; };
+    target.addEventListener('mousedown', mark, { once: true });
+    target.dispatchEvent(new MouseEvent('mousedown', init));
+    target.removeEventListener('mousedown', mark);
+    target.dispatchEvent(new MouseEvent('mouseup', init));
+    const click = new MouseEvent('click', init);
+    target.dispatchEvent(click);
+    return { downReached: reached, click: click.defaultPrevented };
+  }
+  return null;
+})()`);
+
 async function main() {
   server = spawn(process.execPath, [path.join(root, 'server/index.js')], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', WORKBENCH_PORT: String(port), WORKBENCH_HOST: '127.0.0.1',
@@ -175,35 +203,29 @@ async function main() {
   await exec(`document.querySelector('[data-wb-ziyi-sel]').click(); true`);
   await until(`document.querySelectorAll('[data-wb-ziyi-panel] [data-wb-ziyi-entry]').length === 2`);
   check('多字选区逐字列出', (await exec(`[...document.querySelectorAll('[data-wb-ziyi-panel] [data-wb-ziyi-entry]')].map((e) => e.dataset.wbZiyiEntry).join('')`)) === '甲乙');
+  const barB = await select('𠀀');
+  check('扩展 B 区单字选区只有「字义」', JSON.stringify(barB) === JSON.stringify(['字义']), barB);
+  await clearSel();
 
   // Alt 点击「丙」：没有条目，显示「暂无字义」
   const pathBefore = await exec(`location.pathname`);
-  const altResult = await exec(`(() => {
-    const card = document.querySelector('[data-wb-content-card]');
-    const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
-    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-      const i = n.data.indexOf('丙');
-      if (i < 0) continue;
-      const r = document.createRange();
-      r.setStart(n, i);
-      r.setEnd(n, i + 1);
-      const b = r.getBoundingClientRect();
-      const init = { bubbles: true, cancelable: true, altKey: true, button: 0, clientX: b.left + b.width / 2, clientY: b.top + b.height / 2 };
-      const target = document.elementFromPoint(init.clientX, init.clientY);
-      const down = new MouseEvent('mousedown', init);
-      target.dispatchEvent(down);
-      target.dispatchEvent(new MouseEvent('mouseup', init));
-      const click = new MouseEvent('click', init);
-      target.dispatchEvent(click);
-      return { down: down.defaultPrevented, click: click.defaultPrevented };
-    }
-    return null;
-  })()`);
-  check('Alt 点击被拦截（mousedown 与 click 都 preventDefault）', altResult && altResult.down && altResult.click, altResult);
+  const altResult = await altClick('丙');
+  check('Alt 点击被拦截（mousedown 不传到正文、click 被 preventDefault）', altResult && !altResult.downReached && altResult.click, altResult);
   await until(`document.querySelector('[data-wb-ziyi-panel-input]').value === '丙'`);
   await until(`!!document.querySelector('[data-wb-ziyi-panel] [data-wb-ziyi-entry="丙"]')`);
   check('Alt 点击侧栏切到该字', (await exec(`document.querySelector('[data-wb-ziyi-panel]').textContent`)).includes('暂无字义'));
   check('Alt 点击不离开当前文档', (await exec(`location.pathname`)) === pathBefore);
+
+  // 原位编辑态：Alt 不拦截，侧栏不跟着变
+  await exec(`document.querySelector('button[title="进入编辑 (Ctrl+E)"]').click(); true`);
+  await until(`document.querySelector('[data-wb-content-card] .cm-content')?.getAttribute('contenteditable') === 'true'`);
+  const altEdit = await altClick('甲');
+  check('编辑态 Alt 点击不被拦截（mousedown 传到编辑器、click 不被阻止）', altEdit && altEdit.downReached && !altEdit.click, altEdit);
+  check('编辑态 Alt 点击不切换侧栏', (await exec(`document.querySelector('[data-wb-ziyi-panel-input]').value`)) === '丙');
+  await exec(`document.querySelector('button[title="保存并回到阅读 (Ctrl+E)"]').click(); true`);
+  await until(`document.querySelector('[data-wb-content-card] .cm-content')?.getAttribute('contenteditable') !== 'true'`);
+  check('退出编辑', true);
+
 
   // 侧栏内直接改字：输入框查「甲」并编辑
   await setValue('[data-wb-ziyi-panel-input]', '甲');

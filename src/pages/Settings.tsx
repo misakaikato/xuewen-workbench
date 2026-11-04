@@ -205,7 +205,7 @@ export default function Settings() {
   return (
     <div className="max-w-3xl mx-auto py-6 px-4 space-y-6">
       <div className="flex items-center gap-1 mb-4 border-b border-border pb-2 flex-wrap">
-        {[['appearance','外观'],['reading','阅读'],['collections','集合'],['metadata','元数据'],['ziyi','字义库'],['rag','RAG 检索'],['agent','智能助手'],['about','关于']].map(([id,label]) => (
+        {[['appearance','外观'],['reading','阅读'],['ziyi','字义库'],['collections','集合'],['metadata','元数据'],['rag','RAG 检索'],['agent','智能助手'],['about','关于']].map(([id,label]) => (
           <button key={id} className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${tab === id ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`} onClick={() => setTab(id)}>
             {label}
           </button>
