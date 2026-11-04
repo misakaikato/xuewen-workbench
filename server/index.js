@@ -21,6 +21,8 @@ import { mountUpdateRoutes, getUpdateBridge, disabledUpdateState } from './updat
 import { installHostBridges, postBoot, postReady, hosted, rpc } from './host.js';
 import { RagManager } from './rag/manager.js';
 import { mountRag } from './rag/routes.js';
+import { ZiyiStore } from './ziyi.js';
+import { mountZiyi } from './ziyiRoutes.js';
 import { AgentHub } from './agent/manager.js';
 import { mountAgent } from './agent/routes.js';
 import { Indexer } from './indexer.js';
@@ -184,6 +186,9 @@ const ragManager = new RagManager({
   },
 });
 app.use('/api/rag', mountRag(ragManager, resolveLib));
+
+// 字义库：全局单字释义，用户导入的字义包存 <数据目录>/ziyi/（不随程序分发）
+app.use('/api/ziyi', mountZiyi(new ZiyiStore(path.join(dataDir(), 'ziyi'), { exportDir: process.env.WORKBENCH_DESKTOP_DIR })));
 
 // 智能助手（pi agent）：工具闭包经 resolveLib 拿当前库；llm 配置变化时同步 models.json
 const agentHub = new AgentHub({
