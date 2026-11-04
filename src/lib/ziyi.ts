@@ -1,7 +1,7 @@
 // 字义库状态的单一来源：模块级快照 + useSyncExternalStore。启动时读一次 /api/ziyi/status，
 // 导入、移除、新建、删除后调用 refreshZiyiStatus 刷新；顶栏、阅读页、设置页都从这里读是否已安装。
 import { useSyncExternalStore } from 'react';
-import { api, type ZiyiStatus } from './api';
+import { api, type ZiyiOrigin, type ZiyiStatus } from './api';
 
 let status: ZiyiStatus | null = null; // null = 尚未读到，按未安装处理
 let loading: Promise<void> | null = null;
@@ -32,6 +32,9 @@ export function useZiyiStatus(): ZiyiStatus | null {
 export function useZiyiInstalled(): boolean {
   return useZiyiStatus()?.installed === true;
 }
+
+/** 出处的界面名称 */
+export const ZIYI_ORIGIN_LABEL: Record<ZiyiOrigin, string> = { lecture: '课堂讲解', ai: 'AI 推导', local: '本机新建' };
 
 /** 字义库页地址 */
 export const ziyiHref = (han?: string) => '/ziyi' + (han ? '?han=' + encodeURIComponent(han) : '');

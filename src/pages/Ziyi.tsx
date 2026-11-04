@@ -1,16 +1,16 @@
-// 字义库页：左栏检索（字头 / 释义 / 出处，繁简互通，空格分隔多词），右栏查看与编辑选中的字；URL 同步 ?q=&han=。
+// 字义库页：左栏检索（字头 / 释义 / 出处，繁简互通，空格分隔多词，可按来源筛选），右栏查看与编辑选中的字；URL 同步 ?q=&origin=&han=。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { BookA, Plus, Search as SearchIcon } from 'lucide-react';
-import { api, type ZiyiEntry, type ZiyiHit } from '@/lib/api';
+import { api, type ZiyiEntry, type ZiyiHit, type ZiyiOrigin } from '@/lib/api';
 import { errorMessage } from '@/lib/notify';
-import { useZiyiStatus } from '@/lib/ziyi';
+import { useZiyiStatus, ZIYI_ORIGIN_LABEL } from '@/lib/ziyi';
 import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { EmptyState, InlineLoading } from '@/components/ui-states';
 import { Highlight } from '@/components/Highlight';
-import { ZiyiEntryView } from '@/components/ZiyiEntryView';
+import { ZiyiEntryView, ZiyiOriginTag } from '@/components/ZiyiEntryView';
 
 const PAGE = 100;
 
@@ -19,6 +19,8 @@ export default function Ziyi() {
   const [params, setParams] = useSearchParams();
   const q = params.get('q') || '';
   const han = params.get('han') || '';
+  const originParam = params.get('origin');
+  const origin = originParam === 'lecture' || originParam === 'ai' || originParam === 'local' ? (originParam as ZiyiOrigin) : null;
   const [input, setInput] = useState(q);
   // URL 的 q 被外部改变（顶栏再点「字义」、前进后退）时同步回输入框；自己防抖写入的不回写，免得吃掉正在输入的空格
   const [syncedQ, setSyncedQ] = useState(q);
@@ -57,7 +59,7 @@ export default function Ziyi() {
     const id = ++reqId.current;
     setLoading(true);
     try {
-      const r = await api.ziyiSearch(q, offset, PAGE);
+      const r = await api.ziyiSearch(q, offset, PAGE, origin);
       if (id !== reqId.current) return;
       setHits((prev) => (offset ? [...prev, ...r.items] : r.items));
       setTotal(r.total);
@@ -67,7 +69,7 @@ export default function Ziyi() {
     } finally {
       if (id === reqId.current) setLoading(false);
     }
-  }, [q]);
+  }, [q, origin]);
 
   useEffect(() => {
     if (installed) void load(0);
@@ -94,7 +96,7 @@ export default function Ziyi() {
         <EmptyState
           icon={<BookA className="w-8 h-8" />}
           title="尚未导入字义库"
-          hint="字义包不随程序分发。请在 设置 → 字义库 中导入字义包（.zip）。"
+          hint="字义文件不随程序分发。请在 设置 → 字义库 中导入字义文件（.json 或 .zip）。"
           action={<Button asChild size="sm"><Link to="/settings?tab=ziyi">去导入</Link></Button>}
         />
       </div>
@@ -131,6 +133,23 @@ export default function Ziyi() {
             <Input data-wb-ziyi-new className="h-8" placeholder="新建：输入字头" value={newHan} onChange={(e) => setNewHan(e.target.value)} />
             <Button type="submit" variant="outline" size="sm" disabled={!newHan.trim()}><Plus /> 新建</Button>
           </form>
+          <div className="flex flex-wrap gap-1" data-wb-ziyi-origin-filter>
+            {([null, 'lecture', 'ai', 'local'] as const).map((o) => {
+              const n = o ? status?.origins?.[o] ?? 0 : status?.count ?? 0;
+              if (o === 'local' && !n) return null;
+              const active = origin === o;
+              return (
+                <button
+                  key={o ?? 'all'}
+                  data-wb-ziyi-origin-opt={o ?? 'all'}
+                  className={`text-xs px-2 py-1 rounded-md border transition-colors ${active ? 'border-primary/60 bg-primary/5 text-foreground' : 'border-border text-muted-foreground hover:border-primary/60'}`}
+                  onClick={() => setParam({ origin: o ?? '' })}
+                >
+                  {o ? ZIYI_ORIGIN_LABEL[o] : '全部'} <span className="stat-num">{n}</span>
+                </button>
+              );
+            })}
+          </div>
           <div className="text-xs text-muted-foreground flex items-center gap-2">
             {q ? <>命中 <span className="stat-num">{total}</span> 字</> : <>全部 <span className="stat-num">{total}</span> 字</>}
             {slow && <InlineLoading text="" />}
@@ -146,6 +165,7 @@ export default function Ziyi() {
                 >
                   <div className="flex items-baseline gap-2">
                     <span className="font-serif text-base">{h.han}</span>
+                    <ZiyiOriginTag origin={h.origin} />
                     {h.field === 'source' && <span className="text-xs text-muted-foreground">出处命中</span>}
                     {h.editedAt && <span className="text-xs text-muted-foreground">本地修改</span>}
                   </div>

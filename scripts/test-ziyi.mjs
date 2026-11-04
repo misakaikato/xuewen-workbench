@@ -1,11 +1,12 @@
-// 字义库后端（specs/2026-11-04-ziyi.md 验收 1）：临时 WORKBENCH_DATA_DIR 下拉起后端，字义包全部运行时合成。
-// 断言：未安装状态；导入解析（嵌套目录、_ 开头、__MACOSX、坏 json、缺释义、重复字）；检索排序 / AND / 繁简；
-// lookup 去重与跳过标点；新建 / 更新 / exists / conflict / 删除；保留与不保留本地修改；备份最多 5 份；
+// 字义库后端（specs/2026-11-04-ziyi.md 验收 1）：临时 WORKBENCH_DATA_DIR 下拉起后端，字义文件全部运行时合成。
+// 断言：未安装状态；导入解析（单 JSON、zip 里一个 JSON、非字义文件、缺字头 / 缺释义、重复字、来源与异体字清洗）；
+// 检索排序 / AND / 繁简 / 来源筛选；lookup 去重、跳过标点、异体字回退；新建 / 更新（保留来源）/ exists / conflict / 删除；
+// 保留与不保留本地修改；备份最多 5 份；合并脚本（课堂优先、待定改用 AI、富文本、异体字）；
 // 导出再导入一致；无效包 400 且数据不变；写盘失败时内存不变；读盘失败 503 且可重试；entries.json 损坏被保留；
 // 3000 条 × 4KB 检索耗时。
 // 运行：node scripts/test-ziyi.mjs
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -79,27 +80,25 @@ const call = async (method, url, body) => {
   return { status: r.status, json };
 };
 
-const entryFile = (han, meaning, source = '') => JSON.stringify({ han, unicode: 'FFFF', meaning, source }, null, 2);
+const ent = (han, meaning, source = '', extra = {}) => ({ han, meaning, source, ...extra });
+const packJson = (entries, extra = {}) => Buffer.from(JSON.stringify({ format: 'xuewen-ziyi', version: 1, entries, ...extra }));
 function makeZip(name, files) {
   const file = path.join(tmp, name);
-  writeZip(file, files.map(([n, d]) => ({ name: n, data: d })));
+  writeZip(file, files);
   return fs.readFileSync(file);
 }
 
-// ---------- 合成字义包（不含任何真实字义） ----------
-const PACK = makeZip('pack1.zip', [
-  ['annotations/甲.json', entryFile('甲', '测试释义：甲字条目，屈曲一次。', '测试出处甲')],
-  ['annotations/乙.json', entryFile('乙', '测试释义：乙字条目，屈曲屈曲屈曲，再屈曲。', '测试出处乙')],
-  ['annotations/丙.json', entryFile('丙', '测试释义：丙字条目，与甲相关。', '测试出处丙，屈曲见此')],
-  ['annotations/sub/丁.json', entryFile('丁', '测试释义：丁字条目，屈曲两次屈曲。', '')],
-  ['annotations/枣.json', entryFile('枣', '测试释义：枣字条目，繁体作棗。', '测试出处枣')],
-  ['annotations/曲.json', entryFile('曲', '测试释义：曲字条目。', '')],
-  ['annotations/dup/甲.json', entryFile('甲', '测试释义：甲字条目（重复，后者为准），屈曲一次。', '测试出处甲2')],
-  ['annotations/_batches.json', JSON.stringify({ batch0: [] })],
-  ['__MACOSX/annotations/._乙.json', 'xx'],
-  ['annotations/坏.json', '{ not json'],
-  ['annotations/缺释义.json', JSON.stringify({ han: '戊' })],
-  ['annotations/readme.txt', 'ignore me'],
+// ---------- 合成字义文件（不含任何真实字义） ----------
+const PACK = packJson([
+  ent('甲', '测试释义：甲字条目，屈曲一次。', '测试出处甲', { origin: 'lecture' }),
+  ent('乙', '测试释义：乙字条目，屈曲屈曲屈曲，再屈曲。', '测试出处乙', { origin: 'ai' }),
+  ent('丙', '测试释义：丙字条目，与甲相关。', '测试出处丙，屈曲见此', { origin: 'ai' }),
+  ent('丁', '测试释义：丁字条目，屈曲两次屈曲。', '', { origin: 'bogus' }),
+  ent('枣', '测试释义：枣字条目，繁体作棗。', '测试出处枣', { origin: 'ai' }),
+  ent('曲', '测试释义：曲字条目。', '', { origin: 'lecture', variants: ['麴', '曲', 'x', '甲乙', '麴'] }),
+  ent('甲', '测试释义：甲字条目（重复，后者为准），屈曲一次。', '测试出处甲2', { origin: 'lecture' }),
+  { han: '戊' },
+  { meaning: '没有字头' },
 ]);
 
 await startServer();
@@ -116,26 +115,31 @@ await startServer();
 }
 
 // ---------- 无效包 ----------
-check('非 zip 400', (await call('POST', '/api/ziyi/import', Buffer.from('hello'))).status === 400);
+check('不是 JSON 400', (await call('POST', '/api/ziyi/import', Buffer.from('hello'))).status === 400);
+check('不是字义文件（缺 format）400', (await call('POST', '/api/ziyi/import', Buffer.from(JSON.stringify({ entries: [ent('甲', 'x')] })))).status === 400);
+check('zip 里两个 JSON 400', (await call('POST', '/api/ziyi/import', makeZip('two.zip', [{ name: 'a.json', data: PACK }, { name: 'b.json', data: PACK }]))).status === 400);
 {
-  const r = await call('POST', '/api/ziyi/import', makeZip('empty.zip', [['a/_x.json', '{}'], ['a/b.json', '{bad']]));
+  const r = await call('POST', '/api/ziyi/import', packJson([{ han: '甲' }]));
   check('0 条有效 400', r.status === 400, r);
   check('0 条有效后仍未安装', (await call('GET', '/api/ziyi/status')).json.installed === false);
 }
 
 // ---------- 导入 ----------
 {
-  const r = await call('POST', '/api/ziyi/import?name=pack1.zip', PACK);
+  const r = await call('POST', '/api/ziyi/import?name=pack1.json', PACK);
   check('导入成功', r.status === 200 && r.json.ok, r);
   check('导入计数', r.json.count === 6 && r.json.added === 6 && r.json.updated === 0 && r.json.removed === 0, r.json);
-  check('无效文件计数（坏 json、缺释义）', r.json.invalidCount === 2 && r.json.invalid.length === 2, r.json.invalid);
+  check('无效条目计数（缺释义、缺字头）', r.json.invalidCount === 2 && r.json.invalid.join('|') === '第 8 条（戊）|第 9 条', r.json.invalid);
   check('重复字计数', r.json.duplicates === 1, r.json);
   check('首次导入无备份', r.json.backup === null);
   const s = (await call('GET', '/api/ziyi/status')).json;
-  check('status 已安装', s.installed && s.count === 6 && s.editedCount === 0 && s.sourceName === 'pack1.zip' && !!s.importedAt, s);
+  check('status 已安装', s.installed && s.count === 6 && s.editedCount === 0 && s.sourceName === 'pack1.json' && !!s.importedAt, s);
+  check('status 按来源计数（非法来源记为未标注）', JSON.stringify(s.origins) === JSON.stringify({ lecture: 2, ai: 3, local: 0, none: 1 }), s.origins);
   const e = (await call('GET', '/api/ziyi/entry?han=甲')).json;
   check('重复字以后出现者为准', e.entry.source === '测试出处甲2', e);
-  check('unicode 由字计算', e.entry.unicode === '7532', e.entry);
+  check('unicode 由字计算、来源带出', e.entry.unicode === '7532' && e.entry.origin === 'lecture', e.entry);
+  const q = (await call('GET', '/api/ziyi/entry?han=' + encodeURIComponent('曲'))).json.entry;
+  check('异体字清洗：只留与字头不同的单个汉字并去重', JSON.stringify(q.variants) === JSON.stringify(['麴']), q.variants);
 }
 
 // ---------- 检索 ----------
@@ -158,6 +162,10 @@ check('非 zip 400', (await call('POST', '/api/ziyi/import', Buffer.from('hello'
   check('繁简：检索棗命中枣', t2s.items[0]?.han === '枣', t2s);
   const page = (await call('GET', '/api/ziyi/search?q=&offset=2&limit=2')).json;
   check('分页', page.total === 6 && page.items.map((x) => x.han).join('') === '乙曲', page);
+  const lec = (await call('GET', '/api/ziyi/search?q=&origin=lecture')).json;
+  check('来源筛选：课堂讲解', lec.items.map((x) => x.han).join('') === '曲甲' && lec.items.every((x) => x.origin === 'lecture'), lec.items);
+  const none = (await call('GET', '/api/ziyi/search?q=' + encodeURIComponent('屈曲') + '&origin=none')).json;
+  check('来源筛选与检索词同时生效', none.total === 1 && none.items[0].han === '丁', none.items);
 }
 
 // ---------- 查询与 lookup ----------
@@ -167,6 +175,8 @@ check('非 zip 400', (await call('POST', '/api/ziyi/import', Buffer.from('hello'
   const lk = (await call('GET', '/api/ziyi/lookup?text=' + encodeURIComponent('甲，甲 a乙！棗无'))).json.items;
   check('lookup 去重、跳过标点与拉丁', lk.map((x) => x.char).join('') === '甲乙棗无', lk.map((x) => x.char));
   check('lookup 命中与 resolvedFrom', lk[0].entry.han === '甲' && lk[2].entry.han === '枣' && lk[2].resolvedFrom === '棗' && lk[3].entry === null, lk);
+  const v = await call('GET', '/api/ziyi/entry?han=' + encodeURIComponent('麴'));
+  check('异体字回退到字头', v.status === 200 && v.json.entry.han === '曲' && v.json.resolvedFrom === '麴', v.json);
   const marks = (await call('GET', '/api/ziyi/lookup?text=' + encodeURIComponent('々〇⺀甲'))).json.items;
   check('lookup 不收々〇与部首', marks.map((x) => x.char).join('') === '甲', marks.map((x) => x.char));
   const many = (await call('GET', '/api/ziyi/lookup?text=' + encodeURIComponent('一二三四五六七八九十百千万亿'))).json.items;
@@ -177,16 +187,13 @@ check('非 zip 400', (await call('POST', '/api/ziyi/import', Buffer.from('hello'
 let yiEditedAt;
 {
   const c = await call('PUT', '/api/ziyi/entry', { han: '戊', meaning: '本地新建：戊。', source: '自拟', create: true });
-  check('新建', c.status === 200 && c.json.entry.han === '戊' && !!c.json.entry.editedAt, c);
+  check('新建标为本机新建', c.status === 200 && c.json.entry.han === '戊' && !!c.json.entry.editedAt && c.json.entry.origin === 'local', c);
   check('新建已存在 409 exists', (await call('PUT', '/api/ziyi/entry', { han: '甲', meaning: 'x', create: true })).json?.code === 'exists');
   check('更新不存在 404', (await call('PUT', '/api/ziyi/entry', { han: '己', meaning: 'x' })).status === 404);
   check('空释义 400', (await call('PUT', '/api/ziyi/entry', { han: '甲', meaning: '  ' })).status === 400);
   check('字头含空白 400', (await call('PUT', '/api/ziyi/entry', { han: '甲 乙', meaning: 'x', create: true })).status === 400);
-  for (const bad of ['_甲', '.乙', '甲/乙', '甲\\乙']) {
-    check(`字头「${bad}」400（导出文件名会被跳过或成路径）`, (await call('PUT', '/api/ziyi/entry', { han: bad, meaning: 'x', create: true })).status === 400);
-  }
   const u = await call('PUT', '/api/ziyi/entry', { han: '乙', meaning: '本地修改：乙。', source: '改过', expectEditedAt: null });
-  check('更新', u.status === 200 && u.json.entry.meaning === '本地修改：乙。', u);
+  check('更新且保留原来源', u.status === 200 && u.json.entry.meaning === '本地修改：乙。' && u.json.entry.origin === 'ai', u);
   yiEditedAt = u.json.entry.editedAt;
   const stale = await call('PUT', '/api/ziyi/entry', { han: '乙', meaning: '另一处修改', expectEditedAt: null });
   check('基于旧版本更新 409 conflict', stale.status === 409 && stale.json.code === 'conflict', stale);
@@ -236,18 +243,22 @@ const backupsDir = path.join(dataDir, 'ziyi', 'backups');
   check('扩展区 unicode 5 位', snapshot['𠀀'].unicode === '20000', snapshot['𠀀']);
   const ex = await call('POST', '/api/ziyi/export', { reveal: false });
   check('导出到桌面目录', ex.status === 200 && ex.json.file.startsWith(exportDir) && fs.existsSync(ex.json.file), ex);
-  const zipNames = new AdmZip(ex.json.file).getEntries().map((e) => e.entryName).sort();
-  check('导出文件名为 <字>.json', zipNames.join(',') === before.map((h) => h + '.json').sort().join(','), zipNames);
-  const one = JSON.parse(new AdmZip(ex.json.file).getEntry('甲.json').getData().toString('utf8'));
-  check('导出条目格式', Object.keys(one).join(',') === 'han,unicode,meaning,source' && one.unicode === '7532', one);
+  const zipNames = new AdmZip(ex.json.file).getEntries().map((e) => e.entryName);
+  check('导出为 zip 里的一个字义文件', zipNames.join(',') === '字义库.json', zipNames);
+  const out = JSON.parse(new AdmZip(ex.json.file).getEntry('字义库.json').getData().toString('utf8'));
+  check('导出格式与导入相同', out.format === 'xuewen-ziyi' && out.entries.length === before.length, { format: out.format, n: out.entries.length });
+  const qu = out.entries.find((x) => x.han === '曲');
+  check('导出带来源与异体字', qu.origin === 'lecture' && JSON.stringify(qu.variants) === '["麴"]', qu);
   const re = (await call('POST', '/api/ziyi/import?keepEdited=0', fs.readFileSync(ex.json.file))).json;
   check('导出再导入条数一致', re.count === before.length && re.added === 0 && re.removed === 0 && re.updated === 0, re);
   let same = true;
   for (const han of before) {
     const e = (await call('GET', '/api/ziyi/entry?han=' + encodeURIComponent(han))).json.entry;
-    if (e.meaning !== snapshot[han].meaning || e.source !== snapshot[han].source) same = false;
+    if (e.meaning !== snapshot[han].meaning || e.source !== snapshot[han].source || e.origin !== snapshot[han].origin) same = false;
   }
   check('导出再导入逐条一致', same);
+  const s = (await call('GET', '/api/ziyi/status')).json;
+  check('导出再导入来源计数一致', s.origins.lecture === 2 && s.origins.local === 1, s.origins);
 }
 
 // ---------- 无效包不动现有数据 ----------
@@ -271,7 +282,7 @@ const backupsDir = path.join(dataDir, 'ziyi', 'backups');
     check('写盘失败后检索不到新内容', (await call('GET', '/api/ziyi/search?q=' + encodeURIComponent('写不进去'))).json.total === 0);
     check('写盘失败时新建报错且不出现', (await call('PUT', '/api/ziyi/entry', { han: '癸', meaning: 'x', create: true })).status >= 500 && (await call('GET', '/api/ziyi/entry?han=癸')).status === 404);
     check('写盘失败时删除报错且仍在', (await call('DELETE', '/api/ziyi/entry?han=甲')).status >= 500 && (await call('GET', '/api/ziyi/entry?han=甲')).status === 200);
-    const im = await call('POST', '/api/ziyi/import?keepEdited=0', makeZip('other.zip', [['x/庚.json', entryFile('庚', '另一个包')]]));
+    const im = await call('POST', '/api/ziyi/import?keepEdited=0', packJson([ent('庚', '另一个包')]));
     check('写盘失败时导入报错', im.status >= 500, im);
     const status1 = (await call('GET', '/api/ziyi/status')).json;
     check('导入写盘失败后现有数据不动', status1.count === status0.count && status1.importedAt === status0.importedAt && (await call('GET', '/api/ziyi/entry?han=庚')).status === 404, status1);
@@ -316,15 +327,49 @@ await startServer();
   check('损坏文件被保留', kept.length === 1, kept);
 }
 
+// ---------- 合并脚本：课堂讲解优先，待定改用 AI，富文本转纯文本，异体字 ----------
+{
+  const lec = path.join(tmp, 'lecture');
+  const ai = path.join(tmp, 'ai');
+  fs.mkdirSync(lec);
+  fs.mkdirSync(ai);
+  const w = (dir, f, obj) => fs.writeFileSync(path.join(dir, f), typeof obj === 'string' ? obj : JSON.stringify(obj));
+  w(lec, '类（類 ）.json', { han: '类（類 ）', meaning: '课堂：类', source: '课一' });
+  w(lec, '体-體.json', { han: '体-體', meaning: JSON.stringify({ root: { children: [{ text: '课堂：体' }] } }), source: '课二' });
+  w(lec, '待.json', { han: '待', meaning: '待定', source: '' });
+  w(lec, '空.json', { han: '空', meaning: '待定' });
+  w(lec, '坏.json', '{ bad');
+  w(ai, '类.json', { han: '类', unicode: '7C7B', meaning: 'AI：类', source: 'ai' });
+  w(ai, '待.json', { han: '待', unicode: '5F85', meaning: 'AI：待', source: 'ai' });
+  w(ai, '新.json', { han: '新', unicode: '65B0', meaning: 'AI：新', source: 'ai' });
+  w(ai, '_batches.json', { batch0: [] });
+  const out = path.join(tmp, 'merged', '字义库.json');
+  const run = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'build-ziyi-pack.mjs'), '--lecture', lec, '--ai', ai, '--out', out], { encoding: 'utf8' });
+  check('合并脚本运行成功', run.status === 0, run.stderr);
+  check('合并脚本报告解析失败与跳过的文件名', run.stdout.includes('解析失败 1（坏.json）') && run.stdout.includes('跳过：1（空.json）'), run.stdout);
+  check('合并脚本报告重叠计数', run.stdout.includes('两边都有：2 字，其中用课堂讲解 1，课堂释义为空或「待定」改用 AI 推导 1'), run.stdout);
+  const pack = JSON.parse(fs.readFileSync(out, 'utf8'));
+  const by = Object.fromEntries(pack.entries.map((x) => [x.han, x]));
+  check('合并结果字头', pack.format === 'xuewen-ziyi' && Object.keys(by).sort().join('') === ['体', '待', '新', '类'].sort().join(''), Object.keys(by));
+  check('重叠以课堂讲解为准', by['类'].origin === 'lecture' && by['类'].meaning === '课堂：类' && JSON.stringify(by['类'].variants) === '["類"]', by['类']);
+  check('课堂待定改用 AI 推导', by['待'].origin === 'ai' && by['待'].meaning === 'AI：待', by['待']);
+  check('只在 AI 目录的为 AI 推导', by['新'].origin === 'ai', by['新']);
+  check('富文本释义转纯文本、体-體 取异体', by['体'].meaning === '课堂：体' && JSON.stringify(by['体'].variants) === '["體"]', by['体']);
+  const r = await call('POST', '/api/ziyi/import?name=' + encodeURIComponent('字义库.json'), fs.readFileSync(out));
+  check('合并结果可直接导入', r.status === 200 && r.json.count === 4, r.json);
+  const t = await call('GET', '/api/ziyi/entry?han=' + encodeURIComponent('類'));
+  check('导入后繁体字查到字头', t.json?.entry?.han === '类', t.json);
+}
+
 // ---------- 性能：3000 条 × 4KB ----------
 {
   const filler = '测试长文本，用于性能。'.repeat(60); // 两段合计约 4KB UTF-8
   const files = [];
   for (let i = 0; i < 3000; i++) {
     const han = String.fromCodePoint(0x4e00 + i * 3);
-    files.push([`p/${han}.json`, entryFile(han, `${filler}关键${i % 97}词${filler}`, `出处 ${i}`)]);
+    files.push(ent(han, `${filler}关键${i % 97}词${filler}`, `出处 ${i}`, { origin: i % 2 ? 'ai' : 'lecture' }));
   }
-  const r = await call('POST', '/api/ziyi/import?keepEdited=0', makeZip('perf.zip', files));
+  const r = await call('POST', '/api/ziyi/import?keepEdited=0', makeZip('perf.zip', [{ name: 'perf/字义库.json', data: packJson(files) }]));
   check('性能数据导入', r.json?.count === 3000, r.json);
   const queries = ['关键5词', '性能', '不存在的词语', '出处 12', '一', '长文本 关键', '用于', '关键96词', '测试', 'abc'];
   const t0 = performance.now();

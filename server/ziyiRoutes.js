@@ -21,7 +21,8 @@ export function mountZiyi(store) {
   r.get('/search', (req, res) => {
     const offset = Math.max(0, Number.parseInt(req.query.offset, 10) || 0);
     const limit = Math.min(200, Math.max(1, Number.parseInt(req.query.limit, 10) || 50));
-    res.json(store.search(String(req.query.q || ''), { offset, limit }));
+    const origin = ['lecture', 'ai', 'local', 'none'].includes(req.query.origin) ? req.query.origin : null;
+    res.json(store.search(String(req.query.q || ''), { offset, limit, origin }));
   });
 
   r.get('/entry', (req, res) => {
@@ -49,10 +50,10 @@ export function mountZiyi(store) {
     }
   });
 
-  // 字义包原始字节（application/zip 或 octet-stream），不走 base64
+  // 字义文件原始字节（JSON，或装着它的 zip），不走 base64
   r.post('/import', express.raw({ type: () => true, limit: '100mb' }), async (req, res) => {
     try {
-      if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: '没有收到字义包' });
+      if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: '没有收到字义文件' });
       const keepEdited = req.query.keepEdited !== '0';
       const name = typeof req.query.name === 'string' ? req.query.name.slice(0, 200) : null;
       res.json(await store.importPack(req.body, { keepEdited, name }));

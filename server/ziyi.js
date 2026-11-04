@@ -1,5 +1,7 @@
-// 字义库：全局（与资料库无关）的单字释义，用户在设置里导入 zip 字义包，数据存 <数据目录>/ziyi/。
-// 字义包不随程序分发：仓库与安装包里都没有字义数据。
+// 字义库：全局（与资料库无关）的单字释义，用户在设置里导入字义文件，数据存 <数据目录>/ziyi/。
+// 字义文件不随程序分发：仓库与安装包里都没有字义数据。
+// 字义文件是一个 JSON（可装在 zip 里）：{ format: 'xuewen-ziyi', version: 1, entries: [{ han, variants?, origin?, meaning, source? }] }
+// origin 标出处：lecture 课堂讲解、ai AI 推导、local 本机新建；缺省为 null（未标注）。
 // 内存常驻一份 + 每条的归一化文本（繁→简等长映射，偏移可直接回到原文）；所有写操作经同一队列串行。
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,6 +19,9 @@ const SNIPPET_PAD = 40;
 const HAN_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u{20000}-\u{3FFFF}]/u;
 const YIELD_EVERY = 256;
 const yieldLoop = () => new Promise((r) => setImmediate(r));
+export const PACK_FORMAT = 'xuewen-ziyi';
+export const ORIGINS = ['lecture', 'ai', 'local'];
+const PACK_FILE = '字义库.json';
 
 const httpError = (status, message, extra) => Object.assign(new Error(message), { status, ...extra });
 
@@ -36,57 +41,76 @@ function cmpHan(a, b) {
   return x.length - y.length;
 }
 
-// 字头即导出文件名：不含空白与路径分隔符，不以 _ 或 . 开头（导入时会被当成元数据跳过）
 function validHan(han) {
-  if (typeof han !== 'string' || !han || /[\s/\\]/.test(han) || /^[_.]/.test(han)) return false;
+  if (typeof han !== 'string' || !han || /\s/.test(han)) return false;
   return Array.from(han).length <= MAX_HAN_CHARS;
 }
+
+/** 异体字：只收与字头不同的单个汉字，去重 */
+function cleanVariants(han, v) {
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const x of v) {
+    if (typeof x === 'string' && Array.from(x).length === 1 && HAN_RE.test(x) && x !== han && !out.includes(x)) out.push(x);
+  }
+  return out;
+}
+
+const cleanOrigin = (o) => (ORIGINS.includes(o) ? o : null);
 
 function stamp(d = new Date()) {
   const p = (n, w = 2) => String(n).padStart(w, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-${p(d.getMilliseconds(), 3)}`;
 }
 
-/** 解析字义包：zip 内任意层级的 *.json；跳过 _ 或 . 开头的文件名、__MACOSX/、非 json 文件。每 256 个文件让出一次事件循环 */
-export async function parsePack(buf) {
-  let zip;
+/** 取出字义文件的 JSON 文本：直接是 JSON，或 zip 里唯一的一个 .json（忽略 __MACOSX/ 与 _ . 开头的文件） */
+function packText(buf) {
+  if (buf.length < 4 || buf.readUInt32LE(0) !== 0x04034b50) return buf.toString('utf8');
+  let jsons;
   try {
-    zip = new AdmZip(buf);
+    jsons = new AdmZip(buf).getEntries().filter((ze) => {
+      const name = ze.entryName.replace(/\\/g, '/');
+      const base = name.split('/').pop();
+      return !ze.isDirectory && !name.split('/').includes('__MACOSX') && /\.json$/i.test(base) && !/^[_.]/.test(base);
+    });
   } catch {
     throw httpError(400, '不是有效的 zip 文件');
   }
-  let zipEntries;
+  if (jsons.length !== 1) throw httpError(400, `压缩包里应当只有一个字义 JSON 文件，实际有 ${jsons.length} 个`);
+  return jsons[0].getData().toString('utf8');
+}
+
+/** 解析字义文件。每 256 条让出一次事件循环 */
+export async function parsePack(buf) {
+  let obj;
   try {
-    zipEntries = zip.getEntries();
-  } catch {
-    throw httpError(400, '不是有效的 zip 文件');
+    obj = JSON.parse(packText(buf).replace(/^\uFEFF/, ''));
+  } catch (e) {
+    if (e.status) throw e;
+    throw httpError(400, '不是有效的 JSON 文件');
+  }
+  if (!obj || obj.format !== PACK_FORMAT || !Array.isArray(obj.entries)) {
+    throw httpError(400, `不是字义库文件（需要 "format": "${PACK_FORMAT}" 和 entries 数组）`);
   }
   const entries = new Map();
   const invalid = [];
   let duplicates = 0;
-  let n = 0;
-  for (const ze of zipEntries) {
-    if (++n % YIELD_EVERY === 0) await yieldLoop();
-    if (ze.isDirectory) continue;
-    const name = ze.entryName.replace(/\\/g, '/');
-    const base = name.split('/').pop();
-    if (name.split('/').includes('__MACOSX')) continue;
-    if (!/\.json$/i.test(base) || base.startsWith('_') || base.startsWith('.')) continue;
-    let obj;
-    try {
-      obj = JSON.parse(ze.getData().toString('utf8').replace(/^﻿/, ''));
-    } catch {
-      invalid.push(name);
-      continue;
-    }
-    const han = obj && typeof obj.han === 'string' ? obj.han.trim() : null;
-    const meaning = obj && typeof obj.meaning === 'string' ? obj.meaning : '';
+  for (let i = 0; i < obj.entries.length; i++) {
+    if ((i + 1) % YIELD_EVERY === 0) await yieldLoop();
+    const x = obj.entries[i];
+    const han = x && typeof x.han === 'string' ? x.han.trim() : null;
+    const meaning = x && typeof x.meaning === 'string' ? x.meaning : '';
     if (!validHan(han) || !meaning.trim()) {
-      invalid.push(name);
+      invalid.push(`第 ${i + 1} 条${han ? `（${han}）` : ''}`);
       continue;
     }
     if (entries.has(han)) duplicates++;
-    entries.set(han, { meaning, source: typeof obj.source === 'string' ? obj.source : '' });
+    entries.set(han, {
+      meaning,
+      source: typeof x.source === 'string' ? x.source : '',
+      origin: cleanOrigin(x.origin),
+      variants: cleanVariants(han, x.variants),
+    });
   }
   return { entries, invalid, duplicates };
 }
@@ -95,12 +119,12 @@ function sortedEntries(entries) {
   return [...entries.keys()].sort(cmpHan).map((han) => [han, entries.get(han)]);
 }
 
-/** 导出格式与导入相同：<han>.json → { han, unicode, meaning, source } */
-function packEntries(entries) {
-  return [...entries].map(([han, e]) => ({
-    name: `${han}.json`,
-    data: JSON.stringify({ han, unicode: unicodeOf(han), meaning: e.meaning, source: e.source }, null, 2) + '\n',
+/** 导出 / 备份：与导入同格式的字义文件，装进 zip 压缩 */
+function packZipEntries(entries) {
+  const out = sortedEntries(entries).map(([han, e]) => ({
+    han, ...(e.variants.length ? { variants: e.variants } : {}), origin: e.origin, meaning: e.meaning, source: e.source,
   }));
+  return [{ name: PACK_FILE, data: JSON.stringify({ format: PACK_FORMAT, version: VERSION, entries: out }, null, 1) + '\n' }];
 }
 
 export class ZiyiStore {
@@ -111,7 +135,8 @@ export class ZiyiStore {
     this.exportDir = exportDir || null;
     this.installed = false;
     this.meta = { importedAt: null, sourceName: null };
-    this.entries = new Map(); // han -> { meaning, source, editedAt }
+    this.entries = new Map(); // han -> { meaning, source, origin, variants, editedAt }
+    this.variantOf = new Map(); // 异体字 -> 字头
     this.norm = new Map(); // han -> { han, meaning, source }（归一化，与原文等长）
     this.order = []; // 按码点排序的 han
     this._loading = null;
@@ -158,6 +183,8 @@ export class ZiyiStore {
       entries.set(han, {
         meaning: e.meaning,
         source: typeof e.source === 'string' ? e.source : '',
+        origin: cleanOrigin(e.origin),
+        variants: cleanVariants(han, e.variants),
         editedAt: typeof e.editedAt === 'string' ? e.editedAt : null,
       });
     }
@@ -183,8 +210,13 @@ export class ZiyiStore {
     this.norm.set(han, normEntry(han, e));
   }
 
+  /** 码点序与异体字索引（字头本身优先，异体字不覆盖已有字头） */
   _resort() {
     this.order = [...this.entries.keys()].sort(cmpHan);
+    this.variantOf = new Map();
+    for (const han of this.order) {
+      for (const v of this.entries.get(han).variants) if (!this.variantOf.has(v)) this.variantOf.set(v, han);
+    }
   }
 
   _write(entries, meta) {
@@ -202,23 +234,31 @@ export class ZiyiStore {
 
   _entryOut(han) {
     const e = this.entries.get(han);
-    return { han, unicode: unicodeOf(han), meaning: e.meaning, source: e.source, editedAt: e.editedAt };
+    return { han, unicode: unicodeOf(han), variants: e.variants, origin: e.origin, meaning: e.meaning, source: e.source, editedAt: e.editedAt };
   }
 
+  /** 字头 → 繁简归一后的字头 → 异体字（原字、归一后） */
   _resolve(han) {
     if (this.entries.has(han)) return { han, resolvedFrom: null };
     const n = normalizeText(han);
     if (n !== han && this.entries.has(n)) return { han: n, resolvedFrom: han };
+    const v = this.variantOf.get(han) ?? this.variantOf.get(n);
+    if (v) return { han: v, resolvedFrom: han };
     return null;
   }
 
   status() {
     let editedCount = 0;
-    for (const e of this.entries.values()) if (e.editedAt) editedCount++;
+    const origins = { lecture: 0, ai: 0, local: 0, none: 0 };
+    for (const e of this.entries.values()) {
+      if (e.editedAt) editedCount++;
+      origins[e.origin ?? 'none']++;
+    }
     return {
       installed: this.installed,
       count: this.installed ? this.entries.size : 0,
       editedCount: this.installed ? editedCount : 0,
+      origins,
       importedAt: this.installed ? this.meta.importedAt : null,
       sourceName: this.installed ? this.meta.sourceName : null,
     };
@@ -243,13 +283,15 @@ export class ZiyiStore {
     });
   }
 
-  search(q, { offset = 0, limit = 50 } = {}) {
+  /** origin：只看某一类来源（lecture / ai / local / none） */
+  search(q, { offset = 0, limit = 50, origin = null } = {}) {
     if (!this.installed) return { total: 0, items: [] };
     const query = String(q || '').trim();
     const terms = query ? query.split(/\s+/).map(normalizeText) : [];
     const qn = normalizeText(query);
     const hits = [];
     for (const han of this.order) {
+      if (origin && (this.entries.get(han).origin ?? 'none') !== origin) continue;
       if (!terms.length) {
         hits.push({ han, tier: 0, count: 0 });
         continue;
@@ -287,7 +329,7 @@ export class ZiyiStore {
         }
         snippet = clip(e[field], at - SNIPPET_PAD, at + len + SNIPPET_PAD);
       }
-      return { han, unicode: unicodeOf(han), snippet, field, editedAt: e.editedAt };
+      return { han, unicode: unicodeOf(han), origin: e.origin, snippet, field, editedAt: e.editedAt };
     });
     return { total: hits.length, items };
   }
@@ -308,8 +350,10 @@ export class ZiyiStore {
           throw httpError(409, `「${h}」已被修改，请重新载入后再编辑`, { code: 'conflict' });
         }
       }
+      const cur = this.installed ? this.entries.get(h) : null;
       const next = new Map(this.entries);
-      next.set(h, { meaning, source: source ?? '', editedAt: now });
+      // 改字保留原来源与异体字；本机新建的标为 local
+      next.set(h, { meaning, source: source ?? '', origin: cur ? cur.origin : 'local', variants: cur ? cur.variants : [], editedAt: now });
       const meta = this.installed ? this.meta : { importedAt: null, sourceName: null };
       // 先落盘再改内存：写失败时界面看到的仍是磁盘上的内容
       await this._write(next, meta);
@@ -339,7 +383,7 @@ export class ZiyiStore {
     return this._serial(async () => {
       const { entries: incoming, invalid, duplicates } = await parsePack(buf);
       if (!incoming.size) {
-        throw httpError(400, invalid.length ? `字义包里没有有效条目（${invalid.length} 个文件格式不对）` : '字义包里没有字义文件（*.json）');
+        throw httpError(400, invalid.length ? `字义文件里没有有效条目（${invalid.length} 条格式不对）` : '字义文件里没有条目');
       }
       const backup = this.installed ? this._backup() : null;
       const before = this.installed ? this.entries : new Map();
@@ -359,7 +403,7 @@ export class ZiyiStore {
       for (const [han, e] of next) {
         const old = before.get(han);
         if (!old) added++;
-        else if (old.meaning !== e.meaning || old.source !== e.source) updated++;
+        else if (old.meaning !== e.meaning || old.source !== e.source || old.origin !== e.origin) updated++;
       }
       let removed = 0;
       for (const han of before.keys()) if (!next.has(han)) removed++;
@@ -388,7 +432,7 @@ export class ZiyiStore {
       }
       if (!ok) dir = path.join(this.dir, 'exports');
       const file = path.join(dir, `字义库-${stamp()}.zip`);
-      writeZip(file, packEntries(sortedEntries(this.entries)));
+      writeZip(file, packZipEntries(this.entries));
       return file;
     });
   }
@@ -403,6 +447,7 @@ export class ZiyiStore {
       this.entries = new Map();
       this.norm = new Map();
       this.order = [];
+      this.variantOf = new Map();
       return backup;
     });
   }
@@ -412,7 +457,7 @@ export class ZiyiStore {
   _backup() {
     let file = path.join(this.backupDir, `ziyi-${stamp()}.zip`);
     for (let i = 1; fs.existsSync(file); i++) file = path.join(this.backupDir, `ziyi-${stamp()}-${i}.zip`);
-    writeZip(file, packEntries(sortedEntries(this.entries)));
+    writeZip(file, packZipEntries(this.entries));
     // 按修改时间轮转（文件名在同毫秒冲突、夏令时回拨时不保证有序）
     const all = fs.readdirSync(this.backupDir)
       .filter((f) => /^ziyi-.*\.zip$/.test(f))

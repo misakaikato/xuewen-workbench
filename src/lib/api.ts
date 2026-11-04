@@ -328,8 +328,8 @@ export const api = {
 
   // ---- 字义库（全局，不分资料库） ----
   ziyiStatus: () => req<ZiyiStatus>('/api/ziyi/status'),
-  ziyiSearch: (q: string, offset = 0, limit = 50) =>
-    req<{ total: number; items: ZiyiHit[] }>(`/api/ziyi/search?q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`),
+  ziyiSearch: (q: string, offset = 0, limit = 50, origin: ZiyiOrigin | 'none' | null = null) =>
+    req<{ total: number; items: ZiyiHit[] }>(`/api/ziyi/search?q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}${origin ? '&origin=' + origin : ''}`),
   ziyiEntry: (han: string) => req<{ entry: ZiyiEntry; resolvedFrom: string | null }>('/api/ziyi/entry?han=' + encodeURIComponent(han)),
   ziyiLookup: (text: string) => req<{ items: ZiyiLookupItem[] }>('/api/ziyi/lookup?text=' + encodeURIComponent(text)),
   ziyiSave: (body: { han: string; meaning: string; source: string; expectEditedAt?: string | null; create?: boolean }) =>
@@ -337,7 +337,7 @@ export const api = {
   ziyiDelete: (han: string) => req<{ ok: boolean }>('/api/ziyi/entry?han=' + encodeURIComponent(han), { method: 'DELETE' }),
   ziyiImport: (file: Blob, name: string, keepEdited: boolean) =>
     req<ZiyiImportResult>(`/api/ziyi/import?keepEdited=${keepEdited ? 1 : 0}&name=${encodeURIComponent(name)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: file,
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
     }),
   ziyiExport: () => req<{ ok: boolean; file: string }>('/api/ziyi/export', json('POST', {})),
   ziyiUninstall: () => req<{ ok: boolean; backup: string | null }>('/api/ziyi', { method: 'DELETE' }),
@@ -345,11 +345,16 @@ export const api = {
 
 // ---------- 字义库 ----------
 
+/** 字义出处：lecture 课堂讲解、ai AI 推导、local 本机新建；null 为未标注 */
+export type ZiyiOrigin = 'lecture' | 'ai' | 'local';
+
 export interface ZiyiStatus {
   installed: boolean;
   count: number;
   /** 本地改过或新建的字数（再导入时可保留） */
   editedCount: number;
+  /** 按出处计数；none 为未标注 */
+  origins: Record<ZiyiOrigin | 'none', number>;
   importedAt: string | null;
   sourceName: string | null;
 }
@@ -358,15 +363,19 @@ export interface ZiyiEntry {
   han: string;
   /** 单字的码点（大写十六进制），多字为 null */
   unicode: string | null;
+  /** 异体字（如「类」的「類」），查这些字也会落到本条 */
+  variants: string[];
+  origin: ZiyiOrigin | null;
   meaning: string;
   source: string;
-  /** 本地最后修改时间；从字义包导入且未改过为 null */
+  /** 本地最后修改时间；从字义文件导入且未改过为 null */
   editedAt: string | null;
 }
 
 export interface ZiyiHit {
   han: string;
   unicode: string | null;
+  origin: ZiyiOrigin | null;
   snippet: string;
   field: 'han' | 'meaning' | 'source';
   editedAt: string | null;

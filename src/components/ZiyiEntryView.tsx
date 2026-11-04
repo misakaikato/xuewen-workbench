@@ -2,16 +2,30 @@
 // 没有条目时显示「暂无字义」与新建入口；保存带版本校验（expectEditedAt），被别处改过时提示重新载入。
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, PenLine, Plus, Trash2 } from 'lucide-react';
-import { api, type ZiyiEntry } from '@/lib/api';
+import { api, type ZiyiEntry, type ZiyiOrigin } from '@/lib/api';
 import { errorMessage, notify } from '@/lib/notify';
 import { registerUnsaved } from '@/lib/unsaved';
-import { refreshZiyiStatus } from '@/lib/ziyi';
+import { refreshZiyiStatus, ZIYI_ORIGIN_LABEL } from '@/lib/ziyi';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+
+/** 出处标签：课堂讲解用正文色描边，AI 推导与本机新建用弱色，未标注不显示 */
+export function ZiyiOriginTag({ origin }: { origin: ZiyiOrigin | null }) {
+  if (!origin) return null;
+  const strong = origin === 'lecture';
+  return (
+    <span
+      data-wb-ziyi-origin={origin}
+      className={`text-xs px-1.5 rounded-sm border whitespace-nowrap ${strong ? 'border-foreground/40 text-foreground' : 'border-border text-muted-foreground'}`}
+    >
+      {ZIYI_ORIGIN_LABEL[origin]}
+    </span>
+  );
+}
 
 export function ZiyiEntryView({
   char,
@@ -102,8 +116,10 @@ export function ZiyiEntryView({
 
   return (
     <div data-wb-ziyi-entry={han} className={compact ? 'space-y-2' : 'space-y-3'}>
-      <div className="flex items-baseline gap-3">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className={`font-serif ${compact ? 'text-2xl' : 'text-3xl'}`}>{han}</span>
+        {entry && entry.variants.length > 0 && <span className="font-serif text-sm text-muted-foreground" title="异体字">（{entry.variants.join(' ')}）</span>}
+        {entry && <ZiyiOriginTag origin={entry.origin} />}
         {(entry?.unicode ?? null) && <span className="text-xs text-muted-foreground stat-num">U+{entry!.unicode}</span>}
         {resolvedFrom && <span className="text-xs text-muted-foreground">由「{resolvedFrom}」查到</span>}
         {entry?.editedAt && <span className="text-xs text-muted-foreground" title={'本地修改于 ' + new Date(entry.editedAt).toLocaleString()}>本地修改</span>}
@@ -166,7 +182,7 @@ export function ZiyiEntryView({
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>删除「{han}」的字义？</AlertDialogTitle>
-              <AlertDialogDescription>只删除本机字义库里的这一条；之后重新导入字义包会再出现。</AlertDialogDescription>
+              <AlertDialogDescription>只删除本机字义库里的这一条；之后重新导入字义文件会再出现。</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>

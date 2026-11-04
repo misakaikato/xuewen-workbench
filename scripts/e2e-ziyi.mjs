@@ -21,9 +21,12 @@ fs.mkdirSync(corpus, { recursive: true });
 const DOC = '诗.md';
 fs.writeFileSync(path.join(corpus, DOC), '# 诗\n\n宛在水中央，甲乙丙丁𠀀。\n\n另起一段文字。\n');
 
+// 字义文件装在 zip 里上传（同时覆盖 zip 外壳的解析）；宛、甲为课堂讲解，乙为 AI 推导
 const packFile = path.join(tmp, 'test-ziyi.zip');
-const entry = (han, meaning) => ({ name: `annotations/${han}.json`, data: JSON.stringify({ han, meaning, source: '测试出处' }) });
-writeZip(packFile, [entry('宛', '测试释义：宛，曲折之意。'), entry('甲', '测试释义：甲，第一。'), entry('乙', '测试释义：乙，第二。')]);
+const entry = (han, meaning, origin) => ({ han, meaning, source: '测试出处', origin });
+writeZip(packFile, [{ name: '字义库.json', data: JSON.stringify({ format: 'xuewen-ziyi', version: 1, entries: [
+  entry('宛', '测试释义：宛，曲折之意。', 'lecture'), entry('甲', '测试释义：甲，第一。', 'lecture'), entry('乙', '测试释义：乙，第二。', 'ai'),
+] }) }]);
 const PACK_B64 = fs.readFileSync(packFile).toString('base64');
 
 let server, win, passed = 0;
@@ -181,8 +184,9 @@ async function main() {
     return true;
   })()`);
   await until(`document.querySelector('[data-wb-ziyi-status]').textContent.includes('已导入 3 字')`, 8000);
+  check('设置页显示来源计数', (await exec(`document.querySelector('[data-wb-ziyi-status]').textContent`)).includes('课堂讲解 2，AI 推导 1'));
   check('导入后状态显示 3 字', true);
-  await until(`document.body.textContent.includes('字义包已导入')`);
+  await until(`document.body.textContent.includes('字义文件已导入')`);
   check('导入结果 toast', true);
   await until(`!!document.querySelector('[data-wb-ziyi-nav]')`);
   check('导入后顶栏出现「字义」（不重载）', true);
@@ -196,6 +200,7 @@ async function main() {
   await exec(`document.querySelector('[data-wb-ziyi-sel]').click(); true`);
   await until(`!!document.querySelector('[data-wb-ziyi-panel] [data-wb-ziyi-entry="宛"] [data-wb-ziyi-text]')`);
   check('点「字义」侧栏显示该字释义', (await exec(`document.querySelector('[data-wb-ziyi-panel] [data-wb-ziyi-text]').textContent`)).includes('测试释义：宛'));
+  check('侧栏标出「课堂讲解」', (await exec(`document.querySelector('[data-wb-ziyi-panel] [data-wb-ziyi-origin]')?.textContent`)) === '课堂讲解');
   check('点「字义」后浮动条收起', !(await exec(`!!document.querySelector('[data-wb-selbar]')`)));
 
   const bar2 = await select('甲乙');
@@ -203,6 +208,7 @@ async function main() {
   await exec(`document.querySelector('[data-wb-ziyi-sel]').click(); true`);
   await until(`document.querySelectorAll('[data-wb-ziyi-panel] [data-wb-ziyi-entry]').length === 2`);
   check('多字选区逐字列出', (await exec(`[...document.querySelectorAll('[data-wb-ziyi-panel] [data-wb-ziyi-entry]')].map((e) => e.dataset.wbZiyiEntry).join('')`)) === '甲乙');
+  check('多字各自标出来源', (await exec(`[...document.querySelectorAll('[data-wb-ziyi-panel] [data-wb-ziyi-origin]')].map((e) => e.dataset.wbZiyiOrigin).join(',')`)) === 'lecture,ai');
   const barB = await select('𠀀');
   check('扩展 B 区单字选区只有「字义」', JSON.stringify(barB) === JSON.stringify(['字义']), barB);
   await clearSel();
@@ -250,6 +256,12 @@ async function main() {
   await until(`location.pathname === '/ziyi' && !!document.querySelector('[data-wb-ziyi-search]')`);
   await until(`document.querySelectorAll('[data-wb-ziyi-hit]').length === 3`);
   check('字义库页列出全部', true);
+  await exec(`document.querySelector('[data-wb-ziyi-origin-opt="ai"]').click(); true`);
+  await until(`new URLSearchParams(location.search).get('origin') === 'ai' && document.querySelectorAll('[data-wb-ziyi-hit]').length === 1`);
+  check('按来源筛选：AI 推导只剩乙', (await exec(`document.querySelector('[data-wb-ziyi-hit]').dataset.wbZiyiHit`)) === '乙');
+  await exec(`document.querySelector('[data-wb-ziyi-origin-opt="all"]').click(); true`);
+  await until(`!new URLSearchParams(location.search).get('origin') && document.querySelectorAll('[data-wb-ziyi-hit]').length === 3`);
+  check('切回全部', true);
   await setValue('[data-wb-ziyi-search]', '改写过');
   await until(`new URLSearchParams(location.search).get('q') === '改写过' && document.querySelectorAll('[data-wb-ziyi-hit]').length === 1`);
   check('检索到侧栏修改后的内容', (await exec(`document.querySelector('[data-wb-ziyi-hit]').dataset.wbZiyiHit`)) === '甲');
@@ -267,6 +279,9 @@ async function main() {
   await clickButton('[data-wb-ziyi-detail] [data-wb-ziyi-entry="戊"]', '创建');
   await until(`(document.querySelector('[data-wb-ziyi-detail] [data-wb-ziyi-entry="戊"] [data-wb-ziyi-text]')?.textContent || '').includes('新建条目')`);
   check('字义库页新建', (await api('/api/ziyi/status')).count === 4);
+  check('新建条目标为「本机新建」', (await exec(`document.querySelector('[data-wb-ziyi-detail] [data-wb-ziyi-origin]')?.textContent`)) === '本机新建');
+  await until(`!!document.querySelector('[data-wb-ziyi-origin-opt="local"]')`);
+  check('来源筛选出现「本机新建」', (await exec(`document.querySelector('[data-wb-ziyi-origin-opt="local"]').textContent`)).includes('1'));
 
   console.log(`\n全部通过：${passed} 项`);
 }
