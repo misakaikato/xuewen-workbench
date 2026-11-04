@@ -65,6 +65,31 @@ async function caseSearch() {
   check('1 命令面板「全文检索」带 mode=exact', await exec(`location.search.includes('mode=exact')`), await exec('location.href'));
 }
 
+// ---------- 2 库目录短暂不可达：保留上次结果、如实提示，目录回来后自动恢复并继续监听 ----------
+async function caseUnreachable() {
+  const moved = corpus + '-moved';
+  await win.loadURL(base + '/');
+  await until(`document.body.innerText.includes('自动监听已开启')`);
+  const countText = () => exec(`(() => { const el = [...document.querySelectorAll('div')].find((d) => d.textContent.trim() === '全部文档'); return el?.parentElement?.textContent || ''; })()`);
+  const before = await countText();
+  fs.renameSync(corpus, moved);
+  try {
+    await until(`document.body.innerText.includes('知识库目录暂时无法访问')`, 20000);
+    const t = await pageText();
+    check('2 不可达：概览如实提示原因', t.includes('不存在或已被移走') && t.includes('目录恢复后会自动重新扫描'), t.slice(0, 400));
+    check('2 不可达：顶栏显示目录不可访问、不再写自动监听已开启', t.includes('目录不可访问') && !t.includes('自动监听已开启'), t.slice(0, 200));
+    check('2 不可达：文档数保持上次结果', (await countText()) === before, { before, now: await countText() });
+    check('2 不可达：不再出现「其余内容正常」的误导提示', !t.includes('其余内容正常'), t.slice(0, 300));
+  } finally {
+    fs.renameSync(moved, corpus);
+  }
+  await until(`!document.body.innerText.includes('知识库目录暂时无法访问') && document.body.innerText.includes('自动监听已开启')`, 20000);
+  check('2 目录回来：自动恢复且监听重开', true);
+  W('笔记/恢复后新建.md', '# 恢复后新建');
+  await until(`document.body.innerText.includes('恢复后新建.md')`, 15000);
+  check('2 目录回来：新建文件自动出现在目录树', true);
+}
+
 async function main() {
   server = spawn(process.execPath, [path.join(root, 'server/index.js')], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', WORKBENCH_PORT: String(port), WORKBENCH_DATA_DIR: path.join(tmp, 'data'), WORKBENCH_STATIC_DIR: path.join(root, 'dist'), WORKBENCH_RAG_EMBED: 'mock' },
@@ -82,12 +107,14 @@ async function main() {
   win.webContents.on('console-message', (event) => { if (event.level === 'error' && !/status of (404|409|400)/.test(event.message)) renderErrors.push(event.message); });
 
   if (want(1)) await caseSearch();
+  if (want(2)) await caseUnreachable(); // 会移动语料目录，放在最后
 
   check('渲染进程无代码报错', renderErrors.length === 0, renderErrors.slice(-5));
   console.log(`${passed} audit-fix checks passed.`);
 }
 main().then(() => finish(0), (e) => { console.error(e); return finish(1); });
 async function finish(code) {
+  if (!fs.existsSync(corpus) && fs.existsSync(corpus + '-moved')) fs.renameSync(corpus + '-moved', corpus);
   if (server && server.exitCode === null) { server.kill('SIGTERM'); await new Promise((r) => server.once('exit', r)); }
   win?.destroy();
   fs.rmSync(tmp, { recursive: true, force: true });

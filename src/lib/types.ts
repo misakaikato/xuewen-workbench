@@ -28,6 +28,8 @@ export interface ScanStatus {
   counts: { files: number; dirs: number; md: number; json: number; txt: number; doc: number; docx: number; html: number } | null;
   dirErrors: { path: string; reason: string }[];
   fileErrors: { path: string; reason: string }[];
+  /** 根目录暂时不可达：期间保留上次扫描结果，目录恢复后自动重扫 */
+  unreachable?: { since: string; reason: string } | null;
 }
 
 /** 后台索引进度（/api/status 的 indexing 字段）：phase 结束后回到 null，失败时 indexError 有值 */

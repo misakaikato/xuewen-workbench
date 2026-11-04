@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import chokidar from 'chokidar';
 import { EventEmitter } from 'node:events';
 import { withActivity, SLOW_FS_OP_MS } from './lagWatch.js';
+import { fsErrorText } from './fsErrors.js';
 
 export const SUPPORTED_EXTS = ['.md', '.json', '.txt', '.doc', '.docx', '.html', '.htm'];
 // 元数据旁注文件：<原文件名>.meta.json，不出现在目录树/检索中
@@ -286,12 +287,19 @@ export class Scanner extends EventEmitter {
     this.generation = 0;
     this._debounce = null;
     this.showMetaFiles = false; // 由外部按设置注入；true 时 annotations 等派生文件也进 files
+    // 根目录不可达（移动硬盘拔出、网络盘断开、目录被移走）：{ since, reason }。
+    // 期间保留上一份快照、关掉失效的监听，并定时探测；目录回来后自动重扫并重开监听。
+    this.unreachable = null;
+    this.probeIntervalMs = 5000;
+    this._probe = null;
+    this._watchWanted = false; // 调用过 startWatch 且未 stopWatch：恢复可达后据此重开监听
   }
 
   setBaseDir(baseDir) {
     this.stopWatch();
     this.baseDir = baseDir;
     this.snapshot = null;
+    this.unreachable = null;
     this.generation++;
   }
 
@@ -319,6 +327,17 @@ export class Scanner extends EventEmitter {
           },
         })
       );
+      if (result.dirErrors.some((e) => e.path === '.')) {
+        const err = await fs.promises.access(this.baseDir).then(() => null, (e) => e);
+        this._enterUnreachable(err ? fsErrorText(err) : '无法访问');
+        if (this.snapshot) {
+          // 保留上一份快照、不发 scan-done：空结果会让文本/内链/RAG 索引把全部文档当成已删除
+          console.warn('[scan] 知识库目录不可访问，保留上次扫描结果: ' + this.baseDir + '（' + this.unreachable.reason + '）');
+          return this.snapshot;
+        }
+      } else if (this.unreachable || (this._watchWanted && !this.watcher)) {
+        this._leaveUnreachable();
+      }
       this.scanned = result.files.length;
       this.emit('scan-progress', { scanned: this.scanned });
       this.snapshot = { ...result, scannedAt: new Date().toISOString() };
@@ -333,7 +352,19 @@ export class Scanner extends EventEmitter {
   }
 
   startWatch() {
-    this.stopWatch();
+    this._watchWanted = true;
+    if (!this.unreachable) this._openWatcher(); // 不可达期间只记意图，恢复后由 _leaveUnreachable 打开
+  }
+
+  stopWatch() {
+    this._watchWanted = false;
+    this._closeWatcher();
+    clearTimeout(this._probe);
+    this._probe = null;
+  }
+
+  _openWatcher() {
+    this._closeWatcher();
     if (!this.baseDir) return;
     try {
       this.watcher = chokidar.watch(this.baseDir, {
@@ -346,18 +377,52 @@ export class Scanner extends EventEmitter {
         this._debounce = setTimeout(() => this.rescan(), 600);
       };
       this.watcher.on('all', trigger);
-      this.watcher.on('error', (e) => this.emit('watch-error', e));
+      // 监听出错（如 Windows 上根目录被删）也重扫一次：由扫描结果判断是否已不可达
+      this.watcher.on('error', (e) => {
+        this.emit('watch-error', e);
+        trigger();
+      });
     } catch (e) {
       this.emit('watch-error', e);
     }
   }
 
-  stopWatch() {
+  _closeWatcher() {
     if (this.watcher) {
       try { this.watcher.close(); } catch { /* ignore */ }
       this.watcher = null;
     }
     clearTimeout(this._debounce);
+  }
+
+  _enterUnreachable(reason) {
+    if (this.unreachable) this.unreachable.reason = reason;
+    else this.unreachable = { since: new Date().toISOString(), reason };
+    this._closeWatcher(); // 根目录没了，监听已失效
+    this._scheduleProbe();
+  }
+
+  _leaveUnreachable() {
+    this.unreachable = null;
+    clearTimeout(this._probe);
+    this._probe = null;
+    if (this._watchWanted && !this.watcher) this._openWatcher();
+  }
+
+  // 可达性探测：setTimeout 链（上一次结束才排下一次，慢盘不堆积），可达即重扫，由扫描结果决定是否恢复
+  _scheduleProbe() {
+    if (this._probe) return;
+    const baseDir = this.baseDir;
+    this._probe = setTimeout(async () => {
+      this._probe = null;
+      if (!this.unreachable || this.baseDir !== baseDir) return;
+      const ok = await fs.promises.access(baseDir).then(() => true, () => false);
+      if (ok && this.unreachable && this.baseDir === baseDir) {
+        await this.rescan().catch((e) => console.warn('[scan] 恢复扫描失败: ' + e.message));
+      }
+      if (this.unreachable && this.baseDir === baseDir) this._scheduleProbe();
+    }, this.probeIntervalMs);
+    this._probe.unref?.();
   }
 
   status() {
@@ -382,6 +447,7 @@ export class Scanner extends EventEmitter {
         : null,
       dirErrors: this.snapshot?.dirErrors || [],
       fileErrors: this.snapshot?.fileErrors || [],
+      unreachable: this.unreachable ? { ...this.unreachable } : null,
     };
   }
 }

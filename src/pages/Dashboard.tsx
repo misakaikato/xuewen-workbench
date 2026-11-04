@@ -101,7 +101,7 @@ export default function Dashboard() {
           <h1 className="text-lg font-semibold">知识库概览</h1>
           <div className="text-xs text-muted-foreground mt-0.5">
             {config.baseDir} · {config.status.scanning ? '扫描中…' : stats ? `扫描于 ${new Date(stats.scannedAt).toLocaleString('zh-CN')}` : loading ? '加载中…' : '等待扫描'}
-            {config.status.watching ? ' · 自动监听已开启' : ' · 可手动重扫'}
+            {config.status.unreachable ? ' · 目录不可访问' : config.status.watching ? ' · 自动监听已开启' : ' · 可手动重扫'}
           </div>
         </div>
         <Button
@@ -125,7 +125,17 @@ export default function Dashboard() {
         </div>
       )}
 
-      {(config.status.dirErrors.length > 0 || config.status.fileErrors.length > 0) && (
+      {config.status.unreachable && (
+        <div className="text-xs rounded border border-destructive/40 bg-destructive/10 text-destructive p-3 flex items-center gap-2" role="alert">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span className="flex-1">
+            知识库目录暂时无法访问：{config.status.unreachable.reason}。目录恢复后会自动重新扫描，也可以点「重新扫描」。
+            {(config.status.counts?.files ?? 0) > 0 && '下面显示的是上次扫描的结果。'}
+          </span>
+        </div>
+      )}
+
+      {!config.status.unreachable && (config.status.dirErrors.length > 0 || config.status.fileErrors.length > 0) && (
         <div className="text-xs rounded border border-warning/40 bg-warning-soft text-warning-foreground p-3 flex gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0 text-warning" />
           <div>

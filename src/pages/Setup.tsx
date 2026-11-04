@@ -64,6 +64,7 @@ export default function Setup() {
   const libStatusText = (l: (typeof libraries)[number]) => {
     const s = l.status;
     if (s.scanning) return '扫描中…';
+    if (s.unreachable) return '目录不可访问：' + s.unreachable.reason;
     if (!s.scannedAt) return s.baseDir ? '目录不可访问' : '未扫描';
     const c = s.counts;
     return `共 ${c?.files ?? 0} 文件${s.watching ? ' · 自动监听' : ''}`;

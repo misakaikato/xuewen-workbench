@@ -178,7 +178,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
             : next;
         });
         const active = config?.dsId ? st.libs?.[config.dsId] : null;
-        if (active?.scannedAt && config?.status.scannedAt && active.scannedAt !== config.status.scannedAt) {
+        // 目录不可达期间快照不变（scannedAt 不动），可达性与监听状态的变化也要拉一次配置
+        const reachChanged = !!config && (!!st.unreachable !== !!config.status.unreachable || st.watching !== config.status.watching);
+        if ((active?.scannedAt && config?.status.scannedAt && active.scannedAt !== config.status.scannedAt) || reachChanged) {
           await refreshConfig();
         }
       } catch { /* 后端未就绪时忽略 */ }
