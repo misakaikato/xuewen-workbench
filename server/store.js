@@ -248,7 +248,7 @@ export function saveConfig(baseDir) {
 export function getUiSettings() {
   const s = readJson(UI_SETTINGS_FILE, null);
   if (!s || typeof s !== 'object') {
-    return { theme: 'A', autoUpdate: true, notesDir: '阅读笔记', showMetaFiles: false, agentEnabled: false, wordConcurrency: 2 };
+    return { theme: 'A', autoUpdate: true, notesDir: '阅读笔记', showMetaFiles: false, agentEnabled: false, wordConcurrency: 2, ziyiGlyphs: true };
   }
   return {
     theme: UI_THEMES.includes(s.theme) ? s.theme : 'A',
@@ -260,6 +260,8 @@ export function getUiSettings() {
     agentEnabled: typeof s.agentEnabled === 'boolean' ? s.agentEnabled : false,
     // 建索引时同时解析的 Word 文档数（worker 线程数），1–8
     wordConcurrency: isWordConcurrency(s.wordConcurrency) ? s.wordConcurrency : 2,
+    // 查字时是否联网从 zi.tools 取字形演变（只取正在看的字，缓存在 ziglyphs/）
+    ziyiGlyphs: typeof s.ziyiGlyphs === 'boolean' ? s.ziyiGlyphs : true,
   };
 }
 

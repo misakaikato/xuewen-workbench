@@ -141,6 +141,8 @@ export interface UiSettings {
   agentEnabled: boolean;
   /** 建索引时同时解析的 Word 文档数，1–8，缺省 2 */
   wordConcurrency: number;
+  /** 查字时联网从 zi.tools 取字形演变，缺省 true */
+  ziyiGlyphs: boolean;
 }
 
 export const api = {
@@ -341,6 +343,8 @@ export const api = {
     }),
   ziyiExport: () => req<{ ok: boolean; file: string }>('/api/ziyi/export', json('POST', {})),
   ziyiUninstall: () => req<{ ok: boolean; backup: string | null }>('/api/ziyi', { method: 'DELETE' }),
+  ziyiGlyphs: (han: string, refresh = false) =>
+    req<ZiyiGlyphs>('/api/ziyi/glyphs?han=' + encodeURIComponent(han) + (refresh ? '&refresh=1' : '')),
 };
 
 // ---------- 字义库 ----------
@@ -386,6 +390,15 @@ export interface ZiyiLookupItem {
   entry: ZiyiEntry | null;
   /** 繁简回退命中时为原字（如查「棗」得到「枣」） */
   resolvedFrom: string | null;
+}
+
+/** 一个字的字形演变（来自 zi.tools，本机缓存） */
+export interface ZiyiGlyphs {
+  char: string;
+  fetchedAt: string;
+  /** zi.tools 上这个字的页面 */
+  url: string;
+  items: { variant: string; style: string; styleName: string; period: string; label: string; src: string }[];
 }
 
 export interface ZiyiImportResult {

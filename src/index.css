@@ -197,3 +197,8 @@ mark.wb-find-hl { background: hsl(48 95% 70%); color: inherit; border-radius: 2p
 .dark mark.wb-find-hl { background: hsl(48 80% 35%); }
 mark.wb-find-current { outline: 2px solid currentColor; outline-offset: 1px; }
 :root[data-theme="C"] mark.wb-find-hl { background: var(--wb-hl); color: #f3e7c9; }
+
+/* 字形演变图（zi.tools 的 PNG，白底黑字、无透明）：浅色主题正片叠底融进卡片底色，深色主题反相后滤色 */
+.wb-glyph-img { mix-blend-mode: multiply; }
+.dark .wb-glyph-img,
+[data-theme="C"] .wb-glyph-img { filter: invert(1); mix-blend-mode: screen; }

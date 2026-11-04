@@ -4,7 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { BookA, Plus, Search as SearchIcon } from 'lucide-react';
 import { api, type ZiyiEntry, type ZiyiHit } from '@/lib/api';
 import { errorMessage } from '@/lib/notify';
-import { useZiyiStatus, ZIYI_ORIGIN_FILTERS } from '@/lib/ziyi';
+import { displayZiyiText, useZiyiStatus, ZIYI_ORIGIN_FILTERS } from '@/lib/ziyi';
 import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -169,7 +169,7 @@ export default function Ziyi() {
                     {h.field === 'source' && <span className="text-xs text-muted-foreground">出处命中</span>}
                     {h.editedAt && <span className="text-xs text-muted-foreground">本地修改</span>}
                   </div>
-                  <div className="text-xs text-muted-foreground line-clamp-2"><Highlight text={h.snippet} terms={terms} emphasis /></div>
+                  <div className="text-xs text-muted-foreground line-clamp-2"><Highlight text={displayZiyiText(h.snippet)} terms={terms} emphasis /></div>
                 </button>
               </li>
             ))}

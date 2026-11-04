@@ -1,11 +1,30 @@
 // 字义库路由：挂在 /api/ziyi，全局（不带资料库作用域）
 import express, { Router } from 'express';
 import { revealInFolder } from './hostOpen.js';
+import { SITE, STYLE_NAMES } from './ziGlyphs.js';
 
 const send = (res, e) => res.status(e.status || 500).json({ error: e.message || String(e), ...(e.code ? { code: e.code } : {}) });
 
-export function mountZiyi(store) {
+/** glyphs：ZiGlyphs 实例；glyphsEnabled：读 ui-settings.ziyiGlyphs 的函数 */
+export function mountZiyi(store, { glyphs, glyphsEnabled } = {}) {
   const r = Router();
+
+  // 字形演变：与字义库是否导入无关，挂在读盘中间件之前
+  r.get('/glyphs', async (req, res) => {
+    if (!glyphs || !glyphsEnabled?.()) return res.status(409).json({ error: '已关闭联网获取字形', code: 'glyphs-disabled' });
+    try {
+      const rec = await glyphs.get(String(req.query.han || ''), { refresh: req.query.refresh === '1' });
+      res.json({
+        char: rec.char,
+        fetchedAt: rec.fetchedAt,
+        url: SITE + encodeURIComponent(rec.char),
+        items: rec.items.map(({ png, ...x }) => ({ ...x, styleName: STYLE_NAMES[x.style] || x.style, src: 'data:image/png;base64,' + png })),
+      });
+    } catch (e) {
+      send(res, e);
+    }
+  });
+
   // 首次请求时读盘；读不了（权限、占用、损坏且无法保留）返回 503，下次请求重试
   r.use(async (_req, res, next) => {
     try {

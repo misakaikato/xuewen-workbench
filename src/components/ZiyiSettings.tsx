@@ -1,5 +1,5 @@
 // 设置 → 字义库：导入字义文件（.json，或装着它的 .zip）、导出、移除。字义文件不随程序分发，数据只存本机数据目录的 ziyi/。
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Download, FileArchive, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -7,6 +7,7 @@ import { errorMessage, notify } from '@/lib/notify';
 import { refreshZiyiStatus, useZiyiStatus, ZIYI_ORIGIN_FILTERS } from '@/lib/ziyi';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Switch } from '@/components/ui/switch';
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -19,6 +20,27 @@ export default function ZiyiSettings() {
   const [busy, setBusy] = useState<null | 'import' | 'export' | 'remove'>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const installed = status?.installed === true;
+  // 查字时联网取字形演变（ui-settings.ziyiGlyphs）；null = 还没读到
+  const [glyphsOn, setGlyphsOn] = useState<boolean | null>(null);
+  const [glyphsSaving, setGlyphsSaving] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.getUiSettings()
+      .then((s) => { if (alive) setGlyphsOn(s.ziyiGlyphs !== false); })
+      .catch((e) => notify('读取字形设置失败：' + errorMessage(e), { kind: 'error' }));
+    return () => { alive = false; };
+  }, []);
+  const onToggleGlyphs = async (v: boolean) => {
+    setGlyphsSaving(true);
+    try {
+      const saved = await api.saveUiSettings({ ziyiGlyphs: v });
+      setGlyphsOn(saved.ziyiGlyphs !== false);
+    } catch (e) {
+      notify('保存字形设置失败：' + errorMessage(e), { kind: 'error' });
+    } finally {
+      setGlyphsSaving(false);
+    }
+  };
   const edited = status?.editedCount ?? 0;
 
   const onFile = async (f: File | undefined) => {
@@ -124,6 +146,21 @@ export default function ZiyiSettings() {
         )}
       </div>
       {installed && <p className="text-xs text-muted-foreground mt-2">每次替换或移除前会自动备份到数据目录的 <code className="text-xs">ziyi/backups/</code>（保留最近 5 份）。</p>}
+
+      <div className="mt-4 pt-4 border-t border-border" data-wb-ziyi-glyphs-setting>
+        <label className="flex items-center gap-2 text-sm">
+          <Switch
+            checked={glyphsOn === true}
+            disabled={glyphsOn === null || glyphsSaving}
+            onCheckedChange={(v) => { void onToggleGlyphs(v); }}
+          />
+          查字时联网获取字形演变（zi.tools 字統网）
+        </label>
+        <p className="text-xs text-muted-foreground mt-1">
+          只取正在查看的那个字（甲骨、金文、简帛、篆、隶、楷等代表字形），取过的缓存在本机数据目录的
+          <code className="text-xs">ziglyphs/</code>，再看不联网；不做批量抓取。关闭后不再向 zi.tools 发送任何请求。
+        </p>
+      </div>
 
       {confirmRemove && (
         <AlertDialog open onOpenChange={(o) => { if (!o && busy !== 'remove') setConfirmRemove(false); }}>

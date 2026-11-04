@@ -5,7 +5,8 @@ import { ChevronDown, ChevronRight, PenLine, Plus, Trash2 } from 'lucide-react';
 import { api, type ZiyiEntry, type ZiyiOrigin } from '@/lib/api';
 import { errorMessage, notify } from '@/lib/notify';
 import { registerUnsaved } from '@/lib/unsaved';
-import { refreshZiyiStatus, ZIYI_ORIGIN_LABEL } from '@/lib/ziyi';
+import { displayZiyiText, isHanChar, refreshZiyiStatus, ZIYI_ORIGIN_LABEL } from '@/lib/ziyi';
+import { ZiyiGlyphs } from '@/components/ZiyiGlyphs';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -137,6 +138,8 @@ export function ZiyiEntryView({
         </span>
       </div>
 
+      {Array.from(han).length === 1 && isHanChar(han) && <ZiyiGlyphs key={han} char={han} compact={compact} />}
+
       {!entry && !editing && (
         <div className="flex items-center gap-3 text-sm text-muted-foreground">
           暂无字义
@@ -165,13 +168,13 @@ export function ZiyiEntryView({
         </form>
       ) : entry && (
         <>
-          <div data-wb-ziyi-text className="font-serif text-sm whitespace-pre-wrap break-words">{entry.meaning}</div>
+          <div data-wb-ziyi-text className="font-serif text-sm whitespace-pre-wrap break-words">{displayZiyiText(entry.meaning)}</div>
           {entry.source && (
             <div className="text-xs text-muted-foreground">
               <button className="flex items-center gap-0.5 hover:text-foreground transition-colors" onClick={() => setShowSource((v) => !v)}>
                 {showSource ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />} 出处
               </button>
-              {showSource && <div className="mt-1 whitespace-pre-wrap break-words">{entry.source}</div>}
+              {showSource && <div className="mt-1 whitespace-pre-wrap break-words">{displayZiyiText(entry.source)}</div>}
             </div>
           )}
         </>

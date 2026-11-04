@@ -44,6 +44,9 @@ export const ziyiHref = (han?: string) => '/ziyi' + (han ? '?han=' + encodeURICo
 /** 是否为汉字：CJK 统一表意文字、扩展 A、兼容区与扩展 B 起各区（不含々〇与部首）；与后端 server/ziyi.js 的 HAN_RE 口径一致 */
 export const isHanChar = (ch: string) => /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u{20000}-\u{3FFFF}]/u.test(ch);
 
+/** 显示用：释义与出处里写死的本机图片路径（如旧机器上 zi-tools 生成的 /…/glyphs_xxx.png）换成「〔字形图〕」；编辑时仍是原文 */
+export const displayZiyiText = (s: string) => s.replace(/(?:\/[\w.-]+)+\.png\b/g, '〔字形图〕');
+
 /** 视口坐标下鼠标正压着的那个字（按码点，含代理对）；落在字与字的空隙或非文本上返回 null */
 export function charAtPoint(x: number, y: number): string | null {
   const caret = document.caretRangeFromPoint?.(x, y);

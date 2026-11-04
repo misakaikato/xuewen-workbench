@@ -23,6 +23,7 @@ import { RagManager } from './rag/manager.js';
 import { mountRag } from './rag/routes.js';
 import { ZiyiStore } from './ziyi.js';
 import { mountZiyi } from './ziyiRoutes.js';
+import { ZiGlyphs } from './ziGlyphs.js';
 import { AgentHub } from './agent/manager.js';
 import { mountAgent } from './agent/routes.js';
 import { Indexer } from './indexer.js';
@@ -188,7 +189,11 @@ const ragManager = new RagManager({
 app.use('/api/rag', mountRag(ragManager, resolveLib));
 
 // 字义库：全局单字释义，用户导入的字义文件存 <数据目录>/ziyi/（不随程序分发）
-app.use('/api/ziyi', mountZiyi(new ZiyiStore(path.join(dataDir(), 'ziyi'), { exportDir: process.env.WORKBENCH_DESKTOP_DIR })));
+// 字形演变：查字时按需从 zi.tools 取并缓存在 <数据目录>/ziglyphs/，可在设置里关闭（ui-settings.ziyiGlyphs）
+app.use('/api/ziyi', mountZiyi(new ZiyiStore(path.join(dataDir(), 'ziyi'), { exportDir: process.env.WORKBENCH_DESKTOP_DIR }), {
+  glyphs: new ZiGlyphs(path.join(dataDir(), 'ziglyphs')),
+  glyphsEnabled: () => getUiSettings().ziyiGlyphs,
+}));
 
 // 智能助手（pi agent）：工具闭包经 resolveLib 拿当前库；llm 配置变化时同步 models.json
 const agentHub = new AgentHub({
@@ -501,7 +506,7 @@ app.get('/api/ui-settings', (req, res) => {
 });
 
 app.put('/api/ui-settings', async (req, res) => {
-  const { theme, autoUpdate, notesDir, showMetaFiles, agentEnabled, wordConcurrency } = req.body || {};
+  const { theme, autoUpdate, notesDir, showMetaFiles, agentEnabled, wordConcurrency, ziyiGlyphs } = req.body || {};
   const patch = {};
   if (theme !== undefined) {
     if (!['A', 'B', 'C'].includes(theme)) {
@@ -524,6 +529,12 @@ app.put('/api/ui-settings', async (req, res) => {
   if (showMetaFiles !== undefined) {
     patch.showMetaFiles = !!showMetaFiles;
   }
+  if (ziyiGlyphs !== undefined) {
+    if (typeof ziyiGlyphs !== 'boolean') {
+      return res.status(400).json({ error: 'ziyiGlyphs 必须是布尔值' });
+    }
+    patch.ziyiGlyphs = ziyiGlyphs;
+  }
   if (wordConcurrency !== undefined) {
     if (!isWordConcurrency(wordConcurrency)) {
       return res.status(400).json({ error: 'Word 解析并发数必须是 1 到 8 的整数' });
@@ -538,7 +549,7 @@ app.put('/api/ui-settings', async (req, res) => {
     patch.notesDir = dir;
   }
   if (Object.keys(patch).length === 0) {
-    return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate / notesDir / showMetaFiles / agentEnabled / wordConcurrency）' });
+    return res.status(400).json({ error: '缺少可更新字段（theme / autoUpdate / notesDir / showMetaFiles / agentEnabled / wordConcurrency / ziyiGlyphs）' });
   }
   const next = saveUiSettings(patch);
   // 助手开关：先落盘（此后新的生成请求即被拒），关闭时再中止进行中的生成，中止完成才返回，

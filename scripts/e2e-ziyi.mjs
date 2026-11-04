@@ -3,10 +3,12 @@
 // 设置页导入后：顶栏出现「字义」；单字选区只有「字义」，点开侧栏显示释义；两字选区有「记笔记」和「字义」；
 // 扩展区单字选区同样只有「字义」；Alt 点击某字侧栏切到该字且不触发其他动作；原位编辑态 Alt 不拦截（留给编辑器列选区）；
 // 侧栏内编辑保存后字义库页检索得到并高亮；字义库页新建。
+// 字形演变（假 zi.tools）：侧栏查字显示字形格、点开放大；关闭开关后不显示字形区、也不再请求。
 // 运行：npm run build && ./node_modules/.bin/electron scripts/e2e-ziyi.mjs
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -57,6 +59,19 @@ const freePort = () =>
   });
 const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
+
+// 假 zi.tools：任何字都返回两个代表字形（1×1 PNG），记录请求过的字
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+const ziHits = [];
+const fakeZi = http.createServer((req, res) => {
+  const ch = decodeURIComponent(req.url).replace(/^\/api\/zi\//, '');
+  ziHits.push(ch);
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ yi: { tubrief: [['k', '1', ch, ch, PNG, '甲骨', '商', '賓組', '', 1], ['k', '2', ch, ch, PNG, '篆', '秦', '說文', '', 1]] } }));
+});
+const ziPort = await freePort();
+await new Promise((r) => fakeZi.listen(ziPort, '127.0.0.1', r));
+atExit(() => fakeZi.close());
 const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
 const api = (url) => fetch(base + url).then((r) => r.json());
 
@@ -142,7 +157,8 @@ const altClick = (ch) => exec(`(() => {
 async function main() {
   server = spawn(process.execPath, [path.join(root, 'server/index.js')], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', WORKBENCH_PORT: String(port), WORKBENCH_HOST: '127.0.0.1',
-      WORKBENCH_DATA_DIR: path.join(tmp, 'data'), WORKBENCH_STATIC_DIR: path.join(root, 'dist'), WORKBENCH_RAG_EMBED: 'mock' },
+      WORKBENCH_DATA_DIR: path.join(tmp, 'data'), WORKBENCH_STATIC_DIR: path.join(root, 'dist'), WORKBENCH_RAG_EMBED: 'mock',
+      WORKBENCH_ZITOOLS_API: `http://127.0.0.1:${ziPort}/api` },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   for (let i = 0; i < 150; i++) {
@@ -232,6 +248,16 @@ async function main() {
   await until(`document.querySelector('[data-wb-content-card] .cm-content')?.getAttribute('contenteditable') !== 'true'`);
   check('退出编辑', true);
 
+  // 字形演变：侧栏里当前是「丙」（没有字义也显示字形）
+  await until(`document.querySelectorAll('[data-wb-ziyi-panel] [data-wb-ziyi-glyphs="丙"] [data-wb-ziyi-glyph]').length === 2`);
+  check('侧栏显示字形演变（没有字义的字也显示）', ziHits.includes('丙'));
+  await exec(`document.querySelector('[data-wb-ziyi-panel] [data-wb-ziyi-glyph]').click(); true`);
+  await until(`!!document.querySelector('[data-wb-ziyi-glyph-dialog] img')`);
+  check('点字形放大并显示时代与书体', (await exec(`document.querySelector('[data-wb-ziyi-glyph-dialog]').textContent`)).includes('商 · 甲骨文'));
+  await exec(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+  await until(`!document.querySelector('[data-wb-ziyi-glyph-dialog]')`);
+  check('关闭放大', true);
+
 
   // 侧栏内直接改字：输入框查「甲」并编辑
   await setValue('[data-wb-ziyi-panel-input]', '甲');
@@ -282,6 +308,19 @@ async function main() {
   check('新建条目标为「本机新建」', (await exec(`document.querySelector('[data-wb-ziyi-detail] [data-wb-ziyi-origin]')?.textContent`)) === '本机新建');
   await until(`!!document.querySelector('[data-wb-ziyi-origin-opt="local"]')`);
   check('来源筛选出现「本机新建」', (await exec(`document.querySelector('[data-wb-ziyi-origin-opt="local"]').textContent`)).includes('1'));
+
+  // 关闭联网取字形：字义库页详情不再显示字形区，也不再请求
+  await spaGo('/settings?tab=ziyi');
+  await until(`!!document.querySelector('[data-wb-ziyi-glyphs-setting] button[role=switch]:not([disabled])')`);
+  await exec(`document.querySelector('[data-wb-ziyi-glyphs-setting] button[role=switch]').click(); true`);
+  await until(`document.querySelector('[data-wb-ziyi-glyphs-setting] button[role=switch]').getAttribute('aria-checked') === 'false' && !document.querySelector('[data-wb-ziyi-glyphs-setting] button[role=switch]').disabled`);
+  check('设置页关闭字形开关', (await api('/api/ui-settings')).ziyiGlyphs === false);
+  const hitsBefore = ziHits.length;
+  await spaGo('/ziyi');
+  await exec(`(() => { history.pushState({}, '', '/ziyi?han=' + encodeURIComponent('乙')); dispatchEvent(new PopStateEvent('popstate', { state: {} })); return true; })()`);
+  await until(`!!document.querySelector('[data-wb-ziyi-detail] [data-wb-ziyi-entry="乙"] [data-wb-ziyi-text]')`);
+  await pause(500);
+  check('关闭后不显示字形区、不请求 zi.tools', !(await exec(`!!document.querySelector('[data-wb-ziyi-glyphs]')`)) && ziHits.length === hitsBefore, ziHits.slice(hitsBefore));
 
   console.log(`\n全部通过：${passed} 项`);
 }
