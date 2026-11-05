@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { BookA, Plus, Search as SearchIcon } from 'lucide-react';
 import { api, type ZiyiEntry, type ZiyiHit } from '@/lib/api';
 import { errorMessage } from '@/lib/notify';
+import { reportDiagnostic } from '@/lib/diagnostics';
 import { displayZiyiText, useZiyiStatus, ZIYI_ORIGIN_FILTERS } from '@/lib/ziyi';
 import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { Button } from '@/components/ui/button';
@@ -13,6 +14,8 @@ import { Highlight } from '@/components/Highlight';
 import { ZiyiEntryView, ZiyiOriginTag } from '@/components/ZiyiEntryView';
 
 const PAGE = 100;
+// 查一个字通常几毫秒；超过这么久没响应就在右栏报错（可重试），不无限停在载入中
+const DETAIL_TIMEOUT_MS = 15000;
 
 export default function Ziyi() {
   const status = useZiyiStatus();
@@ -35,7 +38,7 @@ export default function Ziyi() {
   const hanRef = useRef(han);
   hanRef.current = han;
   const slow = useDelayedFlag(loading);
-  const [detail, setDetail] = useState<{ han: string; entry: ZiyiEntry | null; resolvedFrom: string | null } | null>(null);
+  const [detail, setDetail] = useState<{ han: string; entry: ZiyiEntry | null; resolvedFrom: string | null; error?: string } | null>(null);
   const [newHan, setNewHan] = useState('');
   const installed = status?.installed === true;
 
@@ -76,12 +79,17 @@ export default function Ziyi() {
 
   const loadDetail = useCallback(async (h: string) => {
     try {
-      const r = await api.ziyiEntry(h);
+      const r = await api.ziyiEntry(h, AbortSignal.timeout(DETAIL_TIMEOUT_MS));
       if (h === hanRef.current) setDetail({ han: h, entry: r.entry, resolvedFrom: r.resolvedFrom });
     } catch (e) {
       if (h !== hanRef.current) return; // 已切到别的字，丢弃迟到的响应
-      if ((e as { status?: number }).status === 404) setDetail({ han: h, entry: null, resolvedFrom: null });
-      else setError(errorMessage(e));
+      if ((e as { status?: number }).status === 404) {
+        setDetail({ han: h, entry: null, resolvedFrom: null });
+        return;
+      }
+      const message = (e as Error).name === 'TimeoutError' ? `${DETAIL_TIMEOUT_MS / 1000} 秒内没有响应` : errorMessage(e);
+      reportDiagnostic('WARN', `[ziyi] 载入「${h}」的字义失败：${message}`);
+      setDetail({ han: h, entry: null, resolvedFrom: null, error: message });
     }
   }, []);
 
@@ -181,7 +189,12 @@ export default function Ziyi() {
         </aside>
 
         <section data-wb-ziyi-detail className="flex-1 min-w-0 bg-card border border-border rounded-lg p-6">
-          {shown ? (
+          {shown?.error ? (
+            <div data-wb-ziyi-detail-error role="alert" className="space-y-3 text-sm">
+              <p>载入「{han}」的字义失败：{shown.error}</p>
+              <Button variant="outline" size="sm" onClick={() => { setDetail(null); void loadDetail(han); }}>重试</Button>
+            </div>
+          ) : shown ? (
             <ZiyiEntryView
               key={shown.han}
               char={shown.han}
@@ -190,8 +203,10 @@ export default function Ziyi() {
               onChange={(entry) => { setDetail({ han, entry, resolvedFrom: shown.resolvedFrom }); void load(0); }}
               onDeleted={() => { setDetail(null); setParam({ han: '' }); void load(0); }}
             />
+          ) : han ? (
+            <div data-wb-ziyi-detail-loading className="flex justify-center py-6 text-sm"><InlineLoading text={`正在载入「${han}」…`} /></div>
           ) : (
-            <EmptyState compact icon={<BookA className="w-5 h-5" />} title={han ? '加载中' : '在左侧选择一个字'} />
+            <EmptyState compact icon={<BookA className="w-5 h-5" />} title="在左侧选择一个字" />
           )}
         </section>
       </div>

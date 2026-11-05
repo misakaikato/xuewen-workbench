@@ -4,6 +4,8 @@
 // 不让请求占住连接：没有缓存时只登记「想要」并立即返回 pending，前端每秒轮询一次；前端不看了（卸载、换字）
 // 会撤销登记，没撤销但超过 STALE_MS 没人再问的字（页面关掉等）也直接丢掉，都不请求。队列每次取最近被问到的字，真实请求串行、相邻间隔 ≥ 600ms；
 // 每次发请求前再查一遍开关，关掉后排队的也不发。
+// 托管在 Electron 里时由调用方传入 Electron 的 net.fetch：走 Chromium 网络栈，跟随系统代理（与浏览器能否打开 zi.tools 一致），
+// 域名解析也不占 Node 的 libuv 线程池（读缓存文件要用它）。
 import fs from 'node:fs';
 import path from 'node:path';
 import { writeJsonAtomicAsync } from './atomicFile.js';
@@ -37,10 +39,11 @@ function rowToItem(r) {
 }
 
 export class ZiGlyphs {
-  /** enabled：每次真实请求前再查的开关 */
-  constructor(dir, { enabled = () => true } = {}) {
+  /** enabled：每次真实请求前再查的开关；fetch：发请求用的 fetch（缺省为 Node 自带的，不读系统代理） */
+  constructor(dir, { enabled = () => true, fetch = globalThis.fetch } = {}) {
     this.dir = dir;
     this.enabled = enabled;
+    this.fetch = fetch;
     this.wanted = new Map(); // 字 -> 最近一次被问到的时间（排队中）
     this.running = null; // 正在请求的字
     this.errors = new Map(); // 字 -> { message, at }
@@ -123,7 +126,9 @@ export class ZiGlyphs {
           await this._fetchAndStore(ch);
           this.errors.delete(ch);
         } catch (e) {
-          this.errors.set(ch, { message: e.message || String(e), at: Date.now() });
+          const message = e.message || String(e);
+          console.warn(`[ziyi] 取「${ch}」的字形失败：${message}`);
+          this.errors.set(ch, { message, at: Date.now() });
         } finally {
           this.running = null;
           this.lastAt = Date.now();
@@ -135,7 +140,7 @@ export class ZiGlyphs {
   }
 
   async _fetchAndStore(ch) {
-    const data = await request(`${API}/zi/${encodeURIComponent(ch)}`);
+    const data = await request(this.fetch, `${API}/zi/${encodeURIComponent(ch)}`);
     const rows = data?.yi?.tubrief;
     const items = Array.isArray(rows) ? rows.map(rowToItem).filter(Boolean) : [];
     const rec = { v: CACHE_VERSION, char: ch, fetchedAt: new Date().toISOString(), items };
@@ -149,7 +154,7 @@ export class ZiGlyphs {
  * GET JSON。404 视为未收录（{}）；返回的 JSON 里既没有 yi、也没有 zi.tools 正常响应都会带的 font / __zi 时，
  * 当作限流或出错页（502，不缓存），免得把错误当成「没有字形」永久存下。
  */
-async function request(url) {
+async function request(fetch, url) {
   let res;
   let body;
   try {

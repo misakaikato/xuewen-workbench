@@ -1,5 +1,6 @@
 // 字形演变：滚到可见时才向后端要这个字的代表字形（后端按需从 zi.tools 取一次并缓存在本机）。
 // 没取到时后端立即回 pending，这里每秒再问一次，直到取到或失败；卸载或换字即停止——停止询问的字后端会丢掉、不请求。
+// 停止时连同在途的请求一起取消：后端万一卡住，没取消的请求会一直占着连接，攒到浏览器同主机的连接上限后，字义本身也查不出来。
 // 网格显示，点开放大。设置里关闭了联网取字形时整块不渲染。
 import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, RefreshCw } from 'lucide-react';
@@ -23,16 +24,20 @@ export function ZiyiGlyphs({ char, compact = false }: { char: string; compact?: 
   const [open, setOpen] = useState<number | null>(null);
   const slow = useDelayedFlag(phase === 'loading' || phase === 'idle', 300);
   const rootRef = useRef<HTMLDivElement>(null);
-  // n：每次开始询问 +1、卸载时也 +1，旧的轮询看到不等就停；waiting：正在等后端取（卸载时据此撤销登记）
-  const runId = useRef({ n: 0, waiting: false });
+  // n：每次开始询问 +1、卸载时也 +1，旧的轮询看到不等就停；waiting：正在等后端取（卸载时据此撤销登记）；
+  // abort：取消当前这一轮在途的请求
+  const runId = useRef<{ n: number; waiting: boolean; abort: AbortController | null }>({ n: 0, waiting: false, abort: null });
 
   /** 问到有结果为止；refresh 只在第一问带上 */
   const run = async (refresh: boolean) => {
     const id = ++runId.current.n;
+    runId.current.abort?.abort();
+    const ctrl = new AbortController();
+    runId.current.abort = ctrl;
     setPhase('loading');
     for (let first = true; ; first = false) {
       try {
-        const r = await api.ziyiGlyphs(char, first && refresh);
+        const r = await api.ziyiGlyphs(char, first && refresh, ctrl.signal);
         if (id !== runId.current.n) return;
         if (r.status === 'pending') {
           runId.current.waiting = true;
@@ -74,6 +79,7 @@ export function ZiyiGlyphs({ char, compact = false }: { char: string; compact?: 
     return () => {
       io.disconnect();
       ids.n++;
+      ids.abort?.abort();
       if (ids.waiting) void api.ziyiGlyphsCancel(char).catch(() => { /* 撤销失败：后端几秒后也会丢掉没人再问的字 */ });
     };
   }, [char]);

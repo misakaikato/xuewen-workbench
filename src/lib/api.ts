@@ -332,7 +332,8 @@ export const api = {
   ziyiStatus: () => req<ZiyiStatus>('/api/ziyi/status'),
   ziyiSearch: (q: string, offset = 0, limit = 50, origin: ZiyiOrigin | 'none' | null = null) =>
     req<{ total: number; items: ZiyiHit[] }>(`/api/ziyi/search?q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}${origin ? '&origin=' + origin : ''}`),
-  ziyiEntry: (han: string) => req<{ entry: ZiyiEntry; resolvedFrom: string | null }>('/api/ziyi/entry?han=' + encodeURIComponent(han)),
+  ziyiEntry: (han: string, signal?: AbortSignal) =>
+    req<{ entry: ZiyiEntry; resolvedFrom: string | null }>('/api/ziyi/entry?han=' + encodeURIComponent(han), { signal }),
   ziyiLookup: (text: string) => req<{ items: ZiyiLookupItem[] }>('/api/ziyi/lookup?text=' + encodeURIComponent(text)),
   ziyiSave: (body: { han: string; meaning: string; source: string; expectEditedAt?: string | null; create?: boolean }) =>
     req<{ entry: ZiyiEntry }>('/api/ziyi/entry', json('PUT', body)),
@@ -343,8 +344,8 @@ export const api = {
     }),
   ziyiExport: () => req<{ ok: boolean; file: string }>('/api/ziyi/export', json('POST', {})),
   ziyiUninstall: () => req<{ ok: boolean; backup: string | null }>('/api/ziyi', { method: 'DELETE' }),
-  ziyiGlyphs: (han: string, refresh = false) =>
-    req<ZiyiGlyphs | { status: 'pending' }>('/api/ziyi/glyphs?han=' + encodeURIComponent(han) + (refresh ? '&refresh=1' : '')),
+  ziyiGlyphs: (han: string, refresh = false, signal?: AbortSignal) =>
+    req<ZiyiGlyphs | { status: 'pending' }>('/api/ziyi/glyphs?han=' + encodeURIComponent(han) + (refresh ? '&refresh=1' : ''), { signal }),
   /** 不再看这个字：撤销还没开始的取字形（keepalive，页面切走时也能发出） */
   ziyiGlyphsCancel: (han: string) =>
     req<{ ok: boolean }>('/api/ziyi/glyphs?han=' + encodeURIComponent(han), { method: 'DELETE', keepalive: true }),

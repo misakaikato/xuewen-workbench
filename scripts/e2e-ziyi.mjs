@@ -4,6 +4,7 @@
 // 扩展区单字选区同样只有「字义」；Alt 点击某字侧栏切到该字且不触发其他动作；原位编辑态 Alt 不拦截（留给编辑器列选区）；
 // 侧栏内编辑保存后字义库页检索得到并高亮；字义库页新建。
 // 字形演变（假 zi.tools）：侧栏查字显示字形格、点开放大；上游不响应时同时取多个字也不卡住其它接口；
+// 后端字形接口本身卡住时连看 8 个字，换字即取消在途的字形请求，字义照常显示；查字义卡住时右栏到时报错、可重试、写进 renderer.log。
 // 关闭开关后不显示字形区、也不再请求。
 // 运行：npm run build && ./node_modules/.bin/electron scripts/e2e-ziyi.mjs
 import { app, BrowserWindow } from 'electron';
@@ -324,6 +325,54 @@ async function main() {
   })()`);
   check('上游卡住时取字形不拖慢其它接口', stall.ok && stall.ms < 1500 && stall.statuses.every((x) => x === 202), stall);
   ziHang = false;
+
+  // 后端的字形接口本身卡住（经一层代理模拟）：连看 8 个字，换字即取消在途的字形请求，字义照常显示——
+  // 不取消的话卡住的请求会攒满浏览器同主机 6 个连接，第 7 个字起连字义也查不出来
+  const proxyPort = await freePort();
+  let hangEntry = null;
+  const proxy = http.createServer((req, res) => {
+    const hang = req.method === 'GET' && (req.url.startsWith('/api/ziyi/glyphs?')
+      || (hangEntry && req.url.startsWith('/api/ziyi/entry?han=' + encodeURIComponent(hangEntry))));
+    if (hang) return;
+    const up = http.request({ host: '127.0.0.1', port, path: req.url, method: req.method, headers: req.headers }, (r) => {
+      res.writeHead(r.statusCode, r.headers);
+      r.pipe(res);
+    });
+    up.on('error', () => res.destroy());
+    req.pipe(up);
+  });
+  await new Promise((r) => proxy.listen(proxyPort, '127.0.0.1', r));
+  atExit(() => proxy.close());
+  const goHan = (c) => exec(`(() => { history.pushState({}, '', '/ziyi?han=' + encodeURIComponent(${JSON.stringify(c)})); dispatchEvent(new PopStateEvent('popstate', { state: {} })); return true; })()`);
+  await win.loadURL(`http://127.0.0.1:${proxyPort}/ziyi`);
+  await until(`!!document.querySelector('[data-wb-ziyi-search]')`, 8000);
+  const shownChars = [];
+  for (const c of '庚辛壬癸子丑寅卯') {
+    await goHan(c);
+    try {
+      await until(`!!document.querySelector('[data-wb-ziyi-detail] [data-wb-ziyi-entry="${c}"] [data-wb-ziyi-glyphs]')`, 3000);
+      shownChars.push(c);
+    } catch { /* 记下没显示的字 */ }
+    await pause(300); // 让字形请求发出去并卡住
+  }
+  check('字形接口卡住时连看 8 个字都显示', shownChars.join('') === '庚辛壬癸子丑寅卯', shownChars.join(''));
+
+  // 查字义本身卡住：右栏显示载入中，到时改为报错并可重试，失败写进 renderer.log
+  hangEntry = '辰';
+  await goHan('辰');
+  await until(`(document.querySelector('[data-wb-ziyi-detail-loading]')?.textContent || '').includes('正在载入「辰」')`);
+  check('查字义未返回时右栏显示「正在载入」', true);
+  await until(`!!document.querySelector('[data-wb-ziyi-detail-error]')`, 20000);
+  check('查字义超时右栏报错', (await exec(`document.querySelector('[data-wb-ziyi-detail-error]').textContent`)).includes('15 秒内没有响应'));
+  hangEntry = null;
+  await clickButton('[data-wb-ziyi-detail-error]', '重试');
+  await until(`!!document.querySelector('[data-wb-ziyi-detail] [data-wb-ziyi-entry="辰"]') && document.querySelector('[data-wb-ziyi-detail]').textContent.includes('暂无字义')`);
+  check('重试后显示', true);
+  await pause(2500); // 界面日志每 2s 批量上报
+  const rendererLog = fs.readFileSync(path.join(tmp, 'data', 'logs', 'renderer.log'), 'utf8');
+  check('查字义失败写进 renderer.log', rendererLog.includes('[ziyi] 载入「辰」的字义失败：15 秒内没有响应'), rendererLog.slice(-300));
+  await win.loadURL(base + '/ziyi');
+  await until(`!!document.querySelector('[data-wb-ziyi-search]')`, 8000);
 
   // 关闭联网取字形：字义库页详情不再显示字形区，也不再请求
   await spaGo('/settings?tab=ziyi');

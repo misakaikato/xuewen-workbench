@@ -2,7 +2,8 @@
 // 后端经 WORKBENCH_ZITOOLS_API 指向它。断言：没缓存时立即 202 pending、轮询到取到；二次走缓存不联网；
 // 同字并发只请求一次；不同字真实请求串行且间隔 ≥ 550ms；最近问到的优先；撤销的字与过期没人再问的字都不请求；
 // 未收录缓存为空列表；上游 500 / 无法识别的 200 → 502 且不缓存、重试成功；刷新失败保留旧缓存；
-// 非单字 400；关闭开关 409、排队中的也不再发；重启后缓存仍在；非 PNG 行丢弃；书体名不受原型链键影响。
+// 非单字 400；关闭开关 409、排队中的也不再发；重启后缓存仍在；非 PNG 行丢弃；书体名不受原型链键影响；
+// 取字形失败的原因写进 backend.log；卡住 10s 还没结束的请求也记一条。
 // 运行：node scripts/test-zi-glyphs.mjs
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -64,6 +65,7 @@ const fakePort = await freePort();
 await new Promise((r) => fake.listen(fakePort, '127.0.0.1', r));
 atExit(() => fake.close());
 const hitsOf = (ch) => hits.filter((h) => h[0] === ch).length;
+const backendLog = () => { try { return fs.readFileSync(path.join(dataDir, 'logs', 'backend.log'), 'utf8'); } catch { return ''; } };
 
 // ---------- 后端 ----------
 let server = null;
@@ -188,6 +190,7 @@ check('缺省开启（ui-settings.ziyiGlyphs）', (await get('/api/ui-settings')
   const r = await poll('辰');
   check('上游 500 → 502', r.status === 502 && /zi\.tools/.test(r.json.error), r);
   check('失败不写缓存', !fs.existsSync(path.join(dataDir, 'ziglyphs', '8fb0.json')));
+  check('失败原因写进 backend.log', backendLog().includes('[ziyi] 取「辰」的字形失败：zi.tools 返回 500'), backendLog().slice(-500));
   const n = hitsOf('辰');
   const quick = await ask('辰');
   check('刚失败过的字短时间内直接报失败、不反复请求', quick.status === 502 && hitsOf('辰') === n);
@@ -241,6 +244,19 @@ await startServer();
   const n = hitsOf('甲');
   const r = await ask('甲');
   check('重启后缓存仍在、不联网', r.status === 200 && hitsOf('甲') === n && r.json.items.length === 2);
+}
+
+// 卡住的请求：只发一半请求体，请求一直不结束、也就永远不会 finish
+{
+  const u = new URL(base);
+  const sock = net.connect(Number(u.port), u.hostname);
+  await new Promise((r) => sock.once('connect', r));
+  sock.write('POST /api/ziyi/import HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/octet-stream\r\nContent-Length: 100\r\n\r\nabc');
+  await sleep(9000);
+  check('卡住不满 10s 不记', !backendLog().includes('/api/ziyi/import 已 10s 仍未结束'));
+  await sleep(2000);
+  check('卡住 10s 还没结束记一条', backendLog().includes('[http] POST /api/ziyi/import 已 10s 仍未结束'), backendLog().slice(-500));
+  sock.destroy();
 }
 
 await stopServer();

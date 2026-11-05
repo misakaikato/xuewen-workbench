@@ -72,16 +72,25 @@ app.use((req, res, next) => {
   next();
 });
 
-// 慢请求 / 5xx 日志：响应状态 ≥ 500 或耗时 ≥ 3000ms 记一条；SSE 与模型下载只按状态记（不计耗时）
+// 慢请求 / 5xx 日志：响应状态 ≥ 500 或耗时 ≥ 3000ms 记一条；SSE 与模型下载只按状态记（不计耗时）。
+// 卡住的请求永远不 finish，另在 10s 时还没结束（也没断开）就先记一条，免得卡死不留痕迹
 const SLOW_SKIP = ['/api/agent/chat', '/api/rag/model/download'];
+const PENDING_WARN_MS = 10000;
 app.use((req, res, next) => {
   const t0 = Date.now();
+  // 进来时就记下完整路径：子路由挂载后 req.path 会被改写成挂载点之后的部分（/api/ziyi/glyphs 只剩 /glyphs）；不带查询串
+  const where = req.method + ' ' + req.path;
   const skipSlow = SLOW_SKIP.includes(req.path);
+  if (!skipSlow) {
+    const timer = setTimeout(() => console.warn('[http] ' + where + ' 已 ' + PENDING_WARN_MS / 1000 + 's 仍未结束'), PENDING_WARN_MS);
+    timer.unref();
+    res.on('close', () => clearTimeout(timer));
+  }
   res.on('finish', () => {
     const ms = Date.now() - t0;
     const status = res.statusCode;
     if (status >= 500 || (!skipSlow && ms >= 3000)) {
-      console.warn('[http] ' + req.method + ' ' + req.path + ' ' + status + ' ' + ms + 'ms');
+      console.warn('[http] ' + where + ' ' + status + ' ' + ms + 'ms');
     }
   });
   next();
@@ -191,7 +200,11 @@ app.use('/api/rag', mountRag(ragManager, resolveLib));
 // 字义库：全局单字释义，用户导入的字义文件存 <数据目录>/ziyi/（不随程序分发）
 // 字形演变：查字时按需从 zi.tools 取并缓存在 <数据目录>/ziglyphs/，可在设置里关闭（ui-settings.ziyiGlyphs）
 app.use('/api/ziyi', mountZiyi(new ZiyiStore(path.join(dataDir(), 'ziyi'), { exportDir: process.env.WORKBENCH_DESKTOP_DIR }), {
-  glyphs: new ZiGlyphs(path.join(dataDir(), 'ziglyphs'), { enabled: () => getUiSettings().ziyiGlyphs }),
+  glyphs: new ZiGlyphs(path.join(dataDir(), 'ziglyphs'), {
+    enabled: () => getUiSettings().ziyiGlyphs,
+    // 托管时走 Electron 的网络栈（跟随系统代理）；独立运行与测试用 Node 自带的 fetch
+    fetch: hosted ? (await import('electron')).net.fetch : globalThis.fetch,
+  }),
   glyphsEnabled: () => getUiSettings().ziyiGlyphs,
 }));
 
