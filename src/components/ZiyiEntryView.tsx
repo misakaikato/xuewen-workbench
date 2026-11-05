@@ -1,4 +1,4 @@
-// 一条字义：展示 + 原位编辑（释义、出处）。字义库页与阅读页字义侧栏共用。
+// 一条字义：展示 + 原位编辑（释义、出处）。字义库页与阅读页字义侧栏共用。字头、异体字、码位、释义与出处可选中复制（按钮等骨架不可选）。
 // 没有条目时显示「暂无字义」与新建入口；保存带版本校验（expectEditedAt），被别处改过时提示重新载入。
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, PenLine, Plus, Trash2 } from 'lucide-react';
@@ -118,10 +118,10 @@ export function ZiyiEntryView({
   return (
     <div data-wb-ziyi-entry={han} className={compact ? 'space-y-2' : 'space-y-3'}>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className={`font-serif ${compact ? 'text-2xl' : 'text-3xl'}`}>{han}</span>
-        {entry && entry.variants.length > 0 && <span className="font-serif text-sm text-muted-foreground" title="异体字">（{entry.variants.join(' ')}）</span>}
+        <span className={`wb-selectable font-serif ${compact ? 'text-2xl' : 'text-3xl'}`}>{han}</span>
+        {entry && entry.variants.length > 0 && <span className="wb-selectable font-serif text-sm text-muted-foreground" title="异体字">（{entry.variants.join(' ')}）</span>}
         {entry && <ZiyiOriginTag origin={entry.origin} />}
-        {(entry?.unicode ?? null) && <span className="text-xs text-muted-foreground stat-num">U+{entry!.unicode}</span>}
+        {(entry?.unicode ?? null) && <span className="wb-selectable text-xs text-muted-foreground stat-num">U+{entry!.unicode}</span>}
         {resolvedFrom && <span className="text-xs text-muted-foreground">由「{resolvedFrom}」查到</span>}
         {entry?.editedAt && <span className="text-xs text-muted-foreground" title={'本地修改于 ' + new Date(entry.editedAt).toLocaleString()}>本地修改</span>}
         <span className="ml-auto flex items-center gap-1">
@@ -168,13 +168,13 @@ export function ZiyiEntryView({
         </form>
       ) : entry && (
         <>
-          <div data-wb-ziyi-text className="font-serif text-sm whitespace-pre-wrap break-words">{displayZiyiText(entry.meaning)}</div>
+          <div data-wb-ziyi-text className="wb-selectable font-serif text-sm whitespace-pre-wrap break-words">{displayZiyiText(entry.meaning)}</div>
           {entry.source && (
             <div className="text-xs text-muted-foreground">
               <button className="flex items-center gap-0.5 hover:text-foreground transition-colors" onClick={() => setShowSource((v) => !v)}>
                 {showSource ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />} 出处
               </button>
-              {showSource && <div className="mt-1 whitespace-pre-wrap break-words">{displayZiyiText(entry.source)}</div>}
+              {showSource && <div data-wb-ziyi-source-text className="wb-selectable mt-1 whitespace-pre-wrap break-words">{displayZiyiText(entry.source)}</div>}
             </div>
           )}
         </>

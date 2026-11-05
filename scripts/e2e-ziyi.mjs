@@ -6,6 +6,7 @@
 // 字形演变（假 zi.tools）：侧栏查字显示字形格、点开放大；上游不响应时同时取多个字也不卡住其它接口；
 // 后端字形接口本身卡住时连看 8 个字，换字即取消在途的字形请求，字义照常显示；查字义卡住时右栏到时报错、可重试、写进 renderer.log。
 // 关闭开关后不显示字形区、也不再请求。
+// 字义库页两栏各自滚动：翻左栏列表时右栏详情留在视野里；右栏释义可用鼠标拖选。
 // 运行：npm run build && ./node_modules/.bin/electron scripts/e2e-ziyi.mjs
 import { app, BrowserWindow } from 'electron';
 import { spawn } from 'node:child_process';
@@ -386,6 +387,32 @@ async function main() {
   await until(`!!document.querySelector('[data-wb-ziyi-detail] [data-wb-ziyi-entry="乙"] [data-wb-ziyi-text]')`);
   await pause(500);
   check('关闭后不显示字形区、不请求 zi.tools', !(await exec(`!!document.querySelector('[data-wb-ziyi-glyphs]')`)) && ziHits.length === hitsBefore, ziHits.slice(hitsBefore));
+
+  // 两栏各自滚动：窗口压矮让左栏列表放不下，主区本身不滚，列表滚到底时右栏详情仍在视野里
+  win.setContentSize(1400, 420);
+  await pause(300);
+  const layout = await exec(`(() => {
+    const main = document.querySelector('main');
+    const list = document.querySelector('[data-wb-ziyi-list]');
+    list.scrollTop = list.scrollHeight;
+    const d = document.querySelector('[data-wb-ziyi-detail]').getBoundingClientRect();
+    return { mainScrolls: main.scrollHeight > main.clientHeight + 1, listScrolls: list.scrollHeight > list.clientHeight,
+      listMoved: list.scrollTop > 0, detailTop: d.top, detailBottom: d.bottom, vh: innerHeight };
+  })()`);
+  check('主区不滚、左栏列表自己滚动', !layout.mainScrolls && layout.listScrolls && layout.listMoved, layout);
+  check('列表滚到底时右栏详情仍在视野里', layout.detailTop >= 0 && layout.detailBottom <= layout.vh, layout);
+  win.setContentSize(1400, 900);
+  await pause(300);
+
+  // 右栏释义可拖选：真实鼠标事件从释义开头拖到结尾
+  const r = await exec(`(() => { window.getSelection().removeAllRanges(); const b = document.querySelector('[data-wb-ziyi-detail] [data-wb-ziyi-text]').getBoundingClientRect(); return { x: b.left, y: b.top + b.height / 2, w: b.width }; })()`);
+  const at = (type, x) => win.webContents.sendInputEvent({ type, x: Math.round(x), y: Math.round(r.y), button: 'left', clickCount: 1 });
+  at('mouseDown', r.x + 1);
+  for (let i = 1; i <= 5; i++) at('mouseMove', r.x + 1 + (r.w - 2) * i / 5);
+  at('mouseUp', r.x + r.w - 1);
+  await pause(200);
+  const picked = await exec(`window.getSelection().toString()`);
+  check('右栏释义可用鼠标拖选', picked.includes('测试释义：乙'), picked);
 
   console.log(`\n全部通过：${passed} 项`);
 }

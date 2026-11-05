@@ -40,6 +40,7 @@ export default function Ziyi() {
   const slow = useDelayedFlag(loading);
   const [detail, setDetail] = useState<{ han: string; entry: ZiyiEntry | null; resolvedFrom: string | null; error?: string } | null>(null);
   const [newHan, setNewHan] = useState('');
+  const detailRef = useRef<HTMLElement>(null);
   const installed = status?.installed === true;
 
   const setParam = useCallback((patch: Record<string, string>) => {
@@ -97,6 +98,11 @@ export default function Ziyi() {
     if (han && installed) void loadDetail(han);
   }, [han, installed, loadDetail]);
 
+  // 换字时详情回到顶部（右栏独立滚动，不随页面重置）
+  useEffect(() => {
+    detailRef.current?.scrollTo({ top: 0 });
+  }, [han]);
+
   if (status && !installed) {
     return (
       <div className="max-w-5xl mx-auto py-6 px-4">
@@ -114,13 +120,14 @@ export default function Ziyi() {
   const shown = detail && detail.han === han ? detail : null;
 
   return (
-    <div className="max-w-5xl mx-auto py-6 px-4 space-y-6">
-      <div className="flex items-center gap-3">
+    // 页面撑满主区高度：左栏结果列表与右栏详情各自滚动，翻列表时详情始终在视野里
+    <div className="h-full max-w-5xl mx-auto py-6 px-4 flex flex-col gap-6">
+      <div className="flex items-center gap-3 shrink-0">
         <h1 className="text-lg font-semibold">字义库</h1>
         {status && <span className="text-xs text-muted-foreground stat-num">{status.count} 字</span>}
       </div>
-      <div className="flex gap-4 items-start">
-        <aside className="w-72 shrink-0 space-y-3">
+      <div className="flex gap-4 flex-1 min-h-0">
+        <aside className="w-72 shrink-0 flex flex-col gap-3 min-h-0">
           <div className="relative">
             <SearchIcon className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -163,32 +170,34 @@ export default function Ziyi() {
             {slow && <InlineLoading text="" />}
           </div>
           {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
-          <ul className="space-y-1" data-wb-ziyi-results>
-            {hits.map((h) => (
-              <li key={h.han}>
-                <button
-                  data-wb-ziyi-hit={h.han}
-                  className={`w-full text-left rounded-md border px-3 py-2 transition-colors ${h.han === han ? 'border-primary/60 bg-primary/5' : 'border-transparent hover:border-primary/60'}`}
-                  onClick={() => setParam({ han: h.han })}
-                >
-                  <div className="flex items-baseline gap-2">
-                    <span className="font-serif text-base">{h.han}</span>
-                    <ZiyiOriginTag origin={h.origin} />
-                    {h.field === 'source' && <span className="text-xs text-muted-foreground">出处命中</span>}
-                    {h.editedAt && <span className="text-xs text-muted-foreground">本地修改</span>}
-                  </div>
-                  <div className="text-xs text-muted-foreground line-clamp-2"><Highlight text={displayZiyiText(h.snippet)} terms={terms} emphasis /></div>
-                </button>
-              </li>
-            ))}
-          </ul>
-          {!loading && hits.length === 0 && !error && <EmptyState compact title={q || origin ? '没有找到' : '字义库是空的'} />}
-          {hits.length < total && (
-            <Button variant="ghost" size="sm" className="w-full" loading={loading} onClick={() => { void load(hits.length); }}>加载更多</Button>
-          )}
+          <div data-wb-ziyi-list className="flex-1 min-h-0 overflow-auto space-y-1">
+            <ul className="space-y-1" data-wb-ziyi-results>
+              {hits.map((h) => (
+                <li key={h.han}>
+                  <button
+                    data-wb-ziyi-hit={h.han}
+                    className={`w-full text-left rounded-md border px-3 py-2 transition-colors ${h.han === han ? 'border-primary/60 bg-primary/5' : 'border-transparent hover:border-primary/60'}`}
+                    onClick={() => setParam({ han: h.han })}
+                  >
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-serif text-base">{h.han}</span>
+                      <ZiyiOriginTag origin={h.origin} />
+                      {h.field === 'source' && <span className="text-xs text-muted-foreground">出处命中</span>}
+                      {h.editedAt && <span className="text-xs text-muted-foreground">本地修改</span>}
+                    </div>
+                    <div className="text-xs text-muted-foreground line-clamp-2"><Highlight text={displayZiyiText(h.snippet)} terms={terms} emphasis /></div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {!loading && hits.length === 0 && !error && <EmptyState compact title={q || origin ? '没有找到' : '字义库是空的'} />}
+            {hits.length < total && (
+              <Button variant="ghost" size="sm" className="w-full" loading={loading} onClick={() => { void load(hits.length); }}>加载更多</Button>
+            )}
+          </div>
         </aside>
 
-        <section data-wb-ziyi-detail className="flex-1 min-w-0 bg-card border border-border rounded-lg p-6">
+        <section ref={detailRef} data-wb-ziyi-detail className="flex-1 min-w-0 overflow-auto bg-card border border-border rounded-lg p-6">
           {shown?.error ? (
             <div data-wb-ziyi-detail-error role="alert" className="space-y-3 text-sm">
               <p>载入「{han}」的字义失败：{shown.error}</p>
